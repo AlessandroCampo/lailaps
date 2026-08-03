@@ -1,0 +1,14 @@
+Only double check 1 finding. Scenario in cui Lailaps riporta all'uitente una vulnerabiità. Potrebbe dare la possibilità
+di verificare che quella specifica vulnerabilità sia risolta, anzichè ripetere uno scan completo
+
+
+composer and npm vulnerabilites (dependencies)
+
+Il modello aveva capito bene la catena: hardcoded private key + token forge + change-password senza current. Però trasformare quello in exploit richiede precisione meccanica. Se il worker deve “ragionare e costruire” JWT dentro il contesto lungo, è facile che si impasti o consumi troppo.
+Io aggiungerei un tool piccolo tipo:
+jwt_sign(payload, private_key_or_file, alg="RS256") -> token
+Oppure più generale:
+crypto_tool(operation="jwt_sign", alg, payload, key_material)
+E magari un “exploit scratchpad” con Node/Python disponibile. In questa run il blocker dichiarato è token/output budget, ma quel budget è stato probabilmente bruciato proprio perché il worker non aveva un’azione atomica affidabile per fare la parte crittografica. Quindi sì: difficoltà di conferma JWT = combinazione di tool mancante + prompt/context troppo grosso.
+
+XSS exploit con playwriht\puppeteer

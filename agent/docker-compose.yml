@@ -1,0 +1,35 @@
+services:
+  # Il bersaglio, deliberatamente vulnerabile.
+  dvwa:
+    image: vulnerables/web-dvwa
+    ports:
+      - "8080:80"          # http://localhost:8080 dall'host (comodo per curl manuale)
+
+  # L'agente di pentest, containerizzato. One-shot: esegue uno scan e termina.
+  # Sotto un profilo, così `docker compose up` avvia solo il target; l'agente lo
+  # lanci a richiesta con:  docker compose run --rm agent scan --category "..."
+  agent:
+    build: ./pentest-agent
+    image: lailaps-pentest-agent:dev
+    profiles: ["agent"]
+    depends_on: [dvwa]
+    env_file:
+      - ./pentest-agent/.env        # OPENROUTER_API_KEY e altri segreti (mai nell'immagine)
+    environment:
+      # DENTRO la rete di compose il target NON è localhost: è il nome del servizio,
+      # sulla sua porta interna (80), non la 8080 pubblicata sull'host.
+      ALLOWED_BASE_URL: http://dvwa
+      SOURCE_ROOT: /code
+    volumes:
+      # La codebase da analizzare, in sola lettura. Punta AGENT_SOURCE_ROOT a ciò che
+      # vuoi analizzare (default: la cartella target/ del repo). Deve corrispondere
+      # all'app servita da ALLOWED_BASE_URL perché il match statico↔dinamico abbia senso.
+      - ${AGENT_SOURCE_ROOT:-../target}:/code:ro
+      # MVP locale: il client Python usa Docker per creare il toolbox isolato e
+      # fare exec SOLO sul container target fissato da Laravel. Da rimuovere
+      # quando verra' introdotto il broker di produzione.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # DEV opzionale: monta i sorgenti dell'agente per iterare senza rebuild
+      # (uv installa il progetto in editable, quindi le modifiche a src/ sono live).
+      # Scommenta per sviluppare:
+      # - ./pentest-agent/src:/app/src
