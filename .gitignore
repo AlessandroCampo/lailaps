@@ -31,3 +31,5 @@ yarn-error.log
 /target/*
 /targets
 /targets/*
+/ideas
+/ideas/*

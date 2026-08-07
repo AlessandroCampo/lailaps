@@ -55,6 +55,7 @@ class SandboxService
                 expiresAt: $spec->expiresAt(),
             );
         } catch (Throwable $e) {
+            dump($e->getMessage());
             rescue(fn () => $driver->destroy($spec->auditId), report: false);
 
             throw $e;
@@ -138,8 +139,8 @@ class SandboxService
 
         while (now()->lessThan($deadline)) {
             try {
-                $response = Http::timeout(2)->withoutRedirecting()->get($url);
-
+                $response = Http::timeout(30)->withoutRedirecting()->get($url);
+                dump($response);
                 // anche un 5xx applicativo va bene: significa che un web server c'è
                 if ($response->status() < 500 || $response->status() === 502) {
                     return;
