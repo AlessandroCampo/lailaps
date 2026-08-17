@@ -35,7 +35,6 @@ test('an authenticated user can queue a preset audit', function () {
         'preset' => 'dvwa',
         'target_mode' => 'sandbox',
         'categories' => ['A01:2025 Broken Access Control'],
-        'dual_agent' => false,
         'ttl' => 1800,
         'test' => true,
         'keep' => false,

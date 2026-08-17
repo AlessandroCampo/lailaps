@@ -34,7 +34,6 @@ final class AuditRunController extends Controller
             'presets' => collect(AuditCommandBuilder::PRESETS)->map(fn (array $preset, string $id) => [
                 'id' => $id,
                 'category' => $preset['category'],
-                'dualAgent' => $preset['dual_agent'],
             ])->values(),
             'benchmarks' => collect($catalog->all())
                 ->groupBy('target_id')

@@ -10,10 +10,10 @@ final class AuditCommandBuilder
 
     /** @var array<string, array<string, mixed>> */
     public const PRESETS = [
-        'juice-shop' => ['path' => 'targets/juice-shop', 'image' => 'bkimminich/juice-shop:latest', 'port' => 3000, 'category' => 'A01:2025 Broken Access Control', 'dual_agent' => true],
-        'dvwa' => ['path' => 'targets/dvwa', 'category' => 'A01:2025 Broken Access Control', 'dual_agent' => false],
-        'mutillidae-source' => ['path' => 'targets/mutillidae-source', 'category' => 'A03:2025 Injection', 'dual_agent' => false],
-        'owasp-benchmark-java' => ['path' => 'targets/owasp-benchmark-java', 'category' => 'A05:2025 Injection', 'dual_agent' => false],
+        'juice-shop' => ['path' => 'targets/juice-shop', 'image' => 'bkimminich/juice-shop:latest', 'port' => 3000, 'category' => 'A01:2025 Broken Access Control'],
+        'dvwa' => ['path' => 'targets/dvwa', 'category' => 'A01:2025 Broken Access Control'],
+        'mutillidae-source' => ['path' => 'targets/mutillidae-source', 'category' => 'A03:2025 Injection'],
+        'owasp-benchmark-java' => ['path' => 'targets/owasp-benchmark-java', 'category' => 'A05:2025 Injection'],
     ];
 
     /** @return array<int, string> */
@@ -43,6 +43,9 @@ final class AuditCommandBuilder
             $this->value($command, 'url', $p['url'] ?? null);
             $this->value($command, 'db', $p['db'] ?? null);
             $this->value($command, 'health-path', $p['health_path'] ?? null);
+            $this->value($command, 'reader-model', $p['reader_model'] ?? null);
+            $this->value($command, 'confirmer-model', $p['confirmer_model'] ?? null);
+            $this->value($command, 'worker-model', $p['worker_model'] ?? null);
             if ((bool) ($p['skip_health'] ?? false)) {
                 $command[] = '--skip-health';
             }
@@ -71,12 +74,11 @@ final class AuditCommandBuilder
         $this->value($argv, 'service', $p['service'] ?? null);
         $this->value($argv, 'compose', $p['compose'] ?? null);
         $this->value($argv, 'reader-model', $p['reader_model'] ?? null);
+        $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
         $this->value($argv, 'worker-model', $p['worker_model'] ?? null);
         $argv[] = '--ttl='.(int) $p['ttl'];
 
-        $dual = (bool) ($p['dual_agent'] ?? ($preset['dual_agent'] ?? false));
         foreach ([
-            'dual-agent' => $dual,
             'skip-health' => (bool) ($p['skip_health'] ?? false),
             'assume-authorized' => (bool) ($p['authorized'] ?? false),
             'test' => (bool) ($p['test'] ?? false),

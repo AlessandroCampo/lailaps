@@ -11,8 +11,6 @@ final class AppTest extends Command
     protected $signature = 'app:test
                             {project : Target da testare (dvwa, juice-shop, mutillidae-source, owasp-benchmark-java)}
                             {--category= : Sovrascrive la categoria OWASP predefinita}
-                            {--dual-agent : Abilita il reader/worker dual-agent}
-                            {--no-dual-agent : Disabilita il dual-agent predefinito del progetto}
                             {--test : Mantiene la modalità test (attiva per default)}
                             {--no-test : Disabilita la modalità test}
                             {--ttl=1800 : Durata massima della sandbox in secondi}
@@ -27,22 +25,18 @@ final class AppTest extends Command
             'image' => 'bkimminich/juice-shop:latest',
             'port' => 3000,
             'category' => 'A01:2025 Broken Access Control',
-            'dual-agent' => true,
         ],
         'dvwa' => [
             'path' => 'targets/dvwa',
             'category' => 'A01:2025 Broken Access Control',
-            'dual-agent' => false,
         ],
         'mutillidae-source' => [
             'path' => 'targets/mutillidae-source',
             'category' => 'A03:2025 Injection',
-            'dual-agent' => false,
         ],
         'owasp-benchmark-java' => [
             'path' => 'targets/owasp-benchmark-java',
             'category' => 'A05:2025 Injection',
-            'dual-agent' => false,
         ],
     ];
 
@@ -108,15 +102,6 @@ final class AppTest extends Command
         if (isset($config['port'])) {
             $parameters['--port'] = $config['port'];
         }
-
-        $dualAgent = (bool) $config['dual-agent'];
-        if ($this->option('dual-agent')) {
-            $dualAgent = true;
-        }
-        if ($this->option('no-dual-agent')) {
-            $dualAgent = false;
-        }
-        $parameters['--dual-agent'] = $dualAgent;
 
         return $parameters;
     }

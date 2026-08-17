@@ -108,7 +108,9 @@ const matchingEvents = computed(() =>
 const rawEvents = computed(() =>
     matchingEvents.value.slice(-rawVisibleLimit.value),
 );
-const filteredEvents = computed(() => matchingEvents.value.slice(-visibleLimit.value));
+const filteredEvents = computed(() =>
+    matchingEvents.value.slice(-visibleLimit.value),
+);
 const prompts = computed(() =>
     events.value.filter((event) => event.type === 'system_prompt'),
 );
@@ -156,18 +158,20 @@ const isLive = (value: string) =>
     ['queued', 'preparing', 'running', 'finalizing'].includes(value);
 
 const payloadText = (value: unknown) =>
-    typeof value === 'string'
-        ? value
-        : JSON.stringify(value ?? {}, null, 2);
+    typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2);
 const findingEventName = (event: AuditEvent) =>
     String(event.payload.event || event.payload.type || 'finding_event');
 const findingPayload = (event: AuditEvent) =>
-    (event.payload.payload as Record<string, any> | undefined) ||
-    event.payload;
+    (event.payload.payload as Record<string, any> | undefined) || event.payload;
 const findingStateFromEvent = (event: AuditEvent) => {
     const name = findingEventName(event);
     if (name.includes('confirmed')) return 'confirmed';
-    if (name.includes('reject') || name.includes('block')) return 'rejected';
+    if (
+        name.includes('reject') ||
+        name.includes('block') ||
+        name.includes('closed')
+    )
+        return 'rejected';
     if (name.includes('confirmation')) return 'confirming';
     return 'suspected';
 };
@@ -179,7 +183,8 @@ const liveFindings = computed(() => {
         .forEach((event) => {
             const payload = findingPayload(event);
             const findingId = String(
-                event.payload.candidate_id ||
+                event.payload.lead_id ||
+                    event.payload.candidate_id ||
                     payload.finding_id ||
                     `event-${event.sequence}`,
             );
@@ -232,7 +237,11 @@ const activity = computed<ActivityItem[]>(() => {
     const pushText = (event: AuditEvent, kind: 'reasoning' | 'output') => {
         const content = String(event.payload.content || '');
         if (!content) return;
-        if (lastText && lastText.label === kind && lastText.sequence < event.sequence) {
+        if (
+            lastText &&
+            lastText.label === kind &&
+            lastText.sequence < event.sequence
+        ) {
             lastText.content = `${lastText.content || ''}${content}`;
             lastText.sequence = event.sequence;
             lastText.event = event;
@@ -253,7 +262,13 @@ const activity = computed<ActivityItem[]>(() => {
         };
         items.push(lastText);
     };
-    const pushMilestone = (event: AuditEvent, title: string, label: string, tone: ActivityTone, icon: Component) => {
+    const pushMilestone = (
+        event: AuditEvent,
+        title: string,
+        label: string,
+        tone: ActivityTone,
+        icon: Component,
+    ) => {
         lastText = null;
         items.push({
             id: `milestone-${event.sequence}`,
@@ -269,11 +284,15 @@ const activity = computed<ActivityItem[]>(() => {
         });
     };
     events.value.forEach((event) => {
-        if (event.type === 'reasoning_delta') return pushText(event, 'reasoning');
-        if (event.type === 'model_output_delta') return pushText(event, 'output');
+        if (event.type === 'reasoning_delta')
+            return pushText(event, 'reasoning');
+        if (event.type === 'model_output_delta')
+            return pushText(event, 'output');
         if (event.type === 'tool_call') {
             lastText = null;
-            const callId = String(event.payload.call_id || `sequence-${event.sequence}`);
+            const callId = String(
+                event.payload.call_id || `sequence-${event.sequence}`,
+            );
             const item: ActivityItem = {
                 id: `tool-${callId}`,
                 sequence: event.sequence,
@@ -300,7 +319,9 @@ const activity = computed<ActivityItem[]>(() => {
             const item = tools.get(callId);
             if (item) {
                 item.toolState = 'completed';
-                item.output = String(event.payload.output || event.payload.content || '');
+                item.output = String(
+                    event.payload.output || event.payload.content || '',
+                );
                 item.artifactRef = event.artifact_ref;
                 item.related?.push(event);
             } else {
@@ -325,22 +346,63 @@ const activity = computed<ActivityItem[]>(() => {
         }
         if (event.type === 'finding_event') {
             lastText = null;
-            const finding = liveFindings.value.find((item) => item.event?.sequence === event.sequence);
+            const finding = liveFindings.value.find(
+                (item) => item.event?.sequence === event.sequence,
+            );
             if (finding) items.push(finding);
             return;
         }
         lastText = null;
         if (event.type === 'status') {
             const next = String(event.payload.status || '');
-            pushMilestone(event, next, 'Run status', next === 'failed' ? 'red' : 'slate', next === 'running' ? Play : next === 'completed' ? CheckCircle : XCircle);
+            pushMilestone(
+                event,
+                next,
+                'Run status',
+                next === 'failed' ? 'red' : 'slate',
+                next === 'running'
+                    ? Play
+                    : next === 'completed'
+                      ? CheckCircle
+                      : XCircle,
+            );
         } else if (event.type === 'error') {
-            pushMilestone(event, 'Errore', String(event.payload.message || eventText(event)), 'red', XCircle);
+            pushMilestone(
+                event,
+                'Errore',
+                String(event.payload.message || eventText(event)),
+                'red',
+                XCircle,
+            );
         } else if (event.type === 'usage') {
-            pushMilestone(event, 'Usage aggiornato', `${event.payload.total_tokens || 0} token`, 'slate', Gauge);
+            pushMilestone(
+                event,
+                'Usage aggiornato',
+                `${event.payload.total_tokens || 0} token`,
+                'slate',
+                Gauge,
+            );
         } else if (event.type === 'system_prompt') {
-            pushMilestone(event, 'System prompt', 'Snapshot disponibile nella tab Prompt', 'slate', Terminal);
-        } else if (event.type === 'report_published' || event.type === 'benchmark_published') {
-            pushMilestone(event, event.type === 'report_published' ? 'Report pubblicato' : 'Benchmark pubblicato', 'Artefatto disponibile', 'green', Flag);
+            pushMilestone(
+                event,
+                'System prompt',
+                'Snapshot disponibile nella tab Prompt',
+                'slate',
+                Terminal,
+            );
+        } else if (
+            event.type === 'report_published' ||
+            event.type === 'benchmark_published'
+        ) {
+            pushMilestone(
+                event,
+                event.type === 'report_published'
+                    ? 'Report pubblicato'
+                    : 'Benchmark pubblicato',
+                'Artefatto disponibile',
+                'green',
+                Flag,
+            );
         } else if (event.type === 'log') {
             pushMilestone(event, 'Log', eventText(event), 'slate', Terminal);
         }
@@ -348,35 +410,71 @@ const activity = computed<ActivityItem[]>(() => {
     return items;
 });
 
-const suspectCount = computed(() => liveFindings.value.filter((item) => item.findingState === 'suspected' || item.findingState === 'confirming').length);
-const confirmedCount = computed(() => liveFindings.value.filter((item) => item.findingState === 'confirmed').length);
-const activeToolCount = computed(() => activity.value.filter((item) => item.kind === 'tool' && item.toolState === 'running').length);
-const latestUsage = computed(() => [...events.value].reverse().find((event) => event.type === 'usage')?.payload || null);
+const suspectCount = computed(
+    () =>
+        liveFindings.value.filter(
+            (item) =>
+                item.findingState === 'suspected' ||
+                item.findingState === 'confirming',
+        ).length,
+);
+const confirmedCount = computed(
+    () =>
+        liveFindings.value.filter((item) => item.findingState === 'confirmed')
+            .length,
+);
+const activeToolCount = computed(
+    () =>
+        activity.value.filter(
+            (item) => item.kind === 'tool' && item.toolState === 'running',
+        ).length,
+);
+const latestUsage = computed(
+    () =>
+        [...events.value].reverse().find((event) => event.type === 'usage')
+            ?.payload || null,
+);
 const displayedActivities = computed(() => activity.value);
-const toneClasses = (tone: ActivityTone) => ({
-    violet: 'border-fuchsia-500/35 bg-fuchsia-500/[0.07] text-fuchsia-100',
-    cyan: 'border-cyan-500/35 bg-cyan-500/[0.07] text-cyan-50',
-    amber: 'border-amber-500/40 bg-amber-500/[0.08] text-amber-50',
-    green: 'border-emerald-500/40 bg-emerald-500/[0.08] text-emerald-50',
-    red: 'border-red-500/45 bg-red-500/[0.08] text-red-50',
-    slate: 'border-zinc-700 bg-zinc-900/70 text-zinc-200',
-}[tone]);
-const iconClasses = (tone: ActivityTone) => ({
-    violet: 'bg-fuchsia-400/15 text-fuchsia-300', cyan: 'bg-cyan-400/15 text-cyan-300',
-    amber: 'bg-amber-400/15 text-amber-300', green: 'bg-emerald-400/15 text-emerald-300',
-    red: 'bg-red-400/15 text-red-300', slate: 'bg-zinc-700 text-zinc-300',
-}[tone]);
-const toolStateLabel = (state?: ToolState) => state === 'running' ? 'In esecuzione' : state === 'failed' ? 'Errore' : 'Completato';
+const toneClasses = (tone: ActivityTone) =>
+    ({
+        violet: 'border-fuchsia-500/35 bg-fuchsia-500/[0.07] text-fuchsia-100',
+        cyan: 'border-cyan-500/35 bg-cyan-500/[0.07] text-cyan-50',
+        amber: 'border-amber-500/40 bg-amber-500/[0.08] text-amber-50',
+        green: 'border-emerald-500/40 bg-emerald-500/[0.08] text-emerald-50',
+        red: 'border-red-500/45 bg-red-500/[0.08] text-red-50',
+        slate: 'border-zinc-700 bg-zinc-900/70 text-zinc-200',
+    })[tone];
+const iconClasses = (tone: ActivityTone) =>
+    ({
+        violet: 'bg-fuchsia-400/15 text-fuchsia-300',
+        cyan: 'bg-cyan-400/15 text-cyan-300',
+        amber: 'bg-amber-400/15 text-amber-300',
+        green: 'bg-emerald-400/15 text-emerald-300',
+        red: 'bg-red-400/15 text-red-300',
+        slate: 'bg-zinc-700 text-zinc-300',
+    })[tone];
+const toolStateLabel = (state?: ToolState) =>
+    state === 'running'
+        ? 'In esecuzione'
+        : state === 'failed'
+          ? 'Errore'
+          : 'Completato';
 const findingForActivity = (item: ActivityItem) => item.finding || {};
 const scrollToLatest = () => {
     autoScroll.value = true;
     newActivityCount.value = 0;
-    window.requestAnimationFrame(() => timeline.value?.scrollTo({ top: timeline.value.scrollHeight, behavior: 'smooth' }));
+    window.requestAnimationFrame(() =>
+        timeline.value?.scrollTo({
+            top: timeline.value.scrollHeight,
+            behavior: 'smooth',
+        }),
+    );
 };
 const onTimelineScroll = () => {
     const element = timeline.value;
     if (!element) return;
-    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+    const atBottom =
+        element.scrollHeight - element.scrollTop - element.clientHeight < 48;
     if (atBottom) {
         autoScroll.value = true;
         newActivityCount.value = 0;
@@ -827,7 +925,8 @@ onBeforeUnmount(() => source?.close());
                             detection_recall: benchmark.detection?.recall,
                             detection_precision: benchmark.detection?.precision,
                             confirmation_recall: benchmark.confirmation?.recall,
-                            confirmation_precision: benchmark.confirmation?.precision,
+                            confirmation_precision:
+                                benchmark.confirmation?.precision,
                         }"
                         :key="label"
                         class="rounded-xl border bg-card p-4"

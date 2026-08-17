@@ -10,7 +10,6 @@ import { Label } from '@/components/ui/label';
 interface Preset {
     id: string;
     category: string;
-    dualAgent: boolean;
 }
 interface Benchmark {
     id: string;
@@ -30,8 +29,8 @@ const form = useForm({
     skip_health: false,
     authorized: false,
     categories: [''] as string[],
-    dual_agent: false,
     reader_model: '',
+    confirmer_model: '',
     worker_model: '',
     image: '',
     dockerfile: '',
@@ -50,7 +49,6 @@ watch(
         const preset = props.presets.find((item) => item.id === id);
         if (preset) {
             form.categories = [preset.category];
-            form.dual_agent = preset.dualAgent;
         }
     },
 );
@@ -156,7 +154,9 @@ const submit = () =>
                     >
                         <option value="">Tutte le sotto-categorie</option>
                         <option
-                            v-for="category in benchmarks.find((item) => item.id === form.benchmark_id)?.categories || []"
+                            v-for="category in benchmarks.find(
+                                (item) => item.id === form.benchmark_id,
+                            )?.categories || []"
                             :key="category"
                             :value="category"
                         >
@@ -164,7 +164,8 @@ const submit = () =>
                         </option>
                     </select>
                     <p class="mt-2 text-sm text-muted-foreground">
-                        Facoltativa: se non selezionata, il benchmark esegue tutte le sotto-categorie.
+                        Facoltativa: se non selezionata, il benchmark esegue
+                        tutte le sotto-categorie.
                     </p>
                     <InputError :message="form.errors.categories" />
                 </div>
@@ -276,12 +277,17 @@ const submit = () =>
                                 placeholder="Default configurato"
                             />
                         </div>
+                        <div>
+                            <Label>Confirmer model</Label
+                            ><Input
+                                v-model="form.confirmer_model"
+                                class="mt-2"
+                                placeholder="Default configurato"
+                            />
+                        </div>
                     </div>
                     <div class="mt-4 flex flex-wrap gap-5 text-sm">
                         <label class="flex items-center gap-2"
-                            ><input v-model="form.dual_agent" type="checkbox" />
-                            Dual-agent</label
-                        ><label class="flex items-center gap-2"
                             ><input v-model="form.test" type="checkbox" />
                             Test/debug e reasoning</label
                         ><label class="flex items-center gap-2"
@@ -289,7 +295,6 @@ const submit = () =>
                             Mantieni sandbox</label
                         >
                     </div>
-                    <InputError :message="form.errors.dual_agent" />
                 </section>
 
                 <details class="rounded-xl border bg-card p-5">

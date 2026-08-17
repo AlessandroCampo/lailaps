@@ -24,8 +24,8 @@ class StoreAuditRunRequest extends FormRequest
             'authorized' => ['boolean'],
             'categories' => ['array', 'max:2'],
             'categories.*' => ['string', 'max:160', 'distinct'],
-            'dual_agent' => ['boolean'],
             'reader_model' => ['nullable', 'string', 'max:255'],
+            'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
             'image' => ['nullable', 'string', 'max:255'],
             'dockerfile' => ['nullable', 'string', 'max:2048'],
@@ -65,9 +65,6 @@ class StoreAuditRunRequest extends FormRequest
                     $validator->errors()->add('authorized', 'Devi attestare di essere autorizzato.');
                 }
             }
-            if (count((array) $this->input('categories', [])) > 1 && ! $this->boolean('dual_agent')) {
-                $validator->errors()->add('dual_agent', 'Due categorie richiedono la modalità dual-agent.');
-            }
             if ($this->filled('path') && ! $this->sourcePathAllowed((string) $this->input('path'))) {
                 $validator->errors()->add('path', 'Il path non esiste o non rientra nelle radici consentite.');
             }
@@ -80,7 +77,7 @@ class StoreAuditRunRequest extends FormRequest
         return array_replace([
             'preset' => null, 'path' => null, 'target_mode' => 'sandbox', 'url' => null,
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
-            'categories' => [], 'dual_agent' => false, 'reader_model' => null,
+            'categories' => [], 'reader_model' => null, 'confirmer_model' => null,
             'worker_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 1800,
             'test' => true, 'keep' => false, 'benchmark_id' => null,

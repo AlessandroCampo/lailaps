@@ -21,13 +21,13 @@ final class BenchmarkRun extends Command
         {--category= : Sotto-categoria benchmark opzionale (es. sqli); default tutte}
         {--skip-health : Salta health check del target remoto}
         {--assume-authorized=true : Conferma autorizzazione per target non locale}
-        {--dual-agent : Separa reader white-box e worker di conferma}
-        {--reader-model= : Modello OpenRouter per il reader dual-agent}
-        {--worker-model= : Modello OpenRouter per il worker dual-agent}
+        {--reader-model= : Modello OpenRouter per il Reader}
+        {--confirmer-model= : Modello OpenRouter per il Confirmer}
+        {--worker-model= : Modello OpenRouter per il Worker}
         {--tool-output=true : Mostra chiamate e risposte dei tool durante la run}
         {--audit-id= : ID della suite}
         {--keep=true : Mantiene le sandbox avviate}
-        {--no-test : Disabilita rebuild e reasoning diagnostico dellâ€™agente}
+        {--no-test : Disabilita rebuild e reasoning diagnostico dell’agente}
         {--test : Ricostruisce l’immagine dell’agente}';
 
     protected $description = 'Esegue benchmark statici con contract lailaps.benchmark';
@@ -90,8 +90,8 @@ final class BenchmarkRun extends Command
                 '--path' => $agentSource,
                 '--audit-id' => $childAuditId,
                 '--category' => ['A05:2025 Injection'],
-                '--dual-agent' => (bool) $this->option('dual-agent'),
                 '--reader-model' => $this->option('reader-model'),
+                '--confirmer-model' => $this->option('confirmer-model'),
                 '--worker-model' => $this->option('worker-model'),
                 '--tool-output' => $this->enabledOption('tool-output'),
                 '--keep' => $this->enabledOption('keep'),
