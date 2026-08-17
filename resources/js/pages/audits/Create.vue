@@ -16,6 +16,7 @@ interface Benchmark {
     id: string;
     name: string;
     category?: string;
+    categories: string[];
 }
 const props = defineProps<{ presets: Preset[]; benchmarks: Benchmark[] }>();
 const form = useForm({
@@ -51,6 +52,12 @@ watch(
             form.categories = [preset.category];
             form.dual_agent = preset.dualAgent;
         }
+    },
+);
+watch(
+    () => form.benchmark_id,
+    () => {
+        form.categories = [''];
     },
 );
 const submit = () =>
@@ -140,6 +147,27 @@ const submit = () =>
                     Il catalogo real-world è vuoto.
                 </p>
                 <InputError :message="form.errors.benchmark_id" />
+                <div v-if="form.benchmark_id" class="mt-4">
+                    <Label for="benchmark-category">Sotto-categoria</Label>
+                    <select
+                        id="benchmark-category"
+                        v-model="form.categories[0]"
+                        class="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                        <option value="">Tutte le sotto-categorie</option>
+                        <option
+                            v-for="category in benchmarks.find((item) => item.id === form.benchmark_id)?.categories || []"
+                            :key="category"
+                            :value="category"
+                        >
+                            {{ category }}
+                        </option>
+                    </select>
+                    <p class="mt-2 text-sm text-muted-foreground">
+                        Facoltativa: se non selezionata, il benchmark esegue tutte le sotto-categorie.
+                    </p>
+                    <InputError :message="form.errors.categories" />
+                </div>
             </section>
 
             <template v-else>

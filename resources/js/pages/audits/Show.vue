@@ -3,20 +3,33 @@ import { Head, Link, router } from '@inertiajs/vue3';
 import {
     AlertTriangle,
     ArrowLeft,
+    ArrowDown,
     Ban,
-    Braces,
+    Brain,
+    Bot,
+    CheckCircle,
     Copy,
+    Eye,
     FileJson,
+    Flag,
     Gauge,
+    LoaderCircle,
+    Pause,
     Play,
+    Radio,
     RotateCcw,
     ShieldAlert,
+    ShieldCheck,
+    ShieldQuestion,
     Terminal,
     Trash2,
+    Wrench,
+    XCircle,
 } from '@lucide/vue';
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, type Component } from 'vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import LiveRunWorkspace from '@/components/audits/LiveRunWorkspace.vue';
 import type {
     AuditArtifact,
     AuditEvent,
@@ -40,7 +53,38 @@ const roleFilter = ref('all');
 const autoScroll = ref(true);
 const visibleLimit = ref(600);
 const timeline = ref<HTMLElement | null>(null);
+const showRaw = ref(false);
+const rawVisibleLimit = ref(600);
+const newActivityCount = ref(0);
 let source: EventSource | null = null;
+
+type ActivityKind = 'text' | 'tool' | 'finding' | 'milestone';
+type ActivityTone = 'violet' | 'cyan' | 'amber' | 'green' | 'red' | 'slate';
+type ToolState = 'running' | 'completed' | 'failed';
+
+interface ActivityItem {
+    id: string;
+    sequence: number;
+    kind: ActivityKind;
+    title: string;
+    label: string;
+    content?: string;
+    tone: ActivityTone;
+    icon: Component;
+    role?: string | null;
+    category?: string | null;
+    event?: AuditEvent;
+    toolName?: string;
+    toolState?: ToolState;
+    callId?: string | null;
+    arguments?: unknown;
+    output?: string;
+    artifactRef?: string | null;
+    findingId?: string;
+    findingState?: string;
+    finding?: Record<string, any>;
+    related?: AuditEvent[];
+}
 
 const terminal = computed(() =>
     ['completed', 'failed', 'cancelled'].includes(status.value),
@@ -61,9 +105,10 @@ const matchingEvents = computed(() =>
             (roleFilter.value === 'all' || event.role === roleFilter.value),
     ),
 );
-const filteredEvents = computed(() =>
-    matchingEvents.value.slice(-visibleLimit.value),
+const rawEvents = computed(() =>
+    matchingEvents.value.slice(-rawVisibleLimit.value),
 );
+const filteredEvents = computed(() => matchingEvents.value.slice(-visibleLimit.value));
 const prompts = computed(() =>
     events.value.filter((event) => event.type === 'system_prompt'),
 );
@@ -99,8 +144,8 @@ const eventTitle = (event: AuditEvent) =>
         : event.type === 'tool_result'
           ? `Risultato · ${String(event.payload.name || 'tool')}`
           : event.type.replaceAll('_', ' ');
-const artifactUrl = (path: string) =>
-    `/audits/${props.run.id}/artifacts/${path.split('/').map(encodeURIComponent).join('/')}`;
+const artifactUrl = (path?: string | null) =>
+    `/audits/${props.run.id}/artifacts/${(path || '').split('/').map(encodeURIComponent).join('/')}`;
 const fmtBytes = (bytes: number) =>
     bytes < 1024
         ? `${bytes} B`
@@ -109,6 +154,234 @@ const fmtBytes = (bytes: number) =>
           : `${(bytes / 1048576).toFixed(1)} MB`;
 const isLive = (value: string) =>
     ['queued', 'preparing', 'running', 'finalizing'].includes(value);
+
+const payloadText = (value: unknown) =>
+    typeof value === 'string'
+        ? value
+        : JSON.stringify(value ?? {}, null, 2);
+const findingEventName = (event: AuditEvent) =>
+    String(event.payload.event || event.payload.type || 'finding_event');
+const findingPayload = (event: AuditEvent) =>
+    (event.payload.payload as Record<string, any> | undefined) ||
+    event.payload;
+const findingStateFromEvent = (event: AuditEvent) => {
+    const name = findingEventName(event);
+    if (name.includes('confirmed')) return 'confirmed';
+    if (name.includes('reject') || name.includes('block')) return 'rejected';
+    if (name.includes('confirmation')) return 'confirming';
+    return 'suspected';
+};
+
+const liveFindings = computed(() => {
+    const byId = new Map<string, ActivityItem>();
+    events.value
+        .filter((event) => event.type === 'finding_event')
+        .forEach((event) => {
+            const payload = findingPayload(event);
+            const findingId = String(
+                event.payload.candidate_id ||
+                    payload.finding_id ||
+                    `event-${event.sequence}`,
+            );
+            const state = findingStateFromEvent(event);
+            const previous = byId.get(findingId);
+            byId.set(findingId, {
+                id: `finding-${findingId}`,
+                sequence: event.sequence,
+                kind: 'finding',
+                title: String(payload.title || findingId),
+                label:
+                    state === 'confirmed'
+                        ? 'Confirmed via HTTP'
+                        : state === 'confirming'
+                          ? 'Verifica in corso'
+                          : state === 'rejected'
+                            ? 'Non confermato'
+                            : 'Suspect · da verificare',
+                tone:
+                    state === 'confirmed'
+                        ? 'green'
+                        : state === 'rejected'
+                          ? 'slate'
+                          : 'amber',
+                icon:
+                    state === 'confirmed'
+                        ? ShieldCheck
+                        : state === 'rejected'
+                          ? XCircle
+                          : ShieldQuestion,
+                category: event.category,
+                role: event.role,
+                event,
+                findingId,
+                findingState: state,
+                finding: {
+                    ...(previous?.finding || {}),
+                    ...payload,
+                    status: state,
+                },
+            });
+        });
+    return [...byId.values()].sort((a, b) => a.sequence - b.sequence);
+});
+
+const activity = computed<ActivityItem[]>(() => {
+    const items: ActivityItem[] = [];
+    const tools = new Map<string, ActivityItem>();
+    let lastText: ActivityItem | null = null;
+    const pushText = (event: AuditEvent, kind: 'reasoning' | 'output') => {
+        const content = String(event.payload.content || '');
+        if (!content) return;
+        if (lastText && lastText.label === kind && lastText.sequence < event.sequence) {
+            lastText.content = `${lastText.content || ''}${content}`;
+            lastText.sequence = event.sequence;
+            lastText.event = event;
+            return;
+        }
+        lastText = {
+            id: `${kind}-${event.sequence}`,
+            sequence: event.sequence,
+            kind: 'text',
+            title: kind === 'reasoning' ? 'Reasoning' : 'Model output',
+            label: kind,
+            content,
+            tone: kind === 'reasoning' ? 'violet' : 'cyan',
+            icon: kind === 'reasoning' ? Brain : Bot,
+            role: event.role,
+            category: event.category,
+            event,
+        };
+        items.push(lastText);
+    };
+    const pushMilestone = (event: AuditEvent, title: string, label: string, tone: ActivityTone, icon: Component) => {
+        lastText = null;
+        items.push({
+            id: `milestone-${event.sequence}`,
+            sequence: event.sequence,
+            kind: 'milestone',
+            title,
+            label,
+            tone,
+            icon,
+            event,
+            role: event.role,
+            category: event.category,
+        });
+    };
+    events.value.forEach((event) => {
+        if (event.type === 'reasoning_delta') return pushText(event, 'reasoning');
+        if (event.type === 'model_output_delta') return pushText(event, 'output');
+        if (event.type === 'tool_call') {
+            lastText = null;
+            const callId = String(event.payload.call_id || `sequence-${event.sequence}`);
+            const item: ActivityItem = {
+                id: `tool-${callId}`,
+                sequence: event.sequence,
+                kind: 'tool',
+                title: String(event.payload.name || 'Tool call'),
+                label: 'Tool call',
+                tone: 'amber',
+                icon: Wrench,
+                role: event.role,
+                category: event.category,
+                event,
+                toolName: String(event.payload.name || 'tool'),
+                toolState: 'running',
+                callId,
+                arguments: event.payload.arguments,
+                related: [event],
+            };
+            tools.set(callId, item);
+            items.push(item);
+            return;
+        }
+        if (event.type === 'tool_result') {
+            const callId = String(event.payload.call_id || '');
+            const item = tools.get(callId);
+            if (item) {
+                item.toolState = 'completed';
+                item.output = String(event.payload.output || event.payload.content || '');
+                item.artifactRef = event.artifact_ref;
+                item.related?.push(event);
+            } else {
+                items.push({
+                    id: `tool-result-${event.sequence}`,
+                    sequence: event.sequence,
+                    kind: 'tool',
+                    title: String(event.payload.name || 'Tool result'),
+                    label: 'Tool result',
+                    tone: 'green',
+                    icon: CheckCircle,
+                    event,
+                    toolName: String(event.payload.name || 'tool'),
+                    toolState: 'completed',
+                    callId: event.payload.call_id as string | null,
+                    output: String(event.payload.output || ''),
+                    artifactRef: event.artifact_ref,
+                    related: [event],
+                });
+            }
+            return;
+        }
+        if (event.type === 'finding_event') {
+            lastText = null;
+            const finding = liveFindings.value.find((item) => item.event?.sequence === event.sequence);
+            if (finding) items.push(finding);
+            return;
+        }
+        lastText = null;
+        if (event.type === 'status') {
+            const next = String(event.payload.status || '');
+            pushMilestone(event, next, 'Run status', next === 'failed' ? 'red' : 'slate', next === 'running' ? Play : next === 'completed' ? CheckCircle : XCircle);
+        } else if (event.type === 'error') {
+            pushMilestone(event, 'Errore', String(event.payload.message || eventText(event)), 'red', XCircle);
+        } else if (event.type === 'usage') {
+            pushMilestone(event, 'Usage aggiornato', `${event.payload.total_tokens || 0} token`, 'slate', Gauge);
+        } else if (event.type === 'system_prompt') {
+            pushMilestone(event, 'System prompt', 'Snapshot disponibile nella tab Prompt', 'slate', Terminal);
+        } else if (event.type === 'report_published' || event.type === 'benchmark_published') {
+            pushMilestone(event, event.type === 'report_published' ? 'Report pubblicato' : 'Benchmark pubblicato', 'Artefatto disponibile', 'green', Flag);
+        } else if (event.type === 'log') {
+            pushMilestone(event, 'Log', eventText(event), 'slate', Terminal);
+        }
+    });
+    return items;
+});
+
+const suspectCount = computed(() => liveFindings.value.filter((item) => item.findingState === 'suspected' || item.findingState === 'confirming').length);
+const confirmedCount = computed(() => liveFindings.value.filter((item) => item.findingState === 'confirmed').length);
+const activeToolCount = computed(() => activity.value.filter((item) => item.kind === 'tool' && item.toolState === 'running').length);
+const latestUsage = computed(() => [...events.value].reverse().find((event) => event.type === 'usage')?.payload || null);
+const displayedActivities = computed(() => activity.value);
+const toneClasses = (tone: ActivityTone) => ({
+    violet: 'border-fuchsia-500/35 bg-fuchsia-500/[0.07] text-fuchsia-100',
+    cyan: 'border-cyan-500/35 bg-cyan-500/[0.07] text-cyan-50',
+    amber: 'border-amber-500/40 bg-amber-500/[0.08] text-amber-50',
+    green: 'border-emerald-500/40 bg-emerald-500/[0.08] text-emerald-50',
+    red: 'border-red-500/45 bg-red-500/[0.08] text-red-50',
+    slate: 'border-zinc-700 bg-zinc-900/70 text-zinc-200',
+}[tone]);
+const iconClasses = (tone: ActivityTone) => ({
+    violet: 'bg-fuchsia-400/15 text-fuchsia-300', cyan: 'bg-cyan-400/15 text-cyan-300',
+    amber: 'bg-amber-400/15 text-amber-300', green: 'bg-emerald-400/15 text-emerald-300',
+    red: 'bg-red-400/15 text-red-300', slate: 'bg-zinc-700 text-zinc-300',
+}[tone]);
+const toolStateLabel = (state?: ToolState) => state === 'running' ? 'In esecuzione' : state === 'failed' ? 'Errore' : 'Completato';
+const findingForActivity = (item: ActivityItem) => item.finding || {};
+const scrollToLatest = () => {
+    autoScroll.value = true;
+    newActivityCount.value = 0;
+    window.requestAnimationFrame(() => timeline.value?.scrollTo({ top: timeline.value.scrollHeight, behavior: 'smooth' }));
+};
+const onTimelineScroll = () => {
+    const element = timeline.value;
+    if (!element) return;
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+    if (atBottom) {
+        autoScroll.value = true;
+        newActivityCount.value = 0;
+    } else autoScroll.value = false;
+};
 
 const connect = () => {
     if (!isLive(status.value)) return;
@@ -164,6 +437,7 @@ const connect = () => {
                         behavior: 'smooth',
                     }),
                 );
+            else newActivityCount.value += 1;
         }),
     );
 };
@@ -272,8 +546,16 @@ onBeforeUnmount(() => source?.close());
             </button>
         </nav>
 
-        <section
+        <LiveRunWorkspace
             v-if="tab === 'Live'"
+            :run="run"
+            :events="events"
+            :status="status"
+            :terminal="terminal"
+        />
+
+        <section
+            v-if="false && tab === 'Live'"
             class="grid min-h-[620px] gap-4 lg:grid-cols-[1fr_280px]"
         >
             <div
@@ -542,14 +824,10 @@ onBeforeUnmount(() => source?.close());
                 <div class="grid gap-3 sm:grid-cols-4">
                     <div
                         v-for="(value, label) in {
-                            score:
-                                benchmark.score?.points ??
-                                benchmark.metrics?.recall,
-                            recall:
-                                benchmark.score?.detection_recall ??
-                                benchmark.metrics?.recall,
-                            confirmation: benchmark.score?.confirmation_recall,
-                            precision: benchmark.metrics?.precision,
+                            detection_recall: benchmark.detection?.recall,
+                            detection_precision: benchmark.detection?.precision,
+                            confirmation_recall: benchmark.confirmation?.recall,
+                            confirmation_precision: benchmark.confirmation?.precision,
                         }"
                         :key="label"
                         class="rounded-xl border bg-card p-4"

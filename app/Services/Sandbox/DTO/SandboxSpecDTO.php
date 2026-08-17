@@ -19,6 +19,10 @@ final class SandboxSpecDTO
         public int $ttlSeconds = 1800,
         /** Override del servizio HTTP, scavalca l'euristica del resolver. */
         public ?string $webService = null,
+        /** Prefisso dell'applicazione pubblicata, per esempio "/benchmark". */
+        public ?string $basePath = null,
+        /** Endpoint applicativo relativo alla base che deve rispondere 2xx/3xx. */
+        public ?string $healthPath = null,
         public int $healthTimeout = 60,
         /** Immagine già pronta (viene pullata se assente in locale). */
         public ?string $image = null,
@@ -49,6 +53,13 @@ final class SandboxSpecDTO
             throw new InvalidArgumentException('ttlSeconds deve essere positivo');
         }
 
+        if ($healthTimeout < 1) {
+            throw new InvalidArgumentException('healthTimeout deve essere positivo');
+        }
+
+        $this->basePath = $this->normalizePath($basePath, 'basePath');
+        $this->healthPath = $this->normalizePath($healthPath, 'healthPath');
+
         $this->projectPath = rtrim(str_replace('\\', '/', (string) realpath($projectPath)), '/');
 
         if ($composeFile !== null) {
@@ -58,6 +69,20 @@ final class SandboxSpecDTO
             }
             $this->composeFile = str_replace('\\', '/', $resolved);
         }
+    }
+
+    private function normalizePath(?string $path, string $name): ?string
+    {
+        if ($path === null) {
+            return null;
+        }
+
+        $path = trim($path);
+        if ($path === '' || preg_match('#^[a-z][a-z0-9+.-]*://#i', $path)) {
+            throw new InvalidArgumentException("{$name} deve essere un path relativo non vuoto.");
+        }
+
+        return '/'.trim($path, '/');
     }
 
     public function projectName(): string

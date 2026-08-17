@@ -20,11 +20,15 @@ services:
       # sulla sua porta interna (80), non la 8080 pubblicata sull'host.
       ALLOWED_BASE_URL: http://dvwa
       SOURCE_ROOT: /code
+      CODEBASE_MEMORY_CACHE_ROOT: /cbm-cache
+      CODEBASE_MEMORY_NATIVE_CACHE_DIR: /opt/codebase-memory-launcher-cache
     volumes:
       # La codebase da analizzare, in sola lettura. Punta AGENT_SOURCE_ROOT a ciò che
       # vuoi analizzare (default: la cartella target/ del repo). Deve corrispondere
       # all'app servita da ALLOWED_BASE_URL perché il match statico↔dinamico abbia senso.
       - ${AGENT_SOURCE_ROOT:-../target}:/code:ro
+      # Indici separati per audit id; mai scritti nel target o nel piccolo /tmp.
+      - cbm-cache:/cbm-cache
       # MVP locale: il client Python usa Docker per creare il toolbox isolato e
       # fare exec SOLO sul container target fissato da Laravel. Da rimuovere
       # quando verra' introdotto il broker di produzione.
@@ -33,3 +37,6 @@ services:
       # (uv installa il progetto in editable, quindi le modifiche a src/ sono live).
       # Scommenta per sviluppare:
       # - ./pentest-agent/src:/app/src
+
+volumes:
+  cbm-cache:

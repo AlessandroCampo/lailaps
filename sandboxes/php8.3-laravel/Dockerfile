@@ -3,7 +3,8 @@ ARG PHP_VERSION=8.3
 FROM php:${PHP_VERSION}-fpm
 
 RUN apt-get update && apt-get install -y \
-    git unzip libzip-dev libpng-dev libonig-dev libxml2-dev \
+    git unzip libzip-dev libpng-dev libjpeg62-turbo-dev libfreetype6-dev \
+    libonig-dev libxml2-dev libicu-dev \
     && docker-php-ext-install pdo_mysql mbstring zip bcmath gd intl \
     && rm -rf /var/lib/apt/lists/*
 

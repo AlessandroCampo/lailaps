@@ -79,19 +79,19 @@ const metric = (run: Compared, path: string[]) =>
                 <tbody>
                     <tr
                         v-for="row in [
-                            { l: 'Score', p: ['score', 'points'] },
                             {
                                 l: 'Detection recall',
-                                p: ['score', 'detection_recall'],
+                                p: ['detection', 'recall'],
                             },
                             {
                                 l: 'Confirmation recall',
-                                p: ['score', 'confirmation_recall'],
+                                p: ['confirmation', 'recall'],
                             },
-                            { l: 'Precision', p: ['metrics', 'precision'] },
+                            { l: 'Detection precision', p: ['detection', 'precision'] },
+                            { l: 'Detection F1', p: ['detection', 'f1'] },
                             { l: 'Token', p: ['cost', 'total_tokens'] },
                             { l: 'Tool call', p: ['cost', 'tool_calls'] },
-                            { l: 'HTTP', p: ['cost', 'http_network_requests'] },
+                            { l: 'HTTP', p: ['cost', 'http_requests'] },
                         ]"
                         :key="row.l"
                         class="border-t"

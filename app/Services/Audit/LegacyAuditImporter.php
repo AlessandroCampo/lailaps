@@ -29,7 +29,7 @@ final class LegacyAuditImporter
                 'id' => (string) Str::ulid(),
                 'user_id' => $user->id,
                 'audit_id' => $auditId,
-                'type' => is_file($artifacts.DIRECTORY_SEPARATOR.'benchmark.json') || is_file($artifacts.DIRECTORY_SEPARATOR.'benchmark-score.json') ? 'benchmark' : 'audit',
+                'type' => is_file($artifacts.DIRECTORY_SEPARATOR.'benchmark.json') ? 'benchmark' : 'audit',
                 'status' => AuditRunStatus::Completed,
                 'parameters' => ['legacy' => true, 'unknown' => true],
                 'artifact_path' => str_replace('\\', '/', $artifacts),

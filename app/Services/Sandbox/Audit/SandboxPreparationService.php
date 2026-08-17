@@ -36,6 +36,13 @@ final class SandboxPreparationService
         foreach ($profile->readiness as $index => $step) {
             $this->runStep($client, $sandbox, $step, $variables, "readiness[{$index}]");
         }
+
+        // Contratto esplicito del progetto: una route che esegue una query o
+        // un comando nel container. Un fallimento blocca la run prima
+        // dell'avvio dell'agente.
+        foreach ($profile->database as $index => $step) {
+            $this->runStep($client, $sandbox, $step, $variables, "database[{$index}]");
+        }
     }
 
     /**

@@ -16,11 +16,15 @@ final readonly class AuditProfile
     /**
      * @param  array<int, array<string, mixed>>  $setup
      * @param  array<int, array<string, mixed>>  $readiness
+     * @param  array<int, array<string, mixed>>  $database
      */
     public function __construct(
         public ?string $service,
+        public ?string $basePath,
+        public ?string $healthPath,
         public array $setup,
         public array $readiness,
+        public array $database,
     ) {}
 
     public static function fromProject(string $projectPath): self
@@ -38,7 +42,8 @@ final readonly class AuditProfile
             if (! $missingAllowed) {
                 throw new InvalidArgumentException("Profilo audit inesistente: {$path}");
             }
-            return new self(null, [], []);
+
+            return new self(null, null, null, [], [], []);
         }
         $path = $resolved;
 
@@ -62,16 +67,35 @@ final readonly class AuditProfile
             throw new InvalidArgumentException("Profilo audit non valido ({$path}): target.service deve essere una stringa non vuota.");
         }
 
+        $basePath = self::relativePath($target['base_path'] ?? null, 'target.base_path', $path);
+        $healthPath = self::relativePath($target['health_path'] ?? null, 'target.health_path', $path);
+
         return new self(
             $service !== null ? trim($service) : null,
+            $basePath,
+            $healthPath,
             self::steps($raw['setup'] ?? [], 'setup', $path),
             self::steps($raw['readiness'] ?? [], 'readiness', $path),
+            self::steps($raw['database'] ?? [], 'database', $path),
         );
+    }
+
+    private static function relativePath(mixed $value, string $name, string $path): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_string($value) || trim($value) === '' || preg_match('#^[a-z][a-z0-9+.-]*://#i', $value)) {
+            throw new InvalidArgumentException("Profilo audit non valido ({$path}): {$name} deve essere un path relativo non vuoto.");
+        }
+
+        return '/'.trim($value, '/');
     }
 
     public function hasPreparation(): bool
     {
-        return $this->setup !== [] || $this->readiness !== [];
+        return $this->setup !== [] || $this->readiness !== [] || $this->database !== [];
     }
 
     /** @return array<int, array<string, mixed>> */

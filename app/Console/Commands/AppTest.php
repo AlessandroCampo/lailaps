@@ -16,7 +16,7 @@ final class AppTest extends Command
                             {--test : Mantiene la modalità test (attiva per default)}
                             {--no-test : Disabilita la modalità test}
                             {--ttl=1800 : Durata massima della sandbox in secondi}
-                            {--keep : Non smontare la sandbox a fine run}';
+                            {--keep=true : Non smontare la sandbox a fine run}';
 
     protected $description = 'Esegue il pentest sul progetto selezionato usando pentest:run';
 
@@ -50,6 +50,25 @@ final class AppTest extends Command
     {
         $project = (string) $this->argument('project');
 
+        if ($project === 'owasp-benchmark-java') {
+            $category = $this->option('category');
+            $this->info($category
+                ? "Avvio OWASP Java benchmark sulla sotto-categoria {$category}..."
+                : 'Avvio OWASP Java su tutte le sotto-categorie...');
+
+            $parameters = [
+                'target-id' => $project,
+                '--path' => base_path('targets/'.$project),
+                '--keep' => $this->enabledOption('keep'),
+                '--test' => ! $this->option('no-test'),
+            ];
+            if ($category) {
+                $parameters['--category'] = $category;
+            }
+
+            return Artisan::call('benchmark:run', $parameters, $this->output);
+        }
+
         try {
             $parameters = $this->parametersFor($project);
         } catch (InvalidArgumentException $exception) {
@@ -80,7 +99,7 @@ final class AppTest extends Command
             '--category' => [$this->option('category') ?: $config['category']],
             '--ttl' => (int) ($this->option('ttl') ?: 1800),
             '--test' => ! $this->option('no-test'),
-            '--keep' => (bool) $this->option('keep'),
+            '--keep' => $this->enabledOption('keep'),
         ];
 
         if (isset($config['image'])) {
@@ -100,5 +119,18 @@ final class AppTest extends Command
         $parameters['--dual-agent'] = $dualAgent;
 
         return $parameters;
+    }
+
+    private function enabledOption(string $name): bool
+    {
+        $value = $this->option($name);
+        if ($value === null) {
+            return true;
+        }
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOL);
     }
 }

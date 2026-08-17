@@ -9,7 +9,7 @@ use App\Services\Audit\AuditCommandBuilder;
 use App\Services\Audit\AuditEventRecorder;
 use App\Services\Audit\AuditRunFactory;
 use App\Services\Audit\LegacyAuditImporter;
-use App\Services\Pentest\RealWorldBenchmarkCatalog;
+use App\Services\Pentest\BenchmarkCatalog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
@@ -28,7 +28,7 @@ final class AuditRunController extends Controller
         return Inertia::render('audits/Index', ['runs' => $runs]);
     }
 
-    public function create(RealWorldBenchmarkCatalog $catalog): Response
+    public function create(BenchmarkCatalog $catalog): Response
     {
         return Inertia::render('audits/Create', [
             'presets' => collect(AuditCommandBuilder::PRESETS)->map(fn (array $preset, string $id) => [
@@ -36,7 +36,14 @@ final class AuditRunController extends Controller
                 'category' => $preset['category'],
                 'dualAgent' => $preset['dual_agent'],
             ])->values(),
-            'benchmarks' => $catalog->all(),
+            'benchmarks' => collect($catalog->all())
+                ->groupBy('target_id')
+                ->map(fn ($manifests, string $targetId) => [
+                    'id' => $targetId,
+                    'name' => $targetId,
+                    'categories' => $manifests->pluck('category')->unique()->values(),
+                ])
+                ->values(),
         ]);
     }
 
@@ -63,7 +70,7 @@ final class AuditRunController extends Controller
             ],
             'initialEvents' => $events,
             'report' => $this->jsonArtifact($audit, 'report.json'),
-            'benchmark' => $this->jsonArtifact($audit, 'benchmark-score.json') ?? $this->jsonArtifact($audit, 'benchmark.json'),
+            'benchmark' => $this->jsonArtifact($audit, 'benchmark.json'),
             'artifacts' => $this->artifacts($audit),
         ]);
     }
@@ -163,7 +170,7 @@ final class AuditRunController extends Controller
     private function summary(AuditRun $run): array
     {
         $report = $this->jsonArtifact($run, 'report.json') ?? [];
-        $benchmark = $this->jsonArtifact($run, 'benchmark-score.json') ?? $this->jsonArtifact($run, 'benchmark.json') ?? [];
+        $benchmark = $this->jsonArtifact($run, 'benchmark.json') ?? [];
 
         return [
             'id' => $run->id,

@@ -38,9 +38,11 @@ class SandboxService
                 ?? throw new RuntimeException('Il container selezionato non pubblica porte');
 
             $projectName = $spec->projectName();
-            $url = "http://{$port['ip']}:{$port['public']}";
+            $origin = "http://{$port['ip']}:{$port['public']}";
+            $url = $this->appendPath($origin, $spec->basePath);
+            $healthUrl = $this->appendPath($url, $spec->healthPath);
 
-            $this->waitUntilHealthy($url, $spec->healthTimeout);
+            $this->waitUntilHealthy($healthUrl, $spec->healthTimeout);
 
             return new SandboxDTO(
                 auditId: $spec->auditId,
@@ -55,7 +57,6 @@ class SandboxService
                 expiresAt: $spec->expiresAt(),
             );
         } catch (Throwable $e) {
-            dump($e->getMessage());
             rescue(fn () => $driver->destroy($spec->auditId), report: false);
 
             throw $e;
@@ -139,14 +140,18 @@ class SandboxService
 
         while (now()->lessThan($deadline)) {
             try {
-                $response = Http::timeout(30)->withoutRedirecting()->get($url);
-                dump($response);
-                // anche un 5xx applicativo va bene: significa che un web server c'è
-                if ($response->status() < 500 || $response->status() === 502) {
+                $response = Http::connectTimeout(2)
+                    ->timeout(min(5, $timeoutSeconds))
+                    ->withoutRedirecting()
+                    ->get($url);
+                // Readiness applicativa: un semplice listener HTTP (404/5xx) non basta.
+                $status = $response->status();
+                if ($status >= 200 && $status < 400) {
                     return;
                 }
 
-                $lastError = "HTTP {$response->status()}";
+                $excerpt = trim(preg_replace('/\s+/', ' ', strip_tags($response->body())) ?? '');
+                $lastError = "HTTP {$status}".($excerpt !== '' ? ': '.mb_substr($excerpt, 0, 200) : '');
             } catch (Throwable $e) {
                 $lastError = $e->getMessage();
             }
@@ -155,5 +160,14 @@ class SandboxService
         }
 
         throw new RuntimeException("Healthcheck fallito su {$url}: {$lastError}");
+    }
+
+    protected function appendPath(string $url, ?string $path): string
+    {
+        if ($path === null || $path === '/') {
+            return rtrim($url, '/').'/';
+        }
+
+        return rtrim($url, '/').'/'.ltrim($path, '/');
     }
 }

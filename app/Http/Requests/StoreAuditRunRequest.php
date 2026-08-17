@@ -48,6 +48,9 @@ class StoreAuditRunRequest extends FormRequest
                 if (! $this->filled('benchmark_id')) {
                     $validator->errors()->add('benchmark_id', 'Seleziona un benchmark.');
                 }
+                if (count((array) $this->input('categories', [])) > 1) {
+                    $validator->errors()->add('categories', 'Puoi selezionare una sola sotto-categoria per benchmark.');
+                }
 
                 return;
             }

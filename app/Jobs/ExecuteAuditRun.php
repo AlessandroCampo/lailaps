@@ -145,7 +145,7 @@ final class ExecuteAuditRun implements ShouldQueue
 
     private function publishArtifacts(AuditRun $run, AuditEventRecorder $events): void
     {
-        foreach (['report.json' => 'report_published', 'benchmark.json' => 'benchmark_published', 'benchmark-score.json' => 'benchmark_published'] as $file => $type) {
+        foreach (['report.json' => 'report_published', 'benchmark.json' => 'benchmark_published'] as $file => $type) {
             if (is_file(rtrim((string) $run->artifact_path, '/').'/'.$file)) {
                 $events->record($run, $type, ['file' => $file], artifactRef: $file);
             }

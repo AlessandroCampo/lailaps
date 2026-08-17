@@ -6,6 +6,8 @@ use App\Models\AuditRun;
 
 final class AuditCommandBuilder
 {
+    private const UNBIASED_BENCHMARK_PRESETS = ['owasp-benchmark-java'];
+
     /** @var array<string, array<string, mixed>> */
     public const PRESETS = [
         'juice-shop' => ['path' => 'targets/juice-shop', 'image' => 'bkimminich/juice-shop:latest', 'port' => 3000, 'category' => 'A01:2025 Broken Access Control', 'dual_agent' => true],
@@ -19,8 +21,36 @@ final class AuditCommandBuilder
     {
         $p = $run->parameters;
         $argv = [PHP_BINARY, base_path('artisan')];
-        if ($run->type === 'benchmark') {
-            return [...$argv, 'benchmark:run', (string) $p['benchmark_id'], '--audit-id='.$run->audit_id, ...($p['keep'] ? ['--keep'] : [])];
+        $benchmarkId = $p['benchmark_id'] ?? (
+            in_array($p['preset'] ?? null, self::UNBIASED_BENCHMARK_PRESETS, true)
+                ? $p['preset']
+                : null
+        );
+        if ($benchmarkId !== null) {
+            $command = [
+                ...$argv,
+                'benchmark:run',
+                (string) $benchmarkId,
+                '--audit-id='.$run->audit_id,
+                ...($p['keep'] ? ['--keep'] : []),
+                ...($p['test'] ? ['--test'] : []),
+            ];
+            foreach ((array) ($p['categories'] ?? []) as $category) {
+                if ($category) {
+                    $command[] = '--category='.$category;
+                }
+            }
+            $this->value($command, 'url', $p['url'] ?? null);
+            $this->value($command, 'db', $p['db'] ?? null);
+            $this->value($command, 'health-path', $p['health_path'] ?? null);
+            if ((bool) ($p['skip_health'] ?? false)) {
+                $command[] = '--skip-health';
+            }
+            if ((bool) ($p['authorized'] ?? false)) {
+                $command[] = '--assume-authorized';
+            }
+
+            return $command;
         }
 
         $preset = isset($p['preset']) ? (self::PRESETS[$p['preset']] ?? []) : [];
