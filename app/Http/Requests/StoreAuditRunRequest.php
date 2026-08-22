@@ -25,6 +25,7 @@ class StoreAuditRunRequest extends FormRequest
             'categories' => ['array', 'max:2'],
             'categories.*' => ['string', 'max:160', 'distinct'],
             'reader_model' => ['nullable', 'string', 'max:255'],
+            'reviewer_model' => ['nullable', 'string', 'max:255'],
             'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
             'image' => ['nullable', 'string', 'max:255'],
@@ -36,6 +37,7 @@ class StoreAuditRunRequest extends FormRequest
             'ttl' => ['required', 'integer', 'between:60,86400'],
             'test' => ['boolean'],
             'keep' => ['boolean'],
+            'tool_output' => ['boolean'],
             'benchmark_id' => ['nullable', 'string', 'regex:/^[a-z0-9][a-z0-9._-]+$/'],
         ];
     }
@@ -77,10 +79,11 @@ class StoreAuditRunRequest extends FormRequest
         return array_replace([
             'preset' => null, 'path' => null, 'target_mode' => 'sandbox', 'url' => null,
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
-            'categories' => [], 'reader_model' => null, 'confirmer_model' => null,
+            'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
+            'confirmer_model' => null,
             'worker_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
-            'mount' => null, 'port' => null, 'service' => null, 'ttl' => 1800,
-            'test' => true, 'keep' => false, 'benchmark_id' => null,
+            'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
+            'test' => true, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
         ], $this->validated());
     }
 

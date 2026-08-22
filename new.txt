@@ -1,0 +1,46 @@
+La struttura finale dev'essere questa. Non esiste un "hard token cap". I token consumati devono servire solo come log ed essere printati in console, nessun agente deve avere un hard cap basato unicamente sui limiti di token.Il cap deve essere calcolato come un "punteggio", convertendo i token effettivi con un rapproto di configurazione hardcoded.Immaginimao che i cached token abbiano moltiplicatore 1, i token input abbiano moltiplicatore 3 e i token output abbiano moltiplicatore 10.
+
+    Un agent che ha budget economico 1000,
+    mettiamo che in una run consumi 10 token in lettura e 3 in output, di cui 7 in lettura cached.Il suo budget consumato è 7x1 + 3x3, +3x10 = 46 / 1000.
+
+                                                                                                                                               Tutti gli agenti a cui viene assegnato un budget devono avere :
+
+    -Nessu budget legato ai token,
+                                                                                                                                       solo calcolato a score come descritto sopra - Avere sempre un turno extra oltre il limite di richieste hard cappeed.Se un agente ha massimo 3 turni, deve averne un quarto a tool disabiliati che garantisca di avere sempre un output, e non un blocco / errore a causa di budget esaurito - La priorità dev 'essere sempre il completamento del task assegnato all' agente e mai il rispetto dei token di consumo
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                         Il ruolo degli agenti è il seguente :
+
+    Category recon : deve offrire rapidamente un overview sul progetto,
+                                                                                                                                       evidenziando le aree di interesse da esplorare con focus sulla categoria
+                                                                                                                                           corrente della run,
+                                                                                                                                       per evitare che le varie istanze di reader passano senza contesto
+
+                                                                                                                                           Reader,
+                                                                                                                                       limite alto.Il suo compito è trovare delle lead.Ha un limite a score come descritto sopra generoso e un cap di mettiamo, ad esempio, 32 richieste.I suoi output possono essere :
+
+    -Ho finito la discovery - Candidate handoff - Lead enrichment(Ovvero, una lead è stata ritornata dal confirmer non perchè automaticamente scartata, ma perchè manca di info fondamentali alla conferma)
+
+                                                                                                                                                                                                                                                                                    E' del tutto normale che esaurisca le richieste senza aver trovato una lead. In real world scenario, trovare una lead richiede una ricerca approfondita.  Se al limite di richieste non è stato prodotto uno dei 3 output, interviene l'agente specializzato Reader reviewer. Reader reviewer ha un ruolo molto circoscritto e non blocca mai la run, decide semplicemente se :
+
+                                                                                                                                                                                                                                                                                - Il reader era su una buona pista,
+                                                                                                                                       quindi gli assegna delle richieste extra per continuare(caso comune) - Il reader era bloccato su un vicolo cieco senza fare alcun progresso(in questo caso decidiamo cosa fare, fresh context con un hint su come proseguire.)
+
+                                                                                                                                                                                                                  Questa decisione non deve MAI essere rigidamente bloccata da un validator(Ad esempio, non ci sono altre aree di interesse fornite da Recon),
+                                                                                                                                       ma deve
+                                                                                                                                       avere flessibilità nel produrre gli output.
+
+                                                                                                                                       Confirmer :
+
+    Si interopone tra reader e worker.Serve solo a confermare che il candidato proposto da reader sia valido e arricchito con le informazioni necessarie
+    a worker per confermarlo,
+                                                                                                                                       ad esempio indicando rotte e payload di esempio corretti.Evita falsi positivi.Può dare come output :
+
+    -Candiate confirmed
+                                                                                                                                           - Needs more info
+                                                                                                                                           - Candidate rejected
+
+                                                                                                                                           Judge :
+
+    Si assicura,
+                                                                                                                                       una sola volta a fine run,
+                                                                                                                                       che i candidati siano stati correttamente provati e validati

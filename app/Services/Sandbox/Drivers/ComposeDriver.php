@@ -224,6 +224,6 @@ class ComposeDriver implements SandboxDriver
 
     private function overrideDirectory(string $auditId): string
     {
-        return storage_path("app/audits/{$auditId}");
+        return storage_path("framework/lailaps-sandbox/{$auditId}");
     }
 }

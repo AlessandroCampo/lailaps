@@ -52,6 +52,6 @@ YAML);
             ->and($override['services']['worker'])->not->toHaveKey('ports');
     } finally {
         File::deleteDirectory($projectPath);
-        File::deleteDirectory(storage_path("app/audits/{$auditId}"));
+        File::deleteDirectory(storage_path("framework/lailaps-sandbox/{$auditId}"));
     }
 });

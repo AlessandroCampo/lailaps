@@ -54,4 +54,10 @@ class User extends Authenticatable implements PasskeyUser
     {
         return $this->hasMany(AuditRun::class);
     }
+
+    /** @return HasMany<BenchmarkExperiment, $this> */
+    public function benchmarkExperiments(): HasMany
+    {
+        return $this->hasMany(BenchmarkExperiment::class);
+    }
 }

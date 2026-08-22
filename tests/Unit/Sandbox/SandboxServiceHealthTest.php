@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Sandbox\DockerClient;
+use App\Services\Sandbox\DTO\SandboxSpecDTO;
 use App\Services\Sandbox\SandboxService;
 use App\Services\Sandbox\Support\WebServiceResolver;
 use Illuminate\Support\Facades\Http;
@@ -45,4 +46,10 @@ it('builds the target and health URLs without losing the application context', f
 
     expect($target)->toBe('http://127.0.0.1:8080/benchmark')
         ->and($service->urlWithPath($target, '/'))->toBe('http://127.0.0.1:8080/benchmark/');
+});
+
+it('can request diagnostic resource retention on a failed bootstrap', function (): void {
+    $spec = new SandboxSpecDTO('diagnostic-test', base_path(), keepOnFailure: true);
+
+    expect($spec->keepOnFailure)->toBeTrue();
 });

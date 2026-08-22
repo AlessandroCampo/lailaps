@@ -361,30 +361,34 @@ class DockerClient
             static fn (string $line): string => trim($line),
             $lines
         ), static fn (string $line): bool => $line !== ''
-            && ! str_starts_with($line, '#')
-            // le negazioni non sono supportate: meglio includere che escludere a torto
-            && ! str_starts_with($line, '!')));
+            && ! str_starts_with($line, '#')));
     }
 
     /** @param  array<int, string>  $patterns */
     private function isIgnored(string $relative, array $patterns): bool
     {
+        $ignored = false;
         foreach ($patterns as $pattern) {
-            $pattern = trim(str_replace('\\', '/', $pattern), '/');
+            $negated = str_starts_with($pattern, '!');
+            $pattern = trim(str_replace('\\', '/', $negated ? substr($pattern, 1) : $pattern), '/');
 
             if ($pattern === '') {
                 continue;
             }
 
             if ($relative === $pattern || str_starts_with($relative, "{$pattern}/")) {
-                return true;
+                $ignored = ! $negated;
+
+                continue;
             }
 
             if (fnmatch($pattern, $relative) || fnmatch("{$pattern}/*", $relative)) {
-                return true;
+                // Docker applica le regole nell'ordine del file: una negazione
+                // successiva reinclude un path escluso in precedenza.
+                $ignored = ! $negated;
             }
         }
 
-        return false;
+        return $ignored;
     }
 }

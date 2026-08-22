@@ -12,7 +12,6 @@ export interface AuditRunSummary {
     auditId: string;
     type: 'audit' | 'benchmark';
     status: AuditStatus;
-    legacy: boolean;
     target: string;
     categories: string[];
     confirmed: number;

@@ -5,7 +5,8 @@ namespace App\Jobs;
 use App\Enums\AuditRunStatus;
 use App\Models\AuditRun;
 use App\Services\Audit\AuditCommandBuilder;
-use App\Services\Audit\AuditEventRecorder;
+use App\Services\Audit\AuditRunFinalizer;
+use App\Services\Audit\RunStorage;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
@@ -20,135 +21,119 @@ final class ExecuteAuditRun implements ShouldQueue
 
     public function __construct(public readonly string $runId) {}
 
-    public function handle(AuditCommandBuilder $commands, AuditEventRecorder $events): void
+    public function handle(AuditCommandBuilder $commands, AuditRunFinalizer $finalizer, RunStorage $storage): void
     {
         $run = AuditRun::query()->findOrFail($this->runId);
+        $storage->initializeRun($run);
         if ($run->cancellation_requested) {
-            $this->finishCancelled($run, $events);
+            $this->finishCancelled($run, $storage);
+            $this->finalizeSafely($run, $finalizer, $storage);
 
             return;
         }
-        $this->status($run, $events, AuditRunStatus::Preparing);
-        if (! is_dir((string) $run->artifact_path)) {
-            mkdir((string) $run->artifact_path, 0755, true);
+
+        $this->status($run, AuditRunStatus::Preparing, $storage);
+        $cancelMarker = storage_path("framework/lailaps-cancel/{$run->audit_id}");
+        if (is_file($cancelMarker)) {
+            unlink($cancelMarker);
         }
         $process = new Process(
             $commands->build($run),
             base_path(),
-            ['LAILAPS_EVENT_STREAM' => '1', 'NO_COLOR' => '1'],
+            [
+                'LAILAPS_RUN_DIRECTORY' => (string) $run->run_path,
+                'LAILAPS_RUN_ID' => $run->audit_id,
+                'LAILAPS_OUTCOME_FILE' => $storage->outcomePath((string) $run->run_path, $run->audit_id),
+                // Il processo figlio scrive un transcript umano. Report e
+                // telemetria strutturata vivono nell'outcome JSON separato.
+                'LAILAPS_EVENT_STREAM' => '0',
+                'LAILAPS_SUPERVISED_LOG' => '1',
+                'NO_COLOR' => '1',
+            ],
             null,
-            ((int) ($run->parameters['ttl'] ?? 1800)) + 300,
+            ((int) ($run->parameters['ttl'] ?? 9000)) + 300,
         );
-        $stdout = '';
-        $stderr = '';
+
         try {
-            $this->status($run, $events, AuditRunStatus::Running);
-            $process->start();
+            $this->status($run, AuditRunStatus::Running, $storage);
+            $process->start(function (string $type, string $buffer) use ($run, $storage): void {
+                $storage->appendLog((string) $run->run_path, $run->audit_id, $buffer);
+            });
             while ($process->isRunning()) {
-                $stdout .= $process->getIncrementalOutput();
-                $stderr .= $process->getIncrementalErrorOutput();
-                $this->consumeLines($run, $events, $stdout, false);
-                $this->consumeLines($run, $events, $stderr, true);
                 $run->refresh();
                 if ($run->cancellation_requested) {
-                    file_put_contents(dirname((string) $run->artifact_path).'/cancel.requested', now()->toIso8601String());
+                    $directory = dirname($cancelMarker);
+                    if (! is_dir($directory)) {
+                        mkdir($directory, 0755, true);
+                    }
+                    file_put_contents($cancelMarker, now()->toIso8601String());
                     $process->stop(5);
                     break;
                 }
                 $process->checkTimeout();
                 usleep(150000);
             }
-            $stdout .= $process->getIncrementalOutput();
-            $stderr .= $process->getIncrementalErrorOutput();
-            $this->consumeLines($run, $events, $stdout, false, true);
-            $this->consumeLines($run, $events, $stderr, true, true);
             $run->refresh();
             if ($run->cancellation_requested) {
-                $this->finishCancelled($run, $events);
+                $this->finishCancelled($run, $storage);
+                $this->finalizeSafely($run, $finalizer, $storage);
 
                 return;
             }
-            $this->status($run, $events, AuditRunStatus::Finalizing);
+            $this->status($run, AuditRunStatus::Finalizing, $storage);
             $exitCode = $process->getExitCode() ?? 1;
-            $this->publishArtifacts($run, $events);
             $run->update([
                 'status' => $exitCode === 0 ? AuditRunStatus::Completed : AuditRunStatus::Failed,
                 'exit_code' => $exitCode,
                 'finished_at' => now(),
                 'error' => $exitCode === 0 ? null : 'Il comando è terminato con codice '.$exitCode,
             ]);
-            $events->record($run, 'status', ['status' => $run->status->value, 'exit_code' => $exitCode]);
+            $storage->appendLog((string) $run->run_path, $run->audit_id, '[system] status='.$run->status->value." exit_code={$exitCode}\n");
+            $this->finalizeSafely($run, $finalizer, $storage);
         } catch (Throwable $exception) {
             if ($process->isRunning()) {
                 $process->stop(3);
             }
             $run->refresh();
             if ($run->cancellation_requested) {
-                $this->finishCancelled($run, $events);
+                $this->finishCancelled($run, $storage);
+                $this->finalizeSafely($run, $finalizer, $storage);
 
                 return;
             }
             $message = $exception instanceof ProcessTimedOutException ? 'Timeout della run.' : $exception->getMessage();
+            $storage->appendLog((string) $run->run_path, $run->audit_id, "[system:error] {$message}\n");
             $run->update(['status' => AuditRunStatus::Failed, 'error' => $message, 'finished_at' => now()]);
-            $events->record($run, 'error', ['message' => $message, 'exception' => $exception::class]);
-            $events->record($run, 'status', ['status' => 'failed']);
+            $this->finalizeSafely($run, $finalizer, $storage);
+        } finally {
+            if (is_file($cancelMarker)) {
+                unlink($cancelMarker);
+            }
         }
     }
 
-    private function status(AuditRun $run, AuditEventRecorder $events, AuditRunStatus $status): void
+    private function finalizeSafely(AuditRun $run, AuditRunFinalizer $finalizer, RunStorage $storage): void
+    {
+        try {
+            $finalizer->finalize($run->fresh());
+        } catch (Throwable $exception) {
+            $storage->appendLog((string) $run->run_path, $run->audit_id, "[system:finalizer-error] {$exception->getMessage()}\n");
+        }
+    }
+
+    private function status(AuditRun $run, AuditRunStatus $status, RunStorage $storage): void
     {
         $values = ['status' => $status];
         if ($status === AuditRunStatus::Preparing) {
             $values['started_at'] = now();
         }
         $run->update($values);
-        $events->record($run, 'status', ['status' => $status->value]);
+        $storage->appendLog((string) $run->run_path, $run->audit_id, "[system] status={$status->value}\n");
     }
 
-    private function finishCancelled(AuditRun $run, AuditEventRecorder $events): void
+    private function finishCancelled(AuditRun $run, RunStorage $storage): void
     {
         $run->update(['status' => AuditRunStatus::Cancelled, 'finished_at' => now(), 'exit_code' => 130]);
-        $events->record($run, 'status', ['status' => 'cancelled']);
-    }
-
-    private function consumeLines(AuditRun $run, AuditEventRecorder $events, string &$buffer, bool $error, bool $flush = false): void
-    {
-        $parts = preg_split('/\R/', $buffer) ?: [];
-        $tail = (string) array_pop($parts);
-        $buffer = $flush ? '' : $tail;
-        foreach ($parts as $line) {
-            $line = trim((string) preg_replace('/\e\[[0-9;]*m/', '', $line));
-            if ($line === '') {
-                continue;
-            }
-            if (str_starts_with($line, 'LAILAPS_EVENT ')) {
-                $event = json_decode(substr($line, 14), true);
-                if (is_array($event) && isset($event['type'])) {
-                    $events->record(
-                        $run,
-                        (string) $event['type'],
-                        (array) ($event['payload'] ?? []),
-                        isset($event['category']) ? (string) $event['category'] : null,
-                        isset($event['role']) ? (string) $event['role'] : null,
-                        isset($event['artifact_ref']) ? (string) $event['artifact_ref'] : null,
-                    );
-
-                    continue;
-                }
-            }
-            $events->record($run, $error ? 'error' : 'log', ['message' => $line, 'stream' => $error ? 'stderr' : 'stdout']);
-        }
-        if ($flush && trim($tail) !== '') {
-            $events->record($run, $error ? 'error' : 'log', ['message' => trim($tail), 'stream' => $error ? 'stderr' : 'stdout']);
-        }
-    }
-
-    private function publishArtifacts(AuditRun $run, AuditEventRecorder $events): void
-    {
-        foreach (['report.json' => 'report_published', 'benchmark.json' => 'benchmark_published'] as $file => $type) {
-            if (is_file(rtrim((string) $run->artifact_path, '/').'/'.$file)) {
-                $events->record($run, $type, ['file' => $file], artifactRef: $file);
-            }
-        }
+        $storage->appendLog((string) $run->run_path, $run->audit_id, "[system] status=cancelled\n");
     }
 }

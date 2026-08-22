@@ -7,7 +7,7 @@ use InvalidArgumentException;
 
 final class BenchmarkCompare extends Command
 {
-    protected $signature = 'benchmark:compare {--runs=* : Directory run o file benchmark.json}';
+    protected $signature = 'benchmark:compare {--runs=* : Directory run o file *-outcome.json}';
 
     protected $description = 'Confronta score benchmark esistenti senza rilanciare target o agenti';
 
@@ -19,21 +19,27 @@ final class BenchmarkCompare extends Command
         }
         $rows = [];
         foreach ($runs as $run) {
-            $path = is_dir((string) $run) ? rtrim((string) $run, '/\\').'/benchmark.json' : (string) $run;
+            $paths = is_dir((string) $run) ? (glob(rtrim((string) $run, '/\\').'/*-outcome.json') ?: []) : [(string) $run];
+            $path = count($paths) === 1 ? $paths[0] : '';
             if (! is_file($path)) {
                 throw new InvalidArgumentException("Score inesistente: {$path}");
             }
-            $score = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+            $outcome = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+            $score = is_array($outcome['benchmark'] ?? null) ? $outcome['benchmark'] : [];
             $rows[] = [
                 $score['suite_id'] ?? $score['benchmark_id'] ?? basename(dirname($path)),
-                $score['detection']['tp'] ?? 0,
-                $score['detection']['fp'] ?? 0,
-                number_format((float) ($score['detection']['recall'] ?? 0), 3),
-                number_format((float) ($score['detection']['precision'] ?? 0), 3),
+                $score['artifact_state'] ?? 'unknown',
+                $score['environment_state'] ?? 'unknown',
+                data_get($score, 'score.normalized') === null ? 'n/a' : number_format((float) data_get($score, 'score.normalized'), 1),
+                number_format((float) data_get($score, 'reach.file_reached.recall', 0), 3),
+                number_format((float) data_get($score, 'reach.anchor_reached.recall', 0), 3),
+                number_format((float) data_get($score, 'suspected.recall', data_get($score, 'detection.recall', 0)), 3),
+                number_format((float) data_get($score, 'static_validation.recall', 0), 3),
+                number_format((float) data_get($score, 'dynamically_confirmed.recall', data_get($score, 'confirmation.recall', 0)), 3),
                 $score['cost']['total_tokens'] ?? 0,
             ];
         }
-        $this->table(['Suite', 'TP', 'FP', 'Recall', 'Precision', 'Tokens'], $rows);
+        $this->table(['Suite', 'Artifact', 'Environment', 'Score', 'File R', 'Anchor R', 'Suspect R', 'Static R', 'Dynamic R', 'Tokens'], $rows);
 
         return self::SUCCESS;
     }

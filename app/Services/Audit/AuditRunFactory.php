@@ -13,17 +13,22 @@ final class AuditRunFactory
     public function create(User $user, array $parameters): AuditRun
     {
         $id = (string) Str::ulid();
-        $auditId = strtolower($id);
-        $artifactPath = storage_path("app/audits/{$auditId}/artifacts");
+        $project = RunStorage::project($parameters);
+        $categories = (array) ($parameters['categories'] ?? []);
+        if ($categories === [] && isset($parameters['preset'])) {
+            $preset = AuditCommandBuilder::PRESETS[(string) $parameters['preset']] ?? [];
+            $categories = isset($preset['category']) && $preset['category'] !== '' ? [(string) $preset['category']] : [];
+        }
+        $location = app(RunStorage::class)->create($project, $categories);
 
         return AuditRun::query()->create([
             'id' => $id,
             'user_id' => $user->id,
-            'audit_id' => $auditId,
+            'audit_id' => $location['run_id'],
             'type' => $parameters['type'],
             'status' => AuditRunStatus::Queued,
             'parameters' => $parameters,
-            'artifact_path' => str_replace('\\', '/', $artifactPath),
+            'run_path' => str_replace('\\', '/', $location['directory']),
         ]);
     }
 }

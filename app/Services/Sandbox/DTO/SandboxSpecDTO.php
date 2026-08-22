@@ -16,7 +16,7 @@ final class SandboxSpecDTO
     public function __construct(
         public string $auditId,
         public string $projectPath,
-        public int $ttlSeconds = 1800,
+        public int $ttlSeconds = 9000,
         /** Override del servizio HTTP, scavalca l'euristica del resolver. */
         public ?string $webService = null,
         /** Prefisso dell'applicazione pubblicata, per esempio "/benchmark". */
@@ -40,6 +40,8 @@ final class SandboxSpecDTO
         public array $options = [],
         /** Compose esterno alla codebase, usato dai runtime benchmark controllati. */
         public ?string $composeFile = null,
+        /** Conserva le risorse Docker se il bootstrap fallisce, per diagnostica. */
+        public bool $keepOnFailure = false,
     ) {
         if (trim($auditId) === '') {
             throw new InvalidArgumentException('auditId non può essere vuoto');

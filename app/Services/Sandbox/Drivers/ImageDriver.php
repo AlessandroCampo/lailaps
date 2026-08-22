@@ -20,6 +20,15 @@ use RuntimeException;
  */
 class ImageDriver implements SandboxDriver
 {
+    /** @var list<int> Conventional plain-HTTP ports, in selection priority. */
+    private const PREFERRED_HTTP_PORTS = [80, 8080, 8000, 3000];
+
+    /**
+     * Needed by common web-image entrypoints to create runtime directories,
+     * bind privileged HTTP ports, and drop to their unprivileged worker user.
+     */
+    private const KEPT_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID', 'NET_BIND_SERVICE', 'KILL'];
+
     public function __construct(protected DockerClient $docker) {}
 
     public function name(): string
@@ -59,6 +68,7 @@ class ImageDriver implements SandboxDriver
                 'NanoCpus' => $limits['nano_cpus'],
                 'PidsLimit' => $limits['pids'],
                 'CapDrop' => ['ALL'],
+                'CapAdd' => self::KEPT_CAPS,
                 'SecurityOpt' => ['no-new-privileges'],
                 'RestartPolicy' => ['Name' => 'no'],
             ],
@@ -154,6 +164,15 @@ class ImageDriver implements SandboxDriver
         }
 
         $exposed = array_keys($this->docker->inspectImage($source['image'])['Config']['ExposedPorts'] ?? []);
+
+        // Docker does not guarantee an order for ExposedPorts. Prefer a
+        // conventional HTTP listener over HTTPS (for example 80 before 443),
+        // because SandboxService publishes an http:// target URL.
+        foreach (self::PREFERRED_HTTP_PORTS as $candidate) {
+            if (in_array("{$candidate}/tcp", $exposed, true)) {
+                return $candidate;
+            }
+        }
 
         foreach ($exposed as $definition) {
             [$number, $protocol] = array_pad(explode('/', (string) $definition, 2), 2, 'tcp');

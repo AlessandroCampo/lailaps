@@ -20,7 +20,8 @@ return [
     ],
 
     'defaults' => [
-        'ttl' => (int) env('SANDBOX_TTL', 1800),
+        // Copre due categorie da un'ora piu' il margine di setup/finalizzazione.
+        'ttl' => (int) env('SANDBOX_TTL', 9000),
         'health_timeout' => (int) env('SANDBOX_HEALTH_TIMEOUT', 60),
     ],
 

@@ -61,6 +61,24 @@ it('loads the DVWA csrf bootstrap contract', function (): void {
         ]);
 });
 
+it('probes the YesWiki home page instead of its redirecting root', function (): void {
+    $profile = AuditProfile::fromProject(dirname(__DIR__, 3).'/targets/yeswiki');
+
+    expect($profile->service)->toBe('yeswiki-web')
+        ->and($profile->readiness[0])->toMatchArray([
+            'path' => '/?PagePrincipale',
+            'expected_status' => 200,
+        ])
+        ->and($profile->readiness)->sequence(
+            fn ($step) => $step->toMatchArray(['path' => '/?PagePrincipale']),
+            fn ($step) => $step->toMatchArray(['path' => '/?api/forms/90', 'body_contains' => ['Computation', 'bf_amount', 'number']]),
+            fn ($step) => $step->toMatchArray(['path' => '/?api/forms/92']),
+            fn ($step) => $step->toMatchArray(['path' => '/?api/forms/93', 'body_contains' => ['Presentation records', 'bf_score', 'number']]),
+            fn ($step) => $step->toMatchArray(['path' => '/api/forms/90/entries/json/CalcFixtureEntry']),
+            fn ($step) => $step->toMatchArray(['path' => '/api/forms/93/entries/json/ReactionFixtureEntry']),
+        );
+});
+
 it('loads the OWASP Benchmark application context and readiness endpoint', function (): void {
     $profile = AuditProfile::fromProject(dirname(__DIR__, 3).'/targets/owasp-benchmark-java');
 

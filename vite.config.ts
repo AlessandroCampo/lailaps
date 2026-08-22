@@ -6,6 +6,13 @@ import laravel from 'laravel-vite-plugin';
 import { bunny } from 'laravel-vite-plugin/fonts';
 import { defineConfig } from 'vite';
 
+const ignoredProjectPaths = [
+    '**/storage/app/runs/**',
+    '**/storage/logs/**',
+    '**/targets/**',
+    '**/target/**',
+];
+
 export default defineConfig({
     plugins: [
         laravel({
@@ -31,4 +38,9 @@ export default defineConfig({
             formVariants: true,
         }),
     ],
+    server: {
+        watch: {
+            ignored: ignoredProjectPaths,
+        },
+    },
 });

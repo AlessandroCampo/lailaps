@@ -4,6 +4,7 @@ namespace App\Services\Sandbox\Audit;
 
 use App\Services\Sandbox\DockerClient;
 use App\Services\Sandbox\DTO\SandboxDTO;
+use App\Services\Target\Contracts\TestTarget;
 use GuzzleHttp\Client;
 use GuzzleHttp\Cookie\CookieJar;
 use InvalidArgumentException;
@@ -45,11 +46,55 @@ final class SandboxPreparationService
         }
     }
 
+    /** @param array<int, array<string, mixed>> $probes */
+    public function verifyFixtureProbes(TestTarget $target, array $probes, ?SandboxDTO $sandbox = null): void
+    {
+        if ($probes === []) {
+            return;
+        }
+
+        $client = new Client([
+            'base_uri' => rtrim($target->url(), '/').'/',
+            'allow_redirects' => false,
+            'cookies' => new CookieJar,
+            'http_errors' => false,
+            'timeout' => 10,
+        ]);
+        $variables = [];
+
+        foreach ($probes as $index => $probe) {
+            $caseId = is_string($probe['case_id'] ?? null) ? $probe['case_id'] : 'unknown-case';
+            $probeId = is_string($probe['id'] ?? null) ? $probe['id'] : (string) $index;
+            $this->runStep($client, $sandbox, $probe, $variables, "fixture_probes[{$caseId}:{$probeId}]");
+        }
+    }
+
+    /** Re-run only non-mutating HTTP readiness probes after the agent finishes. */
+    public function verifyReadiness(SandboxDTO $sandbox, AuditProfile $profile): void
+    {
+        $client = new Client([
+            'base_uri' => rtrim($sandbox->url(), '/').'/',
+            'allow_redirects' => false,
+            'cookies' => new CookieJar,
+            'http_errors' => false,
+            'timeout' => 10,
+        ]);
+        $variables = [];
+        foreach ($profile->readiness as $index => $step) {
+            $type = (string) ($step['type'] ?? 'http');
+            $method = strtoupper((string) ($step['method'] ?? 'GET'));
+            if ($type !== 'http' || ! in_array($method, ['GET', 'HEAD'], true) || str_contains(json_encode($step, JSON_THROW_ON_ERROR), '{{')) {
+                continue;
+            }
+            $this->runStep($client, $sandbox, $step, $variables, "post_readiness[{$index}]");
+        }
+    }
+
     /**
      * @param  array<string, mixed>  $step
      * @param  array<string, string>  $variables
      */
-    private function runStep(Client $client, SandboxDTO $sandbox, array $step, array &$variables, string $label): void
+    private function runStep(Client $client, ?SandboxDTO $sandbox, array $step, array &$variables, string $label): void
     {
         $retrySeconds = (int) ($step['retry_seconds'] ?? 0);
         if ($retrySeconds < 0 || $retrySeconds > 120) {
@@ -76,7 +121,7 @@ final class SandboxPreparationService
      * @param  array<string, mixed>  $step
      * @param  array<string, string>  $variables
      */
-    private function runStepOnce(Client $client, SandboxDTO $sandbox, array $step, array &$variables, string $label): void
+    private function runStepOnce(Client $client, ?SandboxDTO $sandbox, array $step, array &$variables, string $label): void
     {
         $type = $step['type'] ?? 'http';
         if ($type === 'http') {
@@ -86,6 +131,9 @@ final class SandboxPreparationService
         }
 
         if ($type === 'target_exec') {
+            if ($sandbox === null) {
+                throw new InvalidArgumentException("{$label}: target_exec richiede una sandbox locale.");
+            }
             $argv = $step['argv'] ?? null;
             if (! is_array($argv) || $argv === [] || ! array_is_list($argv) || array_filter($argv, fn (mixed $value): bool => ! is_string($value)) !== []) {
                 throw new InvalidArgumentException("{$label}: target_exec richiede argv come lista non vuota di stringhe.");
@@ -156,6 +204,15 @@ final class SandboxPreparationService
                 $suffix = $excerpt !== '' ? ' Risposta: '.mb_substr($excerpt, 0, 300) : '';
 
                 throw new RuntimeException("{$label}: risposta priva del marker richiesto '{$needle}'.{$suffix}");
+            }
+        }
+
+        foreach ((array) ($step['body_not_contains'] ?? []) as $needle) {
+            if (! is_string($needle) || str_contains($body, $needle)) {
+                $excerpt = trim(preg_replace('/\s+/', ' ', strip_tags($body)) ?? '');
+                $suffix = $excerpt !== '' ? ' Risposta: '.mb_substr($excerpt, 0, 300) : '';
+
+                throw new RuntimeException("{$label}: risposta contiene il marker vietato '{$needle}'.{$suffix}");
             }
         }
 

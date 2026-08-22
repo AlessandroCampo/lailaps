@@ -9,6 +9,7 @@ import {
     Bot,
     CheckCircle,
     Copy,
+    ClipboardCheck,
     Eye,
     FileJson,
     Flag,
@@ -42,9 +43,28 @@ const props = defineProps<{
     initialEvents: AuditEvent[];
     report: Record<string, any> | null;
     benchmark: Record<string, any> | null;
+    telemetry: Record<string, any> | null;
+    models: Array<Record<string, any>>;
+    experiment: { id: string; name: string } | null;
+    evaluations: Array<Record<string, any>>;
     artifacts: AuditArtifact[];
 }>();
-const tabs = ['Live', 'Report', 'Benchmark', 'Prompt', 'Artefatti'] as const;
+const stageLabels: Record<string, string> = {
+    not_reached: 'Not reached',
+    file_reached: 'File reached',
+    anchor_reached: 'Anchor reached',
+    suspected: 'Suspected',
+    statically_validated: 'Statically validated',
+    dynamically_confirmed: 'Dynamically confirmed',
+};
+const tabs = [
+    'Live',
+    'Report',
+    'Benchmark',
+    'Metriche',
+    'Prompt',
+    'Artefatti',
+] as const;
 const tab = ref<(typeof tabs)[number]>('Live');
 const events = ref<AuditEvent[]>([...props.initialEvents]);
 const status = ref<AuditStatus>(props.run.status);
@@ -56,6 +76,15 @@ const timeline = ref<HTMLElement | null>(null);
 const showRaw = ref(false);
 const rawVisibleLimit = ref(600);
 const newActivityCount = ref(0);
+const copyOpen = ref(false);
+const copyStatus = ref('');
+const copyOptions = ref({
+    toolOutputs: false,
+    reasoning: true,
+    prompts: false,
+    telemetry: true,
+    rawPayloads: false,
+});
 let source: EventSource | null = null;
 
 type ActivityKind = 'text' | 'tool' | 'finding' | 'milestone';
@@ -156,6 +185,20 @@ const fmtBytes = (bytes: number) =>
           : `${(bytes / 1048576).toFixed(1)} MB`;
 const isLive = (value: string) =>
     ['queued', 'preparing', 'running', 'finalizing'].includes(value);
+const adjudicate = (
+    evaluationId: string,
+    finding: Record<string, any>,
+    decision: string,
+) =>
+    router.post(
+        `/benchmarks/evaluations/${evaluationId}/adjudications`,
+        {
+            fingerprint: finding.fingerprint,
+            decision,
+            comment: 'Adjudication dalla pagina run',
+        },
+        { preserveScroll: true },
+    );
 
 const payloadText = (value: unknown) =>
     typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2);
@@ -320,7 +363,10 @@ const activity = computed<ActivityItem[]>(() => {
             if (item) {
                 item.toolState = 'completed';
                 item.output = String(
-                    event.payload.output || event.payload.content || '',
+                    event.payload.preview ||
+                        event.payload.output ||
+                        event.payload.content ||
+                        '',
                 );
                 item.artifactRef = event.artifact_ref;
                 item.related?.push(event);
@@ -337,7 +383,9 @@ const activity = computed<ActivityItem[]>(() => {
                     toolName: String(event.payload.name || 'tool'),
                     toolState: 'completed',
                     callId: event.payload.call_id as string | null,
-                    output: String(event.payload.output || ''),
+                    output: String(
+                        event.payload.preview || event.payload.output || '',
+                    ),
                     artifactRef: event.artifact_ref,
                     related: [event],
                 });
@@ -549,6 +597,116 @@ const copy = (value: unknown) =>
     navigator.clipboard.writeText(
         typeof value === 'string' ? value : JSON.stringify(value, null, 2),
     );
+const copyJson = (value: unknown) => JSON.stringify(value ?? null, null, 2);
+const copyEvent = (event: AuditEvent) => {
+    const payload = event.payload;
+
+    if (event.type === 'tool_call') {
+        const name = String(payload.name || payload.tool_name || 'tool');
+        return copyOptions.value.rawPayloads
+            ? copyJson(payload)
+            : `Tool chiamato: ${name}`;
+    }
+    if (event.type === 'tool_result') {
+        if (!copyOptions.value.toolOutputs) return 'Output del tool escluso';
+        return copyOptions.value.rawPayloads
+            ? copyJson(payload)
+            : String(
+                  payload.preview || payload.output || payload.content || '',
+              );
+    }
+    if (event.type === 'status')
+        return `Stato: ${String(payload.status || '—')}`;
+    if (event.type === 'usage') {
+        return `Token: ${String(payload.total_tokens || '—')} · Tool call: ${String(payload.number_of_tool_calls || '—')}`;
+    }
+
+    return copyOptions.value.rawPayloads
+        ? copyJson(payload)
+        : String(
+              payload.content ??
+                  payload.message ??
+                  payload.preview ??
+                  JSON.stringify(payload, null, 2),
+          );
+};
+const copyRun = async () => {
+    const lines = [
+        `# Audit run ${props.run.auditId}`,
+        '',
+        `- Target: ${props.run.target}`,
+        `- Tipo: ${props.run.type}`,
+        `- Stato: ${status.value}`,
+        `- Creato: ${props.run.createdAt}`,
+        `- Inizio: ${props.run.startedAt || '—'}`,
+        `- Fine: ${props.run.finishedAt || '—'}`,
+        `- Categorie: ${props.run.categories.join(', ') || '—'}`,
+        `- Confermati: ${props.run.confirmed}`,
+        `- Suspect: ${props.run.suspected}`,
+        '',
+        '## Parametri',
+        '```json',
+        copyJson(props.run.parameters),
+        '```',
+        '',
+        '## Timeline',
+    ];
+
+    events.value.forEach((event) => {
+        if (event.type === 'tool_result' && !copyOptions.value.toolOutputs)
+            return;
+        if (event.type === 'reasoning_delta' && !copyOptions.value.reasoning)
+            return;
+        if (event.type === 'system_prompt' && !copyOptions.value.prompts)
+            return;
+
+        lines.push(
+            `### #${event.sequence} · ${event.type}${event.role ? ` · ${event.role}` : ''}`,
+            copyEvent(event),
+            '',
+        );
+    });
+
+    lines.push('## Report', '```json', copyJson(props.report), '```', '');
+    lines.push('## Benchmark', '```json', copyJson(props.benchmark), '```', '');
+    if (copyOptions.value.telemetry) {
+        lines.push(
+            '## Telemetria',
+            '```json',
+            copyJson(props.telemetry),
+            '```',
+            '',
+        );
+    }
+    lines.push(
+        '## Riproducibilità',
+        '```json',
+        copyJson({
+            models: props.models,
+            experiment: props.experiment,
+            evaluations: props.evaluations,
+        }),
+        '```',
+        '',
+    );
+    lines.push(
+        '## Artefatti',
+        ...(props.artifacts.length
+            ? props.artifacts.map(
+                  (artifact) => `- ${artifact.path} (${artifact.bytes} bytes)`,
+              )
+            : ['- Nessun artefatto disponibile']),
+    );
+
+    try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        copyStatus.value = 'Run copiata negli appunti';
+        window.setTimeout(() => (copyStatus.value = ''), 2500);
+    } catch {
+        copyStatus.value =
+            'Copia non riuscita: verifica i permessi del browser';
+    }
+};
 onMounted(connect);
 onBeforeUnmount(() => source?.close());
 </script>
@@ -574,8 +732,6 @@ onBeforeUnmount(() => source?.close());
                                       : 'secondary'
                             "
                             >{{ status }}</Badge
-                        ><Badge v-if="run.legacy" variant="outline"
-                            >legacy</Badge
                         >
                     </div>
                     <h1 class="mt-3 text-2xl font-semibold">
@@ -601,6 +757,8 @@ onBeforeUnmount(() => source?.close());
                         ><RotateCcw /> Rilancia</Button
                     ><Button v-if="terminal" variant="ghost" @click="remove"
                         ><Trash2 /> Elimina</Button
+                    ><Button variant="outline" @click="copyOpen = !copyOpen"
+                        ><Copy /> Copia run</Button
                     >
                 </div>
             </div>
@@ -623,6 +781,61 @@ onBeforeUnmount(() => source?.close());
                     <span class="text-muted-foreground">Score</span>
                     <p class="font-medium">{{ run.score ?? '—' }}</p>
                 </div>
+            </div>
+            <div v-if="copyOpen" class="mt-5 rounded-xl border bg-muted/40 p-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <h2 class="flex items-center gap-2 font-medium">
+                            <Copy class="size-4" /> Copia smart
+                        </h2>
+                        <p class="mt-1 text-sm text-muted-foreground">
+                            Genera un Markdown pronto da incollare con timeline,
+                            report e benchmark.
+                        </p>
+                    </div>
+                    <Button size="sm" @click="copyRun">
+                        <ClipboardCheck /> Copia negli appunti
+                    </Button>
+                </div>
+                <div
+                    class="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5"
+                >
+                    <label class="flex items-center gap-2">
+                        <input
+                            v-model="copyOptions.toolOutputs"
+                            type="checkbox"
+                        />
+                        Output dei tool
+                    </label>
+                    <label class="flex items-center gap-2">
+                        <input
+                            v-model="copyOptions.reasoning"
+                            type="checkbox"
+                        />
+                        Reasoning
+                    </label>
+                    <label class="flex items-center gap-2">
+                        <input v-model="copyOptions.prompts" type="checkbox" />
+                        Prompt di sistema
+                    </label>
+                    <label class="flex items-center gap-2">
+                        <input
+                            v-model="copyOptions.telemetry"
+                            type="checkbox"
+                        />
+                        Telemetria
+                    </label>
+                    <label class="flex items-center gap-2">
+                        <input
+                            v-model="copyOptions.rawPayloads"
+                            type="checkbox"
+                        />
+                        Payload grezzi
+                    </label>
+                </div>
+                <p v-if="copyStatus" class="mt-3 text-sm text-primary">
+                    {{ copyStatus }}
+                </p>
             </div>
         </header>
 
@@ -944,6 +1157,291 @@ onBeforeUnmount(() => source?.close());
                     class="max-h-[750px] overflow-auto rounded-xl border bg-card p-5 text-xs whitespace-pre-wrap"
                     >{{ JSON.stringify(benchmark, null, 2) }}</pre>
             </div>
+        </section>
+
+        <section v-else-if="tab === 'Metriche'" class="space-y-4">
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div class="rounded-xl border bg-card p-4">
+                    <span class="text-sm text-muted-foreground"
+                        >Token totali</span
+                    >
+                    <p class="mt-1 text-2xl font-semibold">
+                        {{ telemetry?.total_tokens?.toLocaleString?.() ?? '—' }}
+                    </p>
+                </div>
+                <div class="rounded-xl border bg-card p-4">
+                    <span class="text-sm text-muted-foreground"
+                        >Cached input</span
+                    >
+                    <p class="mt-1 text-2xl font-semibold">
+                        {{
+                            telemetry?.cached_model_input_tokens?.toLocaleString?.() ??
+                            '—'
+                        }}
+                    </p>
+                </div>
+                <div class="rounded-xl border bg-card p-4">
+                    <span class="text-sm text-muted-foreground">Tool call</span>
+                    <p class="mt-1 text-2xl font-semibold">
+                        {{ telemetry?.number_of_tool_calls ?? '—' }}
+                    </p>
+                </div>
+                <div class="rounded-xl border bg-card p-4">
+                    <span class="text-sm text-muted-foreground"
+                        >Costo provider</span
+                    >
+                    <p class="mt-1 text-2xl font-semibold">
+                        ${{
+                            Number(telemetry?.provider_cost_usd || 0).toFixed(4)
+                        }}
+                    </p>
+                </div>
+            </div>
+            <div class="grid gap-4 lg:grid-cols-2">
+                <article class="rounded-xl border bg-card p-5">
+                    <h3 class="font-semibold">Modelli effettivi</h3>
+                    <div class="mt-3 space-y-2">
+                        <div
+                            v-for="model in models"
+                            :key="model.role"
+                            class="flex items-center gap-3 rounded-lg bg-muted p-3 text-sm"
+                        >
+                            <Badge>{{ model.role }}</Badge
+                            ><span
+                                class="min-w-0 flex-1 truncate font-mono text-xs"
+                                >{{ model.effective || '—' }}</span
+                            ><span class="text-xs text-muted-foreground">{{
+                                model.reasoningEffort
+                            }}</span>
+                        </div>
+                        <p
+                            v-if="models.length === 0"
+                            class="text-sm text-muted-foreground"
+                        >
+                            Disponibili dopo la finalizzazione v2.
+                        </p>
+                    </div>
+                </article>
+                <article class="rounded-xl border bg-card p-5">
+                    <h3 class="font-semibold">Riproducibilità</h3>
+                    <dl class="mt-3 grid grid-cols-[140px_1fr] gap-2 text-sm">
+                        <dt class="text-muted-foreground">Esperimento</dt>
+                        <dd>
+                            <Link
+                                v-if="experiment"
+                                :href="`/benchmarks?experiment=${experiment.id}`"
+                                class="text-primary underline"
+                                >{{ experiment.name }}</Link
+                            ><span v-else>—</span>
+                        </dd>
+                    </dl>
+                </article>
+            </div>
+            <article
+                v-for="evaluation in evaluations"
+                :key="evaluation.id"
+                class="rounded-xl border bg-card p-5"
+            >
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="font-semibold">{{ evaluation.benchmarkId }}</h3>
+                    <Badge
+                        :variant="
+                            evaluation.status === 'scored'
+                                ? 'default'
+                                : 'secondary'
+                        "
+                        >{{ evaluation.status }}</Badge
+                    ><span class="text-xs text-muted-foreground"
+                        >evaluator {{ evaluation.evaluatorVersion }}</span
+                    >
+                </div>
+                <div
+                    class="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground"
+                >
+                    <span>artifact: {{ evaluation.artifactState }}</span
+                    ><span>run: {{ evaluation.runState }}</span
+                    ><span>environment: {{ evaluation.environmentState }}</span
+                    ><span
+                        >adjudication: {{ evaluation.adjudicationState }}</span
+                    ><span v-if="evaluation.terminationReason"
+                        >termination: {{ evaluation.terminationReason }}</span
+                    >
+                </div>
+                <div class="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >Global score</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{
+                                evaluation.adjudicatedScore ??
+                                evaluation.score ??
+                                '—'
+                            }}
+                        </p>
+                    </div>
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >File recall</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{ evaluation.reach?.file_reached?.recall ?? '—' }}
+                        </p>
+                    </div>
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >Anchor recall</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{
+                                evaluation.reach?.anchor_reached?.recall ?? '—'
+                            }}
+                        </p>
+                    </div>
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >Suspected recall</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{ evaluation.detection?.recall ?? '—' }}
+                        </p>
+                    </div>
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >Static recall</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{ evaluation.staticValidation?.recall ?? '—' }}
+                        </p>
+                    </div>
+                    <div class="rounded-lg bg-muted p-3">
+                        <span class="text-xs text-muted-foreground"
+                            >Dynamic recall</span
+                        >
+                        <p class="text-lg font-semibold">
+                            {{ evaluation.confirmation?.recall ?? '—' }}
+                        </p>
+                    </div>
+                </div>
+                <div
+                    v-if="evaluation.cases?.length"
+                    class="mt-4 overflow-x-auto"
+                >
+                    <table class="w-full text-left text-sm">
+                        <thead class="border-b text-xs text-muted-foreground">
+                            <tr>
+                                <th class="p-2">Target</th>
+                                <th class="p-2">Level</th>
+                                <th class="p-2">Points</th>
+                                <th class="p-2">Match</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr
+                                v-for="benchmarkCase in evaluation.cases"
+                                :key="benchmarkCase.case_id"
+                                class="border-b last:border-0"
+                            >
+                                <td class="p-2 font-mono text-xs">
+                                    {{ benchmarkCase.case_id }}
+                                </td>
+                                <td class="p-2">
+                                    <Badge
+                                        :variant="
+                                            benchmarkCase.stage ===
+                                            'dynamically_confirmed'
+                                                ? 'default'
+                                                : 'secondary'
+                                        "
+                                        >{{
+                                            stageLabels[benchmarkCase.stage] ||
+                                            benchmarkCase.stage
+                                        }}</Badge
+                                    >
+                                </td>
+                                <td class="p-2">
+                                    {{ benchmarkCase.stage_score }}
+                                </td>
+                                <td class="p-2 text-xs text-muted-foreground">
+                                    {{ benchmarkCase.match_mode }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div
+                    v-if="
+                        [
+                            ...(evaluation.ambiguous || []),
+                            ...(evaluation.unmatched || []),
+                        ].length
+                    "
+                    class="mt-4 space-y-2"
+                >
+                    <h4 class="text-sm font-medium">Adjudication open-world</h4>
+                    <div
+                        v-for="finding in [
+                            ...(evaluation.ambiguous || []),
+                            ...(evaluation.unmatched || []),
+                        ]"
+                        :key="finding.fingerprint"
+                        class="flex flex-wrap items-center gap-2 rounded-lg border p-3 text-sm"
+                    >
+                        <div class="min-w-0 flex-1">
+                            <p class="font-medium">{{ finding.title }}</p>
+                            <p
+                                class="truncate font-mono text-xs text-muted-foreground"
+                            >
+                                {{ finding.reason }} · {{ finding.fingerprint }}
+                            </p>
+                        </div>
+                        <Button
+                            size="sm"
+                            variant="destructive"
+                            @click="
+                                adjudicate(
+                                    evaluation.id,
+                                    finding,
+                                    'false_positive',
+                                )
+                            "
+                            >Falso positivo</Button
+                        ><Button
+                            size="sm"
+                            variant="outline"
+                            @click="
+                                adjudicate(
+                                    evaluation.id,
+                                    finding,
+                                    'valid_out_of_catalog',
+                                )
+                            "
+                            >Valido fuori catalogo</Button
+                        ><Button
+                            size="sm"
+                            variant="ghost"
+                            @click="
+                                adjudicate(
+                                    evaluation.id,
+                                    finding,
+                                    'not_scorable',
+                                )
+                            "
+                            >Non valutabile</Button
+                        >
+                    </div>
+                </div>
+            </article>
+            <details class="rounded-xl border bg-card p-5">
+                <summary class="cursor-pointer font-medium">
+                    Telemetria completa
+                </summary>
+                <pre
+                    class="mt-4 max-h-[700px] overflow-auto text-xs whitespace-pre-wrap"
+                    >{{
+                        JSON.stringify({ telemetry }, null, 2)
+                    }}</pre>
+            </details>
         </section>
 
         <section v-else-if="tab === 'Prompt'" class="space-y-4">

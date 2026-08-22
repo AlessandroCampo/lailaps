@@ -1,2 +1,7 @@
 resources/js/components/ui/*
 resources/views/mail/*
+storage/app/audits/**
+storage/logs/**
+targets/**
+target/**
+run_outputs/**

@@ -13,7 +13,7 @@ final class AppTest extends Command
                             {--category= : Sovrascrive la categoria OWASP predefinita}
                             {--test : Mantiene la modalità test (attiva per default)}
                             {--no-test : Disabilita la modalità test}
-                            {--ttl=1800 : Durata massima della sandbox in secondi}
+                            {--ttl=9000 : Durata massima della sandbox in secondi}
                             {--keep=true : Non smontare la sandbox a fine run}';
 
     protected $description = 'Esegue il pentest sul progetto selezionato usando pentest:run';
@@ -91,7 +91,7 @@ final class AppTest extends Command
         $parameters = [
             '--path' => base_path($config['path']),
             '--category' => [$this->option('category') ?: $config['category']],
-            '--ttl' => (int) ($this->option('ttl') ?: 1800),
+            '--ttl' => (int) ($this->option('ttl') ?: 9000),
             '--test' => ! $this->option('no-test'),
             '--keep' => $this->enabledOption('keep'),
         ];

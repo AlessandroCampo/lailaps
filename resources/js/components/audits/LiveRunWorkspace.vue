@@ -56,6 +56,7 @@ interface ActivityItem {
 const timeline = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const showRaw = ref(false);
+const showToolOutputs = ref(false);
 const newActivityCount = ref(0);
 const typeFilter = ref('all');
 const roleFilter = ref('all');
@@ -73,6 +74,7 @@ const roles = computed(
 const matchingEvents = computed(() =>
     props.events.filter(
         (event) =>
+            (showToolOutputs.value || event.type !== 'tool_result') &&
             (typeFilter.value === 'all' || event.type === typeFilter.value) &&
             (roleFilter.value === 'all' || event.role === roleFilter.value),
     ),
@@ -245,7 +247,10 @@ const activities = computed<ActivityItem[]>(() => {
             if (item) {
                 item.toolState = 'completed';
                 item.output = String(
-                    event.payload.output || event.payload.content || '',
+                    event.payload.preview ||
+                        event.payload.output ||
+                        event.payload.content ||
+                        '',
                 );
                 item.artifactRef = event.artifact_ref;
             } else
@@ -260,7 +265,9 @@ const activities = computed<ActivityItem[]>(() => {
                     event,
                     toolName: String(event.payload.name || 'tool'),
                     toolState: 'completed',
-                    output: String(event.payload.output || ''),
+                    output: String(
+                        event.payload.preview || event.payload.output || '',
+                    ),
                     artifactRef: event.artifact_ref,
                 });
             return;
@@ -473,10 +480,14 @@ onMounted(() =>
                         class="size-2 animate-pulse rounded-full bg-emerald-400"
                     /><span class="text-xs text-zinc-500"
                         >{{ activities.length }} blocchi aggregati</span
+                    ><label
+                        class="ml-auto flex items-center gap-2 text-xs text-zinc-400"
+                        ><input v-model="showToolOutputs" type="checkbox" />
+                        Output tool</label
                     ><Button
                         size="sm"
                         variant="ghost"
-                        class="ml-auto h-8 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                        class="h-8 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white"
                         @click="showRaw = !showRaw"
                         ><Eye class="size-3.5" />
                         {{ showRaw ? 'Workspace' : 'Raw' }}</Button
@@ -589,9 +600,11 @@ onMounted(() =>
                                     </div>
                                     <p class="mt-1 truncate text-xs opacity-70">
                                         {{
-                                            item.output
+                                            showToolOutputs && item.output
                                                 ? item.output.slice(0, 180)
-                                                : 'In attesa del risultato…'
+                                                : item.toolState === 'running'
+                                                  ? 'In attesa del risultato…'
+                                                  : 'Output nascosto'
                                         }}
                                     </p>
                                 </div>
@@ -612,7 +625,7 @@ onMounted(() =>
                                         class="max-h-64 overflow-auto rounded-lg bg-black/25 p-3 whitespace-pre-wrap"
                                         >{{ payloadText(item.arguments) }}</pre>
                                 </div>
-                                <div v-if="item.output">
+                                <div v-if="showToolOutputs && item.output">
                                     <div
                                         class="mb-1 font-semibold tracking-wide uppercase opacity-60"
                                     >

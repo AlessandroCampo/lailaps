@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { Link } from '@inertiajs/vue3';
-import { BookOpen, FolderGit2, LayoutGrid, ShieldCheck } from '@lucide/vue';
+import {
+    BookOpen,
+    FolderGit2,
+    LayoutGrid,
+    MonitorCog,
+    ShieldCheck,
+} from '@lucide/vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavFooter from '@/components/NavFooter.vue';
 import NavMain from '@/components/NavMain.vue';
@@ -27,6 +33,11 @@ const mainNavItems: NavItem[] = [
         title: 'Audit',
         href: '/audits',
         icon: ShieldCheck,
+    },
+    {
+        title: 'Audit Console',
+        href: '/audit-console',
+        icon: MonitorCog,
     },
 ];
 

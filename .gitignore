@@ -7,6 +7,8 @@
 /public/storage
 /storage/*.key
 /storage/pail
+# Runtime data, uploaded benchmark sources, sandboxes and generated artifacts.
+/storage/*
 /resources/js/actions
 /resources/js/routes
 /resources/js/wayfinder

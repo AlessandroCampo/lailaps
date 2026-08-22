@@ -57,6 +57,13 @@ class SandboxService
                 expiresAt: $spec->expiresAt(),
             );
         } catch (Throwable $e) {
+            if ($spec->keepOnFailure) {
+                throw new RuntimeException(
+                    $e->getMessage()." Sandbox conservata per diagnostica: docker logs {$spec->projectName()}",
+                    previous: $e,
+                );
+            }
+
             rescue(fn () => $driver->destroy($spec->auditId), report: false);
 
             throw $e;

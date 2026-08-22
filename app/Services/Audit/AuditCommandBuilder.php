@@ -6,14 +6,16 @@ use App\Models\AuditRun;
 
 final class AuditCommandBuilder
 {
-    private const UNBIASED_BENCHMARK_PRESETS = ['owasp-benchmark-java'];
+    private const UNBIASED_BENCHMARK_PRESETS = ['owasp-benchmark-java', 'yeswiki'];
 
     /** @var array<string, array<string, mixed>> */
     public const PRESETS = [
         'juice-shop' => ['path' => 'targets/juice-shop', 'image' => 'bkimminich/juice-shop:latest', 'port' => 3000, 'category' => 'A01:2025 Broken Access Control'],
         'dvwa' => ['path' => 'targets/dvwa', 'category' => 'A01:2025 Broken Access Control'],
         'mutillidae-source' => ['path' => 'targets/mutillidae-source', 'category' => 'A03:2025 Injection'],
+        'kanboard' => ['path' => 'targets/kanboard', 'port' => 80, 'category' => 'A01:2025 Broken Access Control'],
         'owasp-benchmark-java' => ['path' => 'targets/owasp-benchmark-java', 'category' => 'A05:2025 Injection'],
+        'yeswiki' => ['path' => 'targets/yeswiki', 'category' => '', 'benchmark' => true],
     ];
 
     /** @return array<int, string> */
@@ -34,6 +36,9 @@ final class AuditCommandBuilder
                 '--audit-id='.$run->audit_id,
                 ...($p['keep'] ? ['--keep'] : []),
                 ...($p['test'] ? ['--test'] : []),
+                // The web transcript retains bounded result previews so the UI
+                // can reveal them on demand without loading raw tool payloads.
+                '--tool-output',
             ];
             foreach ((array) ($p['categories'] ?? []) as $category) {
                 if ($category) {
@@ -44,6 +49,7 @@ final class AuditCommandBuilder
             $this->value($command, 'db', $p['db'] ?? null);
             $this->value($command, 'health-path', $p['health_path'] ?? null);
             $this->value($command, 'reader-model', $p['reader_model'] ?? null);
+            $this->value($command, 'reviewer-model', $p['reviewer_model'] ?? null);
             $this->value($command, 'confirmer-model', $p['confirmer_model'] ?? null);
             $this->value($command, 'worker-model', $p['worker_model'] ?? null);
             if ((bool) ($p['skip_health'] ?? false)) {
@@ -58,6 +64,9 @@ final class AuditCommandBuilder
 
         $preset = isset($p['preset']) ? (self::PRESETS[$p['preset']] ?? []) : [];
         $argv = [...$argv, 'pentest:run', '--audit-id='.$run->audit_id];
+        if (isset($p['project_name']) && $p['project_name'] !== '') {
+            $argv[] = '--project-name='.(string) $p['project_name'];
+        }
         $this->value($argv, 'path', $p['path'] ?? (isset($preset['path']) ? base_path($preset['path']) : null));
         foreach (($p['categories'] ?: [($preset['category'] ?? null)]) as $category) {
             if ($category) {
@@ -74,6 +83,7 @@ final class AuditCommandBuilder
         $this->value($argv, 'service', $p['service'] ?? null);
         $this->value($argv, 'compose', $p['compose'] ?? null);
         $this->value($argv, 'reader-model', $p['reader_model'] ?? null);
+        $this->value($argv, 'reviewer-model', $p['reviewer_model'] ?? null);
         $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
         $this->value($argv, 'worker-model', $p['worker_model'] ?? null);
         $argv[] = '--ttl='.(int) $p['ttl'];
@@ -83,6 +93,8 @@ final class AuditCommandBuilder
             'assume-authorized' => (bool) ($p['authorized'] ?? false),
             'test' => (bool) ($p['test'] ?? false),
             'keep' => (bool) ($p['keep'] ?? false),
+            // Web runs always retain the compact preview; visibility is a
+            // client-side preference and defaults to off.
             'tool-output' => true,
         ] as $option => $enabled) {
             if ($enabled) {

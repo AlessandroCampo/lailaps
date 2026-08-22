@@ -61,6 +61,9 @@ const date = (value: string | null) =>
                 </p>
             </div>
             <div class="flex gap-2">
+                <Button variant="outline" as-child>
+                    <Link href="/benchmarks"><BarChart3 /> Experiment Explorer</Link>
+                </Button>
                 <Button
                     v-if="benchmarkSelection.length >= 2"
                     variant="outline"
@@ -133,8 +136,6 @@ const date = (value: string | null) =>
                             <span class="truncate font-medium">{{
                                 run.target
                             }}</span
-                            ><Badge v-if="run.legacy" variant="outline"
-                                >legacy</Badge
                             >
                         </div>
                         <p class="mt-1 truncate text-xs text-muted-foreground">

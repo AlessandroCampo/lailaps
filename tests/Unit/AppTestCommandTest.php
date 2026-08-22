@@ -29,7 +29,7 @@ it('builds the Juice Shop shortcut parameters', function (): void {
             '--image' => 'bkimminich/juice-shop:latest',
             '--port' => 3000,
             '--category' => ['A01:2025 Broken Access Control'],
-            '--ttl' => 1800,
+            '--ttl' => 9000,
             '--test' => true,
         ]);
 });
@@ -41,7 +41,7 @@ it('builds the DVWA shortcut parameters without an image', function (): void {
         ->toMatchArray([
             '--path' => base_path('targets/dvwa'),
             '--category' => ['A01:2025 Broken Access Control'],
-            '--ttl' => 1800,
+            '--ttl' => 9000,
             '--test' => true,
         ])
         ->not->toHaveKey('--image')

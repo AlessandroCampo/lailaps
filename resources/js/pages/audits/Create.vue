@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 interface Preset {
     id: string;
     category: string;
+    benchmark?: boolean;
 }
 interface Benchmark {
     id: string;
@@ -30,6 +31,7 @@ const form = useForm({
     authorized: false,
     categories: [''] as string[],
     reader_model: '',
+    reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
     image: '',
@@ -38,7 +40,7 @@ const form = useForm({
     mount: '',
     port: '' as string | number,
     service: '',
-    ttl: 1800,
+    ttl: 9000,
     test: true,
     keep: false,
     benchmark_id: '',
@@ -48,7 +50,7 @@ watch(
     (id) => {
         const preset = props.presets.find((item) => item.id === id);
         if (preset) {
-            form.categories = [preset.category];
+            form.categories = preset.benchmark ? [''] : [preset.category];
         }
     },
 );
@@ -275,6 +277,14 @@ const submit = () =>
                                 v-model="form.worker_model"
                                 class="mt-2"
                                 placeholder="Default configurato"
+                            />
+                        </div>
+                        <div>
+                            <Label>Exploration Reviewer model</Label
+                            ><Input
+                                v-model="form.reviewer_model"
+                                class="mt-2"
+                                placeholder="Default: Reader model"
                             />
                         </div>
                         <div>

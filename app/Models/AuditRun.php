@@ -16,11 +16,10 @@ use Illuminate\Support\Carbon;
  * @property string $type
  * @property AuditRunStatus $status
  * @property array<string, mixed> $parameters
- * @property string|null $artifact_path
+ * @property string|null $run_path
  * @property int|null $exit_code
  * @property string|null $error
  * @property bool $cancellation_requested
- * @property bool $legacy
  * @property Carbon|null $started_at
  * @property Carbon|null $finished_at
  * @property Carbon|null $created_at
@@ -31,8 +30,9 @@ class AuditRun extends Model
     use HasUlids;
 
     protected $fillable = [
-        'user_id', 'audit_id', 'type', 'status', 'parameters', 'artifact_path',
-        'exit_code', 'error', 'cancellation_requested', 'legacy', 'started_at', 'finished_at',
+        'user_id', 'benchmark_experiment_id', 'audit_id', 'type', 'repetition', 'status', 'parameters', 'run_path',
+        'harness_revision', 'target_commit', 'reproducible',
+        'exit_code', 'error', 'cancellation_requested', 'started_at', 'finished_at',
     ];
 
     protected function casts(): array
@@ -41,7 +41,7 @@ class AuditRun extends Model
             'parameters' => 'array',
             'status' => AuditRunStatus::class,
             'cancellation_requested' => 'boolean',
-            'legacy' => 'boolean',
+            'reproducible' => 'boolean',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
         ];
@@ -53,10 +53,19 @@ class AuditRun extends Model
         return $this->belongsTo(User::class);
     }
 
-    /** @return HasMany<AuditEvent, $this> */
-    public function events(): HasMany
+    public function experiment(): BelongsTo
     {
-        return $this->hasMany(AuditEvent::class);
+        return $this->belongsTo(BenchmarkExperiment::class, 'benchmark_experiment_id');
+    }
+
+    public function models(): HasMany
+    {
+        return $this->hasMany(AuditRunModel::class);
+    }
+
+    public function evaluations(): HasMany
+    {
+        return $this->hasMany(BenchmarkEvaluation::class);
     }
 
     public function isTerminal(): bool
