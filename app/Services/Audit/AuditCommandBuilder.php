@@ -52,6 +52,8 @@ final class AuditCommandBuilder
             $this->value($command, 'reviewer-model', $p['reviewer_model'] ?? null);
             $this->value($command, 'confirmer-model', $p['confirmer_model'] ?? null);
             $this->value($command, 'worker-model', $p['worker_model'] ?? null);
+            $this->value($command, 'judge-model', $p['judge_model'] ?? null);
+            $this->value($command, 'budget-category', $p['budget_category'] ?? null);
             if ((bool) ($p['skip_health'] ?? false)) {
                 $command[] = '--skip-health';
             }
@@ -86,6 +88,7 @@ final class AuditCommandBuilder
         $this->value($argv, 'reviewer-model', $p['reviewer_model'] ?? null);
         $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
         $this->value($argv, 'worker-model', $p['worker_model'] ?? null);
+        $this->value($argv, 'judge-model', $p['judge_model'] ?? null);
         $argv[] = '--ttl='.(int) $p['ttl'];
 
         foreach ([

@@ -34,6 +34,7 @@ const form = useForm({
     reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
+    judge_model: '',
     image: '',
     dockerfile: '',
     compose: '',
@@ -277,6 +278,14 @@ const submit = () =>
                                 v-model="form.worker_model"
                                 class="mt-2"
                                 placeholder="Default configurato"
+                            />
+                        </div>
+                        <div>
+                            <Label>Dynamic Judge model</Label
+                            ><Input
+                                v-model="form.judge_model"
+                                class="mt-2"
+                                placeholder="Default: Gemini 3.7 Flash"
                             />
                         </div>
                         <div>

@@ -1,0 +1,7 @@
+{% extends '@core/reactions.twig' %}
+
+{% block extra %}
+  {%- if connected and showCommentMessage -%}
+    <em>{{ _t('BAZ_SHARE_YOUR_COMMENT') }}</em>
+  {%- endif -%}
+{% endblock extra %}

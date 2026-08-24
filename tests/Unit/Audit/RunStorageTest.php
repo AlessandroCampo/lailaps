@@ -23,8 +23,9 @@ it('creates one readable run directory containing exactly log and outcome', func
         ]);
 
         $outcome = $storage->outcome($location['directory'], $location['run_id']);
-        expect(array_keys($outcome))->toBe(['run_id', 'report', 'benchmark'])
+        expect(array_keys($outcome))->toBe(['run_id', 'started_at', 'report', 'benchmark'])
             ->and($outcome['run_id'])->toBe($location['run_id']);
+        expect($outcome['started_at'])->toBe('2026-08-22T17:39:00+02:00');
 
         $storage->writeOutcome($location['directory'], $location['run_id'], ['confirmed' => []], ['score' => 10]);
         expect($storage->outcome($location['directory'], $location['run_id']))

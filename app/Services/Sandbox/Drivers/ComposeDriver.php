@@ -98,7 +98,15 @@ class ComposeDriver implements SandboxDriver
             $cmd[] = $file;
         }
 
-        $process = new Process([...$cmd, ...$args], is_dir((string) $cwd) ? $cwd : null);
+        // Symfony filtra l'ambiente ereditato attraverso $_SERVER su Windows.
+        // Le variabili del runtime benchmark vengono invece aggiunte con putenv(),
+        // quindi passiamo esplicitamente l'ambiente corrente al subprocess Compose.
+        $environment = getenv();
+        $process = new Process(
+            [...$cmd, ...$args],
+            is_dir((string) $cwd) ? $cwd : null,
+            is_array($environment) ? $environment : null,
+        );
         $process->setTimeout($timeout);
 
         return $process;

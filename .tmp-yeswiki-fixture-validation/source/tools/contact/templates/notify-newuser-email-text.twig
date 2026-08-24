@@ -1,0 +1,8 @@
+{{ _t('CONTACT_NEW_USER_MESSAGE')|replace({
+    '{{ baseUrl }}': baseUrl,
+    '{{ wikiName }}': wikiName,
+    '{{ email }}': email,
+    '{{ urlForPasswordRenewal }}': url({tag:'MotDePassePerdu'}),
+})|raw }}
+
+

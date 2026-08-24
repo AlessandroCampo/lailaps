@@ -55,3 +55,26 @@ YAML);
         File::deleteDirectory(storage_path("framework/lailaps-sandbox/{$auditId}"));
     }
 });
+
+it('passes variables added at runtime to docker compose', function (): void {
+    $name = 'LAILAPS_BENCHMARK_RUNTIME_ROOT';
+    $previous = getenv($name);
+    putenv("{$name}=C:/benchmark/runtime");
+
+    try {
+        $driver = new ComposeDriver(new DockerClient);
+        $method = new ReflectionMethod($driver, 'compose');
+        $process = $method->invoke(
+            $driver,
+            storage_path('framework'),
+            'audit-environment-test',
+            [],
+            ['config'],
+            10,
+        );
+
+        expect($process->getEnv()[$name] ?? null)->toBe('C:/benchmark/runtime');
+    } finally {
+        $previous === false ? putenv($name) : putenv("{$name}={$previous}");
+    }
+});

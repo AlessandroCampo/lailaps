@@ -1,0 +1,101 @@
+{
+  "run_id": "artifacts",
+  "started_at": "2026-08-24T01:40:35.812919+02:00",
+  "report": {
+    "schema_version": 8,
+    "outcome": "incomplete",
+    "confirmed": [],
+    "suspected": [
+      {
+        "finding_id": "lead-1",
+        "lead_id": "lead-1",
+        "title": "Untrusted value reaches a suspicious operation",
+        "severity": "info",
+        "owasp_category": "A05:2025 Injection",
+        "cwe_ids": [],
+        "description": "The request value may reach danger().",
+        "suspicious_operation": "danger(value)",
+        "initial_evidence": "The handler reads a request parameter next to the sink.",
+        "unknowns": [
+          "route",
+          "sanitization"
+        ],
+        "security_invariant": "",
+        "recommendation": "",
+        "confidence": "static_analysis",
+        "status": "suspected",
+        "lifecycle_status": "blocked",
+        "locations": [
+          {
+            "file": "route.py",
+            "line": 1,
+            "end_line": 2,
+            "snippet": "value = request.args['id']\ndanger(value)",
+            "source_ref_id": "src-e54ace2e875e"
+          }
+        ],
+        "source_ref_ids": [
+          "src-e54ace2e875e"
+        ],
+        "attackable_routes": [],
+        "confirmation_plan": null,
+        "exploit": null,
+        "clarification_loops": 0,
+        "milestones": {
+          "suspected": "2026-08-23T23:40:35.812919+00:00",
+          "statically_validated": null,
+          "dynamically_confirmed": null
+        },
+        "attribution": {
+          "reader_model": "reader",
+          "reader_trace_id": null,
+          "worker_model": null,
+          "worker_trace_id": null,
+          "judge_model": null,
+          "judge_trace_id": null,
+          "confirmer_model": "confirmer"
+        },
+        "block_reason": "technical",
+        "reason": "ATTENZIONE: la lead lead-1 resta sospetta e bloccata per un errore tecnico del Confirmer (APIError: provider response failed). Non e' stata chiusa e l'errore NON dimostra che sia sicura, falsa o non sfruttabile.",
+        "technical_error": {
+          "role": "confirmer",
+          "type": "APIError",
+          "message": "provider response failed",
+          "disposition": "blocked_suspected"
+        }
+      }
+    ],
+    "rejected_inconclusive": [],
+    "environment_anomalies": [],
+    "blockers": [
+      "confirmer: retry modello esauriti: APIError: provider response failed",
+      "ATTENZIONE: la lead lead-1 resta sospetta e bloccata per un errore tecnico del Confirmer (APIError: provider response failed). Non e' stata chiusa e l'errore NON dimostra che sia sicura, falsa o non sfruttabile.",
+      "lead-1: [technical] ATTENZIONE: la lead lead-1 resta sospetta e bloccata per un errore tecnico del Confirmer (APIError: provider response failed). Non e' stata chiusa e l'errore NON dimostra che sia sicura, falsa o non sfruttabile."
+    ],
+    "pending_leads": [
+      "lead-1: Untrusted value reaches a suspicious operation"
+    ],
+    "files_seen": [],
+    "source_observations": [],
+    "endpoints_seen": [],
+    "coverage": {
+      "complete": false,
+      "rationale": "",
+      "explored": [],
+      "next_focus": "",
+      "category_recon": null,
+      "category_state": {
+        "explored": [],
+        "confirmed": [],
+        "rejected": [],
+        "active_leads": [
+          "lead-1: Untrusted value reaches a suspicious operation"
+        ],
+        "next_focus": ""
+      }
+    },
+    "termination_reason": "running",
+    "publication_state": "partial"
+  },
+  "benchmark": null
+}

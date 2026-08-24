@@ -32,3 +32,5 @@ alla gestione del budget, aggiunta di un tool ad un agente
 di modifica ai log\dump di debug.
 
 Non eseguire il lint sull'intero progetto
+
+I piani proposti devono essere incrementali, e concentrarsi inizialmente su piani concisi e ad alto ROI, evitando over-engeneering. Eventuali soluzioni più complesse, nice-to-have ma meno prioritarie o espansioni del piano iniziale vanno sempre proposte, ma facendo una distinzione tra P0 (modifiche immediate ad alto ROI, per validare l'idea, mantenendo gran parte del gain) e P1, P2 etc... per tutte le modifiche che possono essere successive

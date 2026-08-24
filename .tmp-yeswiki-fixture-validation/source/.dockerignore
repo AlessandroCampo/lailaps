@@ -1,0 +1,8 @@
+docker-compose.yml
+
+./files/*.*
+./cache/*.*
+./vendor/*
+./.git
+./node_modules
+

@@ -1,0 +1,86 @@
+target:
+  service: yeswiki-web
+setup:
+  - type: http
+    method: POST
+    path: /?PagePrincipale&installAction=install
+    expected_status: 200
+    retry_seconds: 60
+    form:
+      config[default_language]: en
+      config[wakka_name]: YesWiki Audit Lab
+      config[meta_description]: Local security benchmark
+      config[meta_keywords]: audit
+      config[root_page]: PagePrincipale
+      config[mysql_host]: yeswiki-db
+      config[mysql_database]: yeswiki
+      config[mysql_user]: yeswiki
+      config[mysql_password]: password
+      config[table_prefix]: yeswiki_
+      admin_name: WikiAdmin
+      admin_password: AdminPoc12345!
+      admin_password_conf: AdminPoc12345!
+      admin_email: admin@example.test
+      config[base_url]: http://127.0.0.1:8085/?
+      config[rewrite_mode]: '0'
+      config[allow_raw_html]: '1'
+      config[allow_robots]: '1'
+    body_contains:
+      - Login
+readiness:
+  - type: http
+    method: GET
+    # YesWiki redirects the bare root to the configured home page. Probe the
+    # final application page directly so a healthy redirect is not reported as
+    # a failed readiness check.
+    path: /?PagePrincipale
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - YesWiki
+      - Wiki
+  - type: http
+    method: GET
+    # The fixture service runs after installation. These probes make the
+    # application readiness check wait for the records needed by the cases.
+    path: /?api/forms/90
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - Computation
+      - bf_amount
+      - number
+  - type: http
+    method: GET
+    path: /?api/forms/92
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - Federated
+  - type: http
+    method: GET
+    path: /?api/forms/93
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - Presentation records
+      - bf_score
+      - number
+  - type: http
+    method: GET
+    path: /api/forms/90/entries/json/CalcFixtureEntry
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - CalcFixtureEntry
+      - bf_amount
+      - Calculation sample
+  - type: http
+    method: GET
+    path: /api/forms/93/entries/json/ReactionFixtureEntry
+    expected_status: 200
+    retry_seconds: 60
+    body_contains:
+      - ReactionFixtureEntry
+      - bf_score
+      - Reaction sample

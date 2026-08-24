@@ -1,0 +1,173 @@
+{
+  "run_id": "artifacts",
+  "started_at": "2026-08-24T01:38:56.924655+02:00",
+  "report": {
+    "schema_version": 8,
+    "outcome": "incomplete",
+    "confirmed": [],
+    "suspected": [],
+    "rejected_inconclusive": [],
+    "environment_anomalies": [],
+    "blockers": [],
+    "pending_leads": [],
+    "files_seen": [],
+    "source_observations": [],
+    "endpoints_seen": [],
+    "coverage": {
+      "complete": false,
+      "rationale": "",
+      "explored": [],
+      "next_focus": "Api/Procedure + Api/Authorization",
+      "category_recon": {
+        "schema_version": 3,
+        "kind": "category_recon",
+        "areas": [
+          {
+            "area_id": "area-01",
+            "title": "File/AccessMap",
+            "paths": [
+              "route.py"
+            ],
+            "next_check": "Inspect File/AccessMap"
+          },
+          {
+            "area_id": "area-02",
+            "title": "Api/Procedure + Api/Authorization",
+            "paths": [
+              "route.py"
+            ],
+            "next_check": "Inspect Api/Procedure + Api/Authorization"
+          }
+        ],
+        "unknowns": [],
+        "status": "ready"
+      },
+      "category_state": {
+        "explored": [
+          "Api/Procedure + Api/Authorization",
+          "File/AccessMap"
+        ],
+        "confirmed": [],
+        "rejected": [],
+        "active_leads": [],
+        "next_focus": "Api/Procedure + Api/Authorization"
+      }
+    },
+    "termination_reason": "economic_budget_exhausted",
+    "publication_state": "final",
+    "telemetry": {
+      "model_requests": 0,
+      "total_model_input_tokens": 0,
+      "total_model_output_tokens": 0,
+      "total_tool_output_tokens": 0,
+      "number_of_compactions": 1,
+      "tokens_before_compaction": [
+        0
+      ],
+      "tokens_after_compaction": [
+        509
+      ],
+      "compactions_by_role": {
+        "reader": 1
+      },
+      "compaction_events": [
+        {
+          "role": "reader",
+          "before_tokens": 0,
+          "after_tokens": 509,
+          "summary_tokens": 0,
+          "mode": "unspecified",
+          "forced": false
+        }
+      ],
+      "recon_status": "ready",
+      "recon_terminal_reason": "model_output",
+      "number_of_tool_calls": 0,
+      "search_source_calls": 0,
+      "read_file_calls": 0,
+      "workspace_command_calls": 0,
+      "graph_tool_calls": {},
+      "graph_tool_errors": 0,
+      "code_intelligence_fallbacks": 0,
+      "cbm_bootstrap_status": "disabled",
+      "cbm_index_duration_ms": 0,
+      "duplicate_tool_calls_blocked": 0,
+      "files_read_multiple_times": 0,
+      "average_tool_output_tokens": 0.0,
+      "maximum_tool_output_tokens": 0,
+      "confirmed_findings": 0,
+      "suspected_findings": 0,
+      "lead_count": 0,
+      "run_completed": false,
+      "role_usage": {},
+      "worker_outcomes": {},
+      "clarification_loops": 0,
+      "cached_model_input_tokens": 0,
+      "uncached_model_input_tokens": 0,
+      "provider_cost_usd": null,
+      "cost_accounting_complete": true,
+      "estimated_cost_usd": 0.0,
+      "cost_source_counts": {},
+      "lead_usage": {},
+      "economic_point_limit": 1000000.0,
+      "budget_category": "configured",
+      "budget_category_multiplier": 1.0,
+      "category_budget_cap_points": 1000000.0,
+      "economic_points_used": 0.0,
+      "economic_points_remaining": 1000000.0,
+      "uncached_input_points": 0.0,
+      "cached_input_points": 0.0,
+      "output_points": 0.0,
+      "cache_usage_anomalies": 0,
+      "investigative_requests": 0,
+      "terminal_requests": 0,
+      "output_retry_requests": 0,
+      "compaction_requests": 0,
+      "terminal_overshoot_points": 0.0,
+      "budget_grants": [
+        {
+          "role": "reader",
+          "requests": 16,
+          "points": 160000.0,
+          "reason": "reviewer_extension"
+        }
+      ],
+      "budget_boundaries": [],
+      "exploration_reviews": 2,
+      "exploration_review_decisions": {
+        "pivot": 1,
+        "continue_current": 1
+      },
+      "reader_requests_granted": 16,
+      "exploration_tool_results": 0,
+      "exploration_novel_results": 0,
+      "exploration_empty_results": 0,
+      "exploration_error_results": 0,
+      "response_tool_calls": {},
+      "model_turn_retries_attempted": {},
+      "model_turn_retries_recovered": {},
+      "model_turn_retries_exhausted": {},
+      "total_tokens": 0,
+      "tokens_per_confirmed_finding": null,
+      "tokens_per_lead": null,
+      "clarification_rate": 0.0,
+      "tokens_per_completed_audit": null,
+      "exploration_novel_result_rate": 0.0,
+      "exploration_empty_result_rate": 0.0,
+      "exploration_error_result_rate": 0.0,
+      "reviewer_points_used": 0.0,
+      "exploration_continue_current_count": 1,
+      "exploration_pivot_count": 1,
+      "pricing": {
+        "schema_version": 1,
+        "currency": "USD",
+        "unit_tokens": 1000000,
+        "verified_at": "2026-08-23",
+        "source": "https://openrouter.ai/api/v1/models"
+      },
+      "http_tool_calls": 0,
+      "http_network_requests": 0
+    }
+  },
+  "benchmark": null
+}

@@ -1,0 +1,61 @@
+{
+  "name": "yeswiki",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yeswiki/yeswiki.git"
+  },
+  "license": "AGPL-3.0",
+  "homepage": "https://yeswiki.net",
+  "scripts": {
+    "lint-js": "eslint --fix .",
+    "lint-other": "node_modules/.bin/prettier --write '**/*.css' '**/*.json' '**/*.md' '**/*.yaml'",
+    "postinstall": "./includes/extract-files-from-node-modules.sh"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^5.15.4",
+    "ace-builds": "^1",
+    "bootstrap": "^3",
+    "datatables.net-bs": "^1.11.3",
+    "datatables.net-buttons-bs": "^2.2.1",
+    "datatables.net-fixedheader-bs": "^3.2.1",
+    "datatables.net-responsive-bs": "^2.2.9",
+    "docsify": "5.0.0-rc.4",
+    "docsify-copy-code": "^2.1.1",
+    "formBuilder": "3.7.3",
+    "formbuilder-languages": "^1.1.0",
+    "fullcalendar": "^5.10.2",
+    "gogocarto-js": "^1.7.11",
+    "htmx.org": "^2.0.4",
+    "iframe-resizer": "^4.3.6",
+    "jquery": "^3.5.1",
+    "jquery-ui-sortable": "^1.0.0",
+    "lazysizes": "^5.3.2",
+    "leaflet": "^1.9.4",
+    "leaflet-draw": "^1.0.4",
+    "leaflet-providers": "^1.13",
+    "leaflet.fullscreen": "^2.4",
+    "leaflet.markercluster": "^1.5.3",
+    "mermaid": "^11.15.0",
+    "minimist": "^1.2.6",
+    "moment": "^2.29.2",
+    "node-fetch": "^2.6.7",
+    "sortablejs": "^1.15.2",
+    "spectrum-colorpicker2": "^2.0.8",
+    "vue": "^3.2.47",
+    "vue-select": "4.0.0-beta.6",
+    "vuedraggable": "^4.1.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.0",
+    "@eslint/js": "^9.22.0",
+    "@playwright/test": "^1.51.1",
+    "@types/node": "^22.13.12",
+    "eslint": "^9.22.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.31",
+    "globals": "^16.0.0",
+    "prettier": "^3.5"
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}

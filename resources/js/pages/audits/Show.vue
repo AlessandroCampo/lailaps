@@ -161,6 +161,20 @@ const findings = computed(() => [
         _state: item.status || 'finding',
     })),
 ]);
+type RoleCostRow = Record<string, any> & { role: string };
+const roleCosts = computed<RoleCostRow[]>(() =>
+    Object.entries(props.telemetry?.role_usage ?? {})
+        .map(([role, usage]): RoleCostRow => ({
+            role,
+            ...(usage as Record<string, any>),
+        }))
+        .sort((a, b) => Number(b.cost_usd ?? 0) - Number(a.cost_usd ?? 0)),
+);
+const formatUsd = (value: unknown) => {
+    const amount = Number(value);
+
+    return Number.isFinite(amount) ? `$${amount.toFixed(4)}` : '—';
+};
 const eventText = (event: AuditEvent) =>
     String(
         event.payload.content ??
@@ -1237,6 +1251,93 @@ onBeforeUnmount(() => source?.close());
                     </dl>
                 </article>
             </div>
+            <article class="rounded-xl border bg-card p-5">
+                <div
+                    class="flex flex-wrap items-baseline justify-between gap-2"
+                >
+                    <div>
+                        <h3 class="font-semibold">Costo per ruolo</h3>
+                        <p class="mt-1 text-sm text-muted-foreground">
+                            Provider = addebito OpenRouter; fallback = stima dal
+                            listino locale.
+                        </p>
+                    </div>
+                    <span class="text-sm text-muted-foreground">
+                        Cache read:
+                        {{
+                            telemetry?.cached_model_input_tokens?.toLocaleString?.() ??
+                            '—'
+                        }}
+                        token
+                    </span>
+                </div>
+                <div
+                    v-if="roleCosts.length"
+                    class="mt-4 overflow-x-auto rounded-lg border"
+                >
+                    <table class="w-full min-w-[720px] text-left text-sm">
+                        <thead class="bg-muted text-xs text-muted-foreground">
+                            <tr>
+                                <th class="px-3 py-2 font-medium">Ruolo</th>
+                                <th class="px-3 py-2 font-medium">Modello</th>
+                                <th class="px-3 py-2 text-right font-medium">
+                                    Request
+                                </th>
+                                <th class="px-3 py-2 text-right font-medium">
+                                    Input cached
+                                </th>
+                                <th class="px-3 py-2 text-right font-medium">
+                                    Provider
+                                </th>
+                                <th class="px-3 py-2 text-right font-medium">
+                                    Fallback
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr
+                                v-for="usage in roleCosts"
+                                :key="usage.role"
+                                class="border-t"
+                            >
+                                <td class="px-3 py-2">
+                                    <Badge>{{ usage.role }}</Badge>
+                                </td>
+                                <td
+                                    class="max-w-[260px] truncate px-3 py-2 font-mono text-xs"
+                                >
+                                    {{ usage.model || '—' }}
+                                </td>
+                                <td class="px-3 py-2 text-right">
+                                    {{
+                                        Number(
+                                            usage.requests ?? 0,
+                                        ).toLocaleString()
+                                    }}
+                                </td>
+                                <td class="px-3 py-2 text-right">
+                                    {{
+                                        Number(
+                                            usage.cached_tokens ?? 0,
+                                        ).toLocaleString()
+                                    }}
+                                </td>
+                                <td class="px-3 py-2 text-right font-medium">
+                                    {{ formatUsd(usage.cost_usd) }}
+                                </td>
+                                <td
+                                    class="px-3 py-2 text-right text-muted-foreground"
+                                >
+                                    {{ formatUsd(usage.estimated_cost_usd) }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p v-else class="mt-3 text-sm text-muted-foreground">
+                    Nessun costo per ruolo disponibile.
+                </p>
+            </article>
             <article
                 v-for="evaluation in evaluations"
                 :key="evaluation.id"

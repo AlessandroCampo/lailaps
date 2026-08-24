@@ -3,6 +3,7 @@
 namespace App\Services\Audit;
 
 use App\Models\AuditRun;
+use App\Models\AuditRunModel;
 use App\Models\BenchmarkEvaluation;
 use App\Services\Pentest\BenchmarkCatalog;
 use App\Services\Pentest\BenchmarkEvaluator;
@@ -41,6 +42,7 @@ final class AuditRunFinalizer
             'target_commit' => $descriptor?->commit(),
             'reproducible' => ! $dirty,
         ]);
+        $this->projectModels($run, is_array($outcome['report'] ?? null) ? $outcome['report'] : []);
         if ($benchmark !== null && Schema::hasTable('benchmark_evaluations')) {
             $this->storage->writeOutcome($root, $run->audit_id, is_array($outcome['report'] ?? null) ? $outcome['report'] : null, $benchmark);
             $this->projectBenchmark($run, $benchmark, $this->storage->outcomePath($root, $run->audit_id));
@@ -55,6 +57,47 @@ final class AuditRunFinalizer
                     : 'running',
                 'started_at' => $experiment->started_at ?? now(),
                 'finished_at' => $remaining === 0 ? now() : null,
+            ]);
+        }
+    }
+
+    /** @param array<string, mixed> $report */
+    private function projectModels(AuditRun $run, array $report): void
+    {
+        if (! Schema::hasTable('audit_run_models')) {
+            return;
+        }
+        $metadata = [
+            'pricing' => data_get($report, 'telemetry.pricing'),
+            'cost_source_counts' => data_get($report, 'telemetry.cost_source_counts'),
+        ];
+        $models = (array) ($report['models'] ?? []);
+        if ($models === []) {
+            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium'] as $role => $effort) {
+                $requested = $run->parameters[$role.'_model'] ?? null;
+                if (is_string($requested) && $requested !== '') {
+                    $models[] = [
+                        'role' => $role,
+                        'requested_model' => $requested,
+                        'effective_model' => $requested,
+                        'reasoning_effort' => $effort,
+                    ];
+                }
+            }
+        }
+        foreach ($models as $model) {
+            if (! is_array($model) || empty($model['role'])) {
+                continue;
+            }
+            AuditRunModel::query()->updateOrCreate([
+                'audit_run_id' => $run->id,
+                'role' => (string) $model['role'],
+            ], [
+                'requested_model' => (string) ($model['requested_model'] ?? ''),
+                'effective_model' => (string) ($model['effective_model'] ?? $model['requested_model'] ?? ''),
+                'provider' => null,
+                'reasoning_effort' => $model['reasoning_effort'] ?? null,
+                'metadata' => $metadata,
             ]);
         }
     }
@@ -214,7 +257,8 @@ final class AuditRunFinalizer
                     'confirmation_recall' => (float) data_get($result, 'confirmation.recall', 0),
                     'confirmation_f1' => (float) data_get($result, 'confirmation.f1', 0),
                     'total_tokens' => (int) data_get($result, 'cost.total_tokens', 0),
-                    'provider_cost_usd' => (float) data_get($result, 'cost.provider_cost_usd', 0),
+                    'provider_cost_usd' => data_get($result, 'cost.provider_cost_usd') === null
+                        ? null : (float) data_get($result, 'cost.provider_cost_usd'),
                     'evaluated_at' => now(),
                 ]);
                 foreach ((array) ($result['cases'] ?? []) as $case) {

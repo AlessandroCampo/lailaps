@@ -37,9 +37,15 @@ final class BenchmarkCompare extends Command
                 number_format((float) data_get($score, 'static_validation.recall', 0), 3),
                 number_format((float) data_get($score, 'dynamically_confirmed.recall', data_get($score, 'confirmation.recall', 0)), 3),
                 $score['cost']['total_tokens'] ?? 0,
+                number_format((float) data_get($score, 'cost.economic_points', 0), 0),
+                data_get($score, 'cost.provider_cost_usd') === null ? 'n/a' : '$'.number_format((float) data_get($score, 'cost.provider_cost_usd'), 4),
+                (int) data_get($score, 'cost.model_requests', 0),
+                (int) data_get($score, 'cost.tool_calls', 0),
+                (int) data_get($score, 'cost.http_requests', 0),
+                data_get($score, 'disposition.accuracy') === null ? 'n/a' : number_format((float) data_get($score, 'disposition.accuracy'), 3),
             ];
         }
-        $this->table(['Suite', 'Artifact', 'Environment', 'Score', 'File R', 'Anchor R', 'Suspect R', 'Static R', 'Dynamic R', 'Tokens'], $rows);
+        $this->table(['Suite', 'Artifact', 'Environment', 'Score', 'File R', 'Anchor R', 'Suspect R', 'Static R', 'Dynamic R', 'Tokens', 'Points', 'USD', 'Model', 'Tool', 'HTTP', 'Disposition'], $rows);
 
         return self::SUCCESS;
     }

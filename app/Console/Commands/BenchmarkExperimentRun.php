@@ -75,6 +75,7 @@ final class BenchmarkExperimentRun extends Command
                         'confirmer_model' => $models['confirmer'] ?? null,
                         'target_mode' => 'sandbox', 'url' => null, 'db' => null,
                         'health_path' => null, 'skip_health' => false, 'authorized' => true,
+                        'budget_category' => $definition['budget_category'] ?? null,
                         'keep' => false, 'test' => (bool) ($definition['test'] ?? false),
                         'ttl' => (int) ($definition['ttl'] ?? 3600),
                     ];

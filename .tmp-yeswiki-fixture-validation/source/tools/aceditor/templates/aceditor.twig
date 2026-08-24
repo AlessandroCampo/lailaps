@@ -1,0 +1,36 @@
+<div class="aceditor-container" data-name="{{ arguments.name }}">
+  <div class="scroll-container-toolbar">
+    <div class="btn-toolbar aceditor-toolbar">
+      {{ include('@aceditor/aceditor-toolbar.twig') }}
+    </div>
+  </div>
+
+  <div class="ace-container ace-editor-container">
+    <pre class="ace-body"></pre>
+  </div>
+
+  <div class="flying-edit-button">
+    <a class="open-actions-builder-btn btn btn-primary btn-icon">
+      <i class="fa fa-pencil-alt"></i>
+    </a>
+  </div>
+
+  <textarea id="{{ arguments.name }}" name="{{ arguments.name }}" maxlength="{{ arguments.maxChars }}" rows="{{ arguments.rows }}" placeholder="{{ arguments.placeholder }}" {% if arguments.required is not empty %}required{% endif %}
+            class="aceditor-textarea">
+    {{- arguments.value|raw -}}
+  </textarea>
+
+</div>
+
+<script>
+  // Send data to javascript
+  var actionsBuilderData = {{ actionsBuilderData|json_encode|raw }};
+  var pageTags = {{ pageTags|json_encode|raw }}
+</script>
+
+{{ include_javascript(config.debug == 'yes' ? 'javascripts/vendor/vue/vue.js' : 'javascripts/vendor/vue/vue.min.js') }}
+{{ include_javascript('javascripts/vendor/vue-select/vue-select.min.js') }}
+{{ include_css('styles/vendor/vue-select/vue-select.css') }}
+
+{{ include_javascript('tools/aceditor/presentation/javascripts/aceditor.js', false, true) }}
+{{ include_css('tools/aceditor/presentation/styles/aceditor.css') }}

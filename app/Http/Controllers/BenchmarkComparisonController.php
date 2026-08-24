@@ -31,7 +31,7 @@ final class BenchmarkComparisonController extends Controller
         if ($request->filled('revision')) {
             $query->whereHas('run', fn (Builder $query) => $query->where('harness_revision', $request->input('revision')));
         }
-        foreach (['reader', 'worker', 'confirmer'] as $role) {
+        foreach (['reader', 'reviewer', 'worker', 'confirmer'] as $role) {
             if ($request->filled($role)) {
                 $query->whereHas('run.models', fn (Builder $query) => $query->where('role', $role)->where('effective_model', $request->input($role)));
             }
@@ -46,7 +46,7 @@ final class BenchmarkComparisonController extends Controller
 
         return Inertia::render('audits/Compare', [
             'groups' => $this->groups($evaluations),
-            'filters' => $request->only(['target', 'category', 'status', 'artifact', 'environment', 'experiment', 'revision', 'reader', 'worker', 'confirmer', 'from', 'to']),
+            'filters' => $request->only(['target', 'category', 'status', 'artifact', 'environment', 'experiment', 'revision', 'reader', 'reviewer', 'worker', 'confirmer', 'from', 'to']),
             'options' => $this->options($request),
         ]);
     }
@@ -60,7 +60,8 @@ final class BenchmarkComparisonController extends Controller
             return implode('|', [$evaluation->benchmark_id, $evaluation->target_id, $evaluation->category,
                 $evaluation->run->harness_revision, $evaluation->run->target_commit,
                 data_get($evaluation->payload, 'comparison_signature', 'unknown-budget'),
-                $models['reader'] ?? 'unknown', $models['worker'] ?? 'unknown', $models['confirmer'] ?? 'unknown']);
+                $models['reader'] ?? 'unknown', $models['reviewer'] ?? 'unknown',
+                $models['worker'] ?? 'unknown', $models['confirmer'] ?? 'unknown']);
         })->map(function (Collection $items, string $key): array {
             /** @var BenchmarkEvaluation $first */
             $first = $items->first();
@@ -69,7 +70,7 @@ final class BenchmarkComparisonController extends Controller
             return [
                 'key' => hash('sha256', $key), 'target' => $first->target_id, 'category' => $first->category,
                 'harnessRevision' => $first->run->harness_revision, 'targetCommit' => $first->run->target_commit,
-                'models' => ['reader' => $models['reader'] ?? null, 'worker' => $models['worker'] ?? null, 'confirmer' => $models['confirmer'] ?? null],
+                'models' => ['reader' => $models['reader'] ?? null, 'reviewer' => $models['reviewer'] ?? null, 'worker' => $models['worker'] ?? null, 'confirmer' => $models['confirmer'] ?? null],
                 'n' => $items->count(),
                 'status' => $items->every(fn (BenchmarkEvaluation $item) => $item->status === 'scored') ? 'scored' : 'provisional',
                 'completionRate' => $items->filter(fn (BenchmarkEvaluation $item) => $item->run->status->value === 'completed')->count() / max(1, $items->count()),
@@ -83,6 +84,11 @@ final class BenchmarkComparisonController extends Controller
                     'confirmationF1' => $this->summary($items->pluck('confirmation_f1')),
                     'totalTokens' => $this->summary($items->pluck('total_tokens')),
                     'providerCostUsd' => $this->summary($items->pluck('provider_cost_usd')),
+                    'economicPoints' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'economic_points', 0))),
+                    'modelRequests' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'model_requests', 0))),
+                    'toolCalls' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'tool_calls', 0))),
+                    'httpRequests' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'http_requests', 0))),
+                    'dispositionAccuracy' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): mixed => data_get($evaluation->payload, 'disposition.accuracy'))->filter(fn ($value) => $value !== null)),
                     'readerCacheHitRate' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'reader_cache_hit_rate', 0))),
                     'readerCandidatesPer1kTokens' => $this->summary($items->map(fn (BenchmarkEvaluation $evaluation): float => (float) data_get($evaluation->cost, 'reader_candidates_per_1k_tokens', 0))),
                     'tokensPerConfirmedTp' => $this->summary($items->map(function (BenchmarkEvaluation $evaluation): ?float {
@@ -143,7 +149,7 @@ final class BenchmarkComparisonController extends Controller
             'environments' => (clone $base)->distinct()->orderBy('environment_state')->pluck('environment_state')->all(),
             'revisions' => $request->user()->auditRuns()->whereNotNull('harness_revision')->distinct()->pluck('harness_revision')->all(),
             'experiments' => $request->user()->benchmarkExperiments()->orderByDesc('created_at')->pluck('name', 'id')->all(),
-            'readers' => $models('reader'), 'workers' => $models('worker'), 'confirmers' => $models('confirmer'),
+            'readers' => $models('reader'), 'reviewers' => $models('reviewer'), 'workers' => $models('worker'), 'confirmers' => $models('confirmer'),
         ];
     }
 }

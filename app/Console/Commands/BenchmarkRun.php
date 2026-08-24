@@ -28,6 +28,9 @@ final class BenchmarkRun extends Command
         {--reviewer-model= : Modello OpenRouter per l Exploration Reviewer}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
         {--worker-model= : Modello OpenRouter per il Worker}
+        {--judge-model= : Modello OpenRouter per il Dynamic Judge}
+        {--operative-model= : Modello OpenRouter per Confirmer e Worker; sostituisce i default di ruolo}
+        {--budget-category= : Preset cap categoria: small, regular, big oppure huge}
         {--tool-output : Mostra una sintesi compatta delle risposte dei tool durante la run}
         {--audit-id= : ID parlante della run}
         {--keep=true : Mantiene le sandbox avviate}
@@ -93,6 +96,7 @@ final class BenchmarkRun extends Command
         $oldDirectory = getenv('LAILAPS_RUN_DIRECTORY');
         $oldRunId = getenv('LAILAPS_RUN_ID');
         $oldOutcome = getenv('LAILAPS_OUTCOME_FILE');
+        $oldHarnessEnvironment = [];
         putenv('LAILAPS_RUN_DIRECTORY='.$directory);
         putenv('LAILAPS_RUN_ID='.$runId);
         putenv('LAILAPS_OUTCOME_FILE='.$storage->outcomePath($directory, $runId));
@@ -104,7 +108,12 @@ final class BenchmarkRun extends Command
         $results = [];
         $reports = [];
         try {
-            $agentSource = $auditSource->materialize($source, $workDirectory.'/source', $targetId, $catalog->descriptor($targetId));
+            $descriptor = $catalog->descriptor($targetId);
+            $agentSource = $auditSource->materialize($source, $workDirectory.'/source', $targetId, $descriptor);
+            foreach ($descriptor?->harnessEnvironment() ?? [] as $name => $value) {
+                $oldHarnessEnvironment[$name] = getenv($name);
+                putenv($name.'='.$value);
+            }
             $fixtureProbeFile = $this->writeFixtureProbeFile($workDirectory, $manifests);
             foreach ($manifests as $manifest) {
                 $categorySlug = $manifest->benchmarkCategory() ?: strtolower($manifest->categoryId());
@@ -117,6 +126,9 @@ final class BenchmarkRun extends Command
                     '--reviewer-model' => $this->option('reviewer-model'),
                     '--confirmer-model' => $this->option('confirmer-model'),
                     '--worker-model' => $this->option('worker-model'),
+                    '--judge-model' => $this->option('judge-model'),
+                    '--operative-model' => $this->option('operative-model'),
+                    '--budget-category' => $this->option('budget-category'),
                     '--tool-output' => $this->enabledOption('tool-output'),
                     '--keep' => $this->enabledOption('keep'),
                     '--test' => $this->enabledOption('test'),
@@ -181,6 +193,9 @@ final class BenchmarkRun extends Command
             $this->restoreEnv('LAILAPS_RUN_DIRECTORY', $oldDirectory);
             $this->restoreEnv('LAILAPS_RUN_ID', $oldRunId);
             $this->restoreEnv('LAILAPS_OUTCOME_FILE', $oldOutcome);
+            foreach ($oldHarnessEnvironment as $name => $value) {
+                $this->restoreEnv($name, $value);
+            }
             $this->appendRunLog($storage, $directory, $runId, "[benchmark] completato\n");
             $this->info('Benchmark completato.');
         }
@@ -294,9 +309,13 @@ final class BenchmarkRun extends Command
             'files_seen' => [],
             'source_observations' => [],
             'telemetry' => [],
+            'models' => [],
         ];
         $environmentStates = [];
         foreach ($reports as $slug => $report) {
+            if ($aggregate['models'] === [] && is_array($report['models'] ?? null)) {
+                $aggregate['models'] = $report['models'];
+            }
             $aggregate['categories'][] = [
                 'slug' => $slug,
                 'outcome' => $report['outcome'] ?? null,
@@ -339,6 +358,8 @@ final class BenchmarkRun extends Command
         foreach ($right as $key => $value) {
             if (is_int($value) || is_float($value)) {
                 $left[$key] = (is_numeric($left[$key] ?? null) ? $left[$key] : 0) + $value;
+            } elseif ($key === 'model' && is_string($value)) {
+                $left[$key] = ! isset($left[$key]) || $left[$key] === $value ? $value : 'mixed';
             } elseif (is_array($value)) {
                 $left[$key] = $this->sumTelemetry(is_array($left[$key] ?? null) ? $left[$key] : [], $value);
             }

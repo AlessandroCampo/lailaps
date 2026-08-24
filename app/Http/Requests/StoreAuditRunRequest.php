@@ -28,6 +28,7 @@ class StoreAuditRunRequest extends FormRequest
             'reviewer_model' => ['nullable', 'string', 'max:255'],
             'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
+            'judge_model' => ['nullable', 'string', 'max:255'],
             'image' => ['nullable', 'string', 'max:255'],
             'dockerfile' => ['nullable', 'string', 'max:2048'],
             'compose' => ['nullable', 'string', 'max:2048'],
@@ -81,7 +82,7 @@ class StoreAuditRunRequest extends FormRequest
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
             'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
             'confirmer_model' => null,
-            'worker_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
+            'worker_model' => null, 'judge_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
             'test' => true, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
         ], $this->validated());

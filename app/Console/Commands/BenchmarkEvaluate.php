@@ -12,7 +12,7 @@ use Illuminate\Console\Command;
 
 final class BenchmarkEvaluate extends Command
 {
-    protected $signature = 'benchmark:evaluate {--run= : ID DB o audit_id} {--evaluator=3.0.0}';
+    protected $signature = 'benchmark:evaluate {--run= : ID DB o audit_id} {--evaluator=3.2.1}';
 
     protected $description = 'Ricalcola il benchmark dagli artefatti senza rilanciare il modello';
 

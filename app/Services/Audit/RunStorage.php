@@ -19,7 +19,8 @@ final class RunStorage
     {
         $project = substr(self::slug($project), 0, 20);
         $category = self::category($categories);
-        $stamp = ($at ?? now())->format('Ymd-His');
+        $startedAt = $at ?? now();
+        $stamp = $startedAt->format('Ymd-His');
         $baseId = "{$project}-{$category}-{$stamp}";
         $runId = $baseId;
         $suffix = 2;
@@ -29,12 +30,12 @@ final class RunStorage
         }
 
         $directory = $this->directory($project, $category, $runId);
-        $this->initialize($directory, $runId);
+        $this->initialize($directory, $runId, $startedAt);
 
         return ['run_id' => $runId, 'directory' => $directory];
     }
 
-    public function initialize(string $directory, string $runId): void
+    public function initialize(string $directory, string $runId, ?DateTimeInterface $startedAt = null): void
     {
         if (preg_match('/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/', $runId) !== 1) {
             throw new RuntimeException('run_id non valido.');
@@ -50,7 +51,7 @@ final class RunStorage
 
         $outcome = $this->outcomePath($directory, $runId);
         if (! is_file($outcome)) {
-            $this->writeOutcome($directory, $runId, null, null);
+            $this->writeOutcome($directory, $runId, null, null, $startedAt);
         }
     }
 
@@ -86,12 +87,32 @@ final class RunStorage
         }
     }
 
-    public function writeOutcome(string $directory, string $runId, ?array $report, ?array $benchmark): void
+    public function writeOutcome(
+        string $directory,
+        string $runId,
+        ?array $report,
+        ?array $benchmark,
+        ?DateTimeInterface $startedAt = null,
+    ): void
     {
         $path = $this->outcomePath($directory, $runId);
         $temporary = $path.'.tmp';
+        $existingStartedAt = null;
+        if (is_file($path)) {
+            try {
+                $existing = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+                $existingStartedAt = is_array($existing) && is_string($existing['started_at'] ?? null)
+                    ? $existing['started_at']
+                    : null;
+            } catch (\Throwable) {
+                // A fresh outcome will receive the current timestamp below.
+            }
+        }
+        $startedAtValue = $existingStartedAt
+            ?? ($startedAt?->format(DateTimeInterface::ATOM) ?? now()->toIso8601String());
         $payload = json_encode([
             'run_id' => $runId,
+            'started_at' => $startedAtValue,
             'report' => $report,
             'benchmark' => $benchmark,
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
@@ -107,15 +128,15 @@ final class RunStorage
         $id = $run instanceof AuditRun ? $run->audit_id : (string) $runId;
         $path = $this->outcomePath($directory, $id);
         if (! is_file($path)) {
-            return ['run_id' => $id, 'report' => null, 'benchmark' => null];
+            return ['run_id' => $id, 'started_at' => null, 'report' => null, 'benchmark' => null];
         }
         try {
             $decoded = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
         } catch (\Throwable) {
-            return ['run_id' => $id, 'report' => null, 'benchmark' => null];
+            return ['run_id' => $id, 'started_at' => null, 'report' => null, 'benchmark' => null];
         }
 
-        return is_array($decoded) ? $decoded : ['run_id' => $id, 'report' => null, 'benchmark' => null];
+        return is_array($decoded) ? $decoded : ['run_id' => $id, 'started_at' => null, 'report' => null, 'benchmark' => null];
     }
 
     public function logPath(string $directory, string $runId): string

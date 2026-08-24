@@ -65,6 +65,20 @@ it('forwards an optional benchmark subcategory', function (): void {
     expect((new AuditCommandBuilder)->build($run))->toContain('--category=sqli');
 });
 
+it('forwards a dedicated Dynamic Judge model without changing the Worker', function (): void {
+    $run = new AuditRun;
+    $run->audit_id = 'audit-judge-model';
+    $run->parameters = [
+        'preset' => 'dvwa', 'categories' => [], 'ttl' => 1800,
+        'worker_model' => 'deepseek/worker', 'judge_model' => 'google/judge',
+        'skip_health' => false, 'authorized' => false, 'test' => false, 'keep' => false,
+    ];
+
+    expect((new AuditCommandBuilder)->build($run))
+        ->toContain('--worker-model=deepseek/worker')
+        ->toContain('--judge-model=google/judge');
+});
+
 it('keeps ordinary presets on the generic pentest command', function (): void {
     $run = new AuditRun;
     $run->audit_id = 'audit-456';

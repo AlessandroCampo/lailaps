@@ -1,0 +1,319 @@
+{
+  "run_id": "artifacts",
+  "started_at": "2026-08-24T01:48:56.449665+02:00",
+  "report": {
+    "schema_version": 8,
+    "outcome": "incomplete",
+    "confirmed": [
+      {
+        "finding_id": "lead-1",
+        "lead_id": "lead-1",
+        "title": "Injection candidate",
+        "severity": "high",
+        "owasp_category": "A05:2025 Injection",
+        "cwe_ids": [],
+        "description": "The request id reaches danger without sanitization.",
+        "suspicious_operation": "danger(value)",
+        "initial_evidence": "The handler reads a request parameter next to the sink.",
+        "unknowns": [
+          "route",
+          "sanitization"
+        ],
+        "security_invariant": "Untrusted input must not reach danger.",
+        "recommendation": "Validate and parameterize the input.",
+        "confidence": "dynamically_confirmed",
+        "status": "confirmed",
+        "lifecycle_status": "confirmed",
+        "locations": [
+          {
+            "file": "route.py",
+            "line": 1,
+            "end_line": 2,
+            "snippet": "value = request.args['id']\ndanger(value)",
+            "source_ref_id": "src-e54ace2e875e"
+          }
+        ],
+        "source_ref_ids": [
+          "src-e54ace2e875e"
+        ],
+        "attackable_routes": [
+          "/other"
+        ],
+        "confirmation_plan": {
+          "kind": "candidate",
+          "lead_id": "lead-1",
+          "title": "Injection candidate",
+          "hypothesis": "The request id reaches danger without sanitization.",
+          "owasp_category": "A05:2025 Injection",
+          "severity": "high",
+          "cwe_ids": [],
+          "affected_asset": "",
+          "security_boundary": "",
+          "weakness": "",
+          "impact": "",
+          "source_ref_ids": [
+            "src-e54ace2e875e"
+          ],
+          "source": "request.args['id']",
+          "propagation": "The handler passes id directly to danger().",
+          "sink": "danger(value)",
+          "reachability": "GET /items invokes the handler.",
+          "controllable_input": "The id query parameter is attacker controlled.",
+          "security_invariant": "Untrusted input must not reach danger.",
+          "attackable_routes": [
+            "/items"
+          ],
+          "recipe": {
+            "schema_version": 1,
+            "objective": "Observe whether the payload reaches danger().",
+            "steps": [
+              {
+                "step_id": "test",
+                "actor": "anonymous",
+                "action": "Send a payload in id.",
+                "http_request": {
+                  "method": "GET",
+                  "application_path": "/items?id=payload",
+                  "instructions": "Send a payload in id."
+                },
+                "expected_observation": "The response contains the injected marker.",
+                "evidence_to_preserve": [
+                  "request_id",
+                  "response_id"
+                ]
+              }
+            ],
+            "oracle": {
+              "kind": "direct_impact",
+              "control_step_ids": [],
+              "test_step_ids": [
+                "test"
+              ],
+              "success_condition": "The response contains the injected marker.",
+              "rejection_condition": "The payload is rejected or encoded."
+            },
+            "alternatives": []
+          },
+          "recommendation": "Validate and parameterize the input.",
+          "coverage_delta": [],
+          "next_focus": "",
+          "state_update": {
+            "explored": [],
+            "rejected": [],
+            "active_leads": [],
+            "next_focus": ""
+          }
+        },
+        "exploit": {
+          "request_id": "http-2",
+          "baseline_request_id": "http-1",
+          "method": "GET",
+          "path": "/other",
+          "actor": "anonymous",
+          "status_code": 200,
+          "body_excerpt": "owner=bob",
+          "grep_pattern": null,
+          "grep_matches": 0,
+          "grep_excerpt": "",
+          "grep_truncated": false,
+          "status": "confirmed",
+          "baseline_observation": "owner=alice",
+          "exploit_observation": "The second response exposes another owner's record.",
+          "evidence": "The same authenticated actor receives materially different ownership data.",
+          "success_signal_match": "The exploit response contains the other owner's identifier."
+        },
+        "clarification_loops": 0,
+        "milestones": {
+          "suspected": "2026-08-23T23:48:57.812342+00:00",
+          "statically_validated": "2026-08-23T23:48:59.329230+00:00",
+          "dynamically_confirmed": "2026-08-23T23:49:03.073768+00:00"
+        },
+        "attribution": {
+          "reader_model": "reader",
+          "reader_trace_id": null,
+          "worker_model": "worker",
+          "worker_trace_id": null,
+          "judge_model": "worker",
+          "judge_trace_id": null,
+          "confirmer_model": "confirmer",
+          "confirmer_trace_id": null,
+          "termination_reason": "economic_budget_exhausted"
+        },
+        "affected_asset": "",
+        "security_boundary": "",
+        "weakness": "",
+        "impact": "",
+        "adjudication": {
+          "role": "dynamic_judge",
+          "decision": "approve_confirmed",
+          "model": "worker",
+          "trace_id": null,
+          "judgement_reason": "The observed cross-resource differential demonstrates unauthorized access.",
+          "evidence_kind": "response_difference",
+          "evidence_validation": {
+            "version": 1,
+            "passed": true
+          }
+        }
+      }
+    ],
+    "suspected": [],
+    "rejected_inconclusive": [],
+    "environment_anomalies": [],
+    "blockers": [],
+    "pending_leads": [],
+    "files_seen": [],
+    "source_observations": [],
+    "endpoints_seen": [
+      "/other",
+      "/own"
+    ],
+    "coverage": {
+      "complete": false,
+      "rationale": "",
+      "explored": [],
+      "next_focus": "",
+      "category_recon": {
+        "schema_version": 3,
+        "kind": "category_recon",
+        "areas": [
+          {
+            "area_id": "area-01",
+            "title": "route.py",
+            "paths": [
+              "route.py"
+            ],
+            "next_check": "Inspect route.py"
+          }
+        ],
+        "unknowns": [],
+        "status": "ready"
+      },
+      "category_state": {
+        "explored": [],
+        "confirmed": [
+          "lead-1: Injection candidate"
+        ],
+        "rejected": [],
+        "active_leads": [],
+        "next_focus": ""
+      }
+    },
+    "termination_reason": "economic_budget_exhausted",
+    "publication_state": "final",
+    "telemetry": {
+      "model_requests": 0,
+      "total_model_input_tokens": 0,
+      "total_model_output_tokens": 0,
+      "total_tool_output_tokens": 382,
+      "number_of_compactions": 0,
+      "tokens_before_compaction": [],
+      "tokens_after_compaction": [],
+      "compactions_by_role": {},
+      "compaction_events": [],
+      "recon_status": "ready",
+      "recon_terminal_reason": "model_output",
+      "number_of_tool_calls": 2,
+      "search_source_calls": 0,
+      "read_file_calls": 0,
+      "workspace_command_calls": 0,
+      "graph_tool_calls": {},
+      "graph_tool_errors": 0,
+      "code_intelligence_fallbacks": 0,
+      "cbm_bootstrap_status": "disabled",
+      "cbm_index_duration_ms": 0,
+      "duplicate_tool_calls_blocked": 0,
+      "files_read_multiple_times": 0,
+      "average_tool_output_tokens": 191.0,
+      "maximum_tool_output_tokens": 192,
+      "confirmed_findings": 1,
+      "suspected_findings": 0,
+      "lead_count": 1,
+      "run_completed": false,
+      "role_usage": {},
+      "worker_outcomes": {
+        "confirmed": 1
+      },
+      "clarification_loops": 0,
+      "cached_model_input_tokens": 0,
+      "uncached_model_input_tokens": 0,
+      "provider_cost_usd": null,
+      "cost_accounting_complete": true,
+      "estimated_cost_usd": 0.0,
+      "cost_source_counts": {},
+      "lead_usage": {
+        "lead-1": {
+          "disposition": "confirmed",
+          "duration_seconds": 5.266,
+          "model_requests": 0,
+          "tool_calls": 0,
+          "http_requests": 2,
+          "input_tokens": 0,
+          "cached_input_tokens": 0,
+          "uncached_input_tokens": 0,
+          "output_tokens": 0,
+          "economic_points": 0.0,
+          "cost_usd": 0.0,
+          "cost_complete": true,
+          "estimated_cost_usd": 0.0,
+          "by_role": {
+            "worker": {
+              "http_requests": 2
+            }
+          }
+        }
+      },
+      "economic_point_limit": 1000000.0,
+      "budget_category": "configured",
+      "budget_category_multiplier": 1.0,
+      "category_budget_cap_points": 1000000.0,
+      "economic_points_used": 0.0,
+      "economic_points_remaining": 1000000.0,
+      "uncached_input_points": 0.0,
+      "cached_input_points": 0.0,
+      "output_points": 0.0,
+      "cache_usage_anomalies": 0,
+      "investigative_requests": 0,
+      "terminal_requests": 0,
+      "output_retry_requests": 0,
+      "compaction_requests": 0,
+      "terminal_overshoot_points": 0.0,
+      "budget_grants": [],
+      "budget_boundaries": [],
+      "exploration_reviews": 1,
+      "exploration_review_decisions": {
+        "continue_current": 1
+      },
+      "reader_requests_granted": 0,
+      "exploration_tool_results": 0,
+      "exploration_novel_results": 0,
+      "exploration_empty_results": 0,
+      "exploration_error_results": 0,
+      "response_tool_calls": {},
+      "model_turn_retries_attempted": {},
+      "model_turn_retries_recovered": {},
+      "model_turn_retries_exhausted": {},
+      "total_tokens": 0,
+      "tokens_per_confirmed_finding": 0.0,
+      "tokens_per_lead": 0.0,
+      "clarification_rate": 0.0,
+      "tokens_per_completed_audit": null,
+      "exploration_novel_result_rate": 0.0,
+      "exploration_empty_result_rate": 0.0,
+      "exploration_error_result_rate": 0.0,
+      "reviewer_points_used": 0.0,
+      "exploration_continue_current_count": 1,
+      "exploration_pivot_count": 0,
+      "pricing": {
+        "schema_version": 1,
+        "currency": "USD",
+        "unit_tokens": 1000000,
+        "verified_at": "2026-08-23",
+        "source": "https://openrouter.ai/api/v1/models"
+      },
+      "http_tool_calls": 2,
+      "http_network_requests": 2
+    }
+  },
+  "benchmark": null
+}

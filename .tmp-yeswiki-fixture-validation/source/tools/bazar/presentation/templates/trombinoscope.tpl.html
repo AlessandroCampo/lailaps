@@ -1,0 +1,14 @@
+<?php 
+
+    // resize images 
+    $resizedImages = [];
+    foreach($fiches as $fiche){
+        if (!empty($fiche['imagebf_image'])){
+            $resizedImages[$fiche['id_fiche']] = redimensionner_image(
+                'files/'.$fiche['imagebf_image'],
+                'cache/image_300_300_'.$fiche['imagebf_image'],
+                 300, 300, 'crop');
+        }
+    }
+    
+    echo $this->render('@bazar/trombinoscope.twig',compact(['fiches','resizedImages']));

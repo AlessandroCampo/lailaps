@@ -44,6 +44,7 @@ interface Group {
     targetCommit?: string | null;
     models: {
         reader?: string | null;
+        reviewer?: string | null;
         worker?: string | null;
         confirmer?: string | null;
     };
@@ -62,6 +63,7 @@ interface Options {
     revisions: string[];
     experiments: Record<string, string>;
     readers: string[];
+    reviewers: string[];
     workers: string[];
     confirmers: string[];
 }
@@ -79,7 +81,12 @@ let heatmap: echarts.ECharts | null = null;
 let scatter: echarts.ECharts | null = null;
 
 const modelLabel = (group: Group) =>
-    [group.models.reader, group.models.worker, group.models.confirmer]
+    [
+        group.models.reader,
+        group.models.reviewer,
+        group.models.worker,
+        group.models.confirmer,
+    ]
         .map((value) => value?.split('/').pop() || '—')
         .join(' / ');
 const rowLabel = (group: Group) => `${group.target} · ${group.category}`;
@@ -258,6 +265,9 @@ onBeforeUnmount(() => {
                     </option>
                     <option value="confirmationF1">Confirmation F1</option>
                     <option value="detectionRecall">Detection recall</option>
+                    <option value="dispositionAccuracy">
+                        Disposition accuracy
+                    </option>
                 </select>
             </div>
         </header>
@@ -300,6 +310,15 @@ onBeforeUnmount(() => {
                 >
                     <option value="">Worker: tutti</option>
                     <option v-for="value in options.workers" :key="value">
+                        {{ value }}
+                    </option>
+                </select>
+                <select
+                    v-model="form.reviewer"
+                    class="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                    <option value="">Reviewer: tutti</option>
+                    <option v-for="value in options.reviewers" :key="value">
                         {{ value }}
                     </option>
                 </select>
@@ -434,7 +453,7 @@ onBeforeUnmount(() => {
                     <thead class="bg-muted/60 text-left">
                         <tr>
                             <th class="p-3">Target / categoria</th>
-                            <th class="p-3">Modelli R / W / C</th>
+                            <th class="p-3">Modelli R / Rev / W / C</th>
                             <th class="p-3">Revisioni</th>
                             <th class="p-3">n</th>
                             <th class="p-3">Score</th>
@@ -460,6 +479,9 @@ onBeforeUnmount(() => {
                                 <td class="p-3 text-xs">
                                     <div>
                                         R {{ group.models.reader || '—' }}
+                                    </div>
+                                    <div>
+                                        Rev {{ group.models.reviewer || '—' }}
                                     </div>
                                     <div>
                                         W {{ group.models.worker || '—' }}
@@ -548,6 +570,17 @@ onBeforeUnmount(() => {
                                             )
                                         }}</span
                                     >
+                                    <span
+                                        class="block text-xs text-muted-foreground"
+                                    >
+                                        Disposition
+                                        {{
+                                            percent(
+                                                group.metrics
+                                                    .dispositionAccuracy.median,
+                                            )
+                                        }}
+                                    </span>
                                 </td>
                                 <td class="p-3">
                                     {{
@@ -563,7 +596,15 @@ onBeforeUnmount(() => {
                                                     .median,
                                                 0,
                                             )
-                                        }}s</span
+                                        }}s ·
+                                        {{
+                                            format(
+                                                group.metrics.economicPoints
+                                                    .median,
+                                                0,
+                                            )
+                                        }}
+                                        pt</span
                                     >
                                 </td>
                                 <td class="p-3">
@@ -583,6 +624,33 @@ onBeforeUnmount(() => {
                                             4,
                                         )
                                     }}
+                                    <span
+                                        class="block text-xs text-muted-foreground"
+                                    >
+                                        {{
+                                            format(
+                                                group.metrics.modelRequests
+                                                    .median,
+                                                0,
+                                            )
+                                        }}
+                                        model ·
+                                        {{
+                                            format(
+                                                group.metrics.toolCalls.median,
+                                                0,
+                                            )
+                                        }}
+                                        tool ·
+                                        {{
+                                            format(
+                                                group.metrics.httpRequests
+                                                    .median,
+                                                0,
+                                            )
+                                        }}
+                                        HTTP
+                                    </span>
                                 </td>
                                 <td class="p-3">
                                     <Badge
