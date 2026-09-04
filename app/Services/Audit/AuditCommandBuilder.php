@@ -6,7 +6,7 @@ use App\Models\AuditRun;
 
 final class AuditCommandBuilder
 {
-    private const UNBIASED_BENCHMARK_PRESETS = ['owasp-benchmark-java', 'yeswiki'];
+    private const UNBIASED_BENCHMARK_PRESETS = ['owasp-benchmark-java', 'yeswiki', 'gitea', 'mlflow'];
 
     /** @var array<string, array<string, mixed>> */
     public const PRESETS = [
@@ -16,6 +16,8 @@ final class AuditCommandBuilder
         'kanboard' => ['path' => 'targets/kanboard', 'port' => 80, 'category' => 'A01:2025 Broken Access Control'],
         'owasp-benchmark-java' => ['path' => 'targets/owasp-benchmark-java', 'category' => 'A05:2025 Injection'],
         'yeswiki' => ['path' => 'targets/yeswiki', 'category' => '', 'benchmark' => true],
+        'gitea' => ['path' => 'targets/gitea', 'category' => '', 'benchmark' => true],
+        'mlflow' => ['path' => 'targets/mlflow', 'category' => '', 'benchmark' => true],
     ];
 
     /** @return array<int, string> */
@@ -54,6 +56,7 @@ final class AuditCommandBuilder
             $this->value($command, 'worker-model', $p['worker_model'] ?? null);
             $this->value($command, 'judge-model', $p['judge_model'] ?? null);
             $this->value($command, 'budget-category', $p['budget_category'] ?? null);
+            $this->value($command, 'test-area', $p['test_area'] ?? null);
             if ((bool) ($p['skip_health'] ?? false)) {
                 $command[] = '--skip-health';
             }

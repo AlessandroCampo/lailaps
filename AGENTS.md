@@ -33,4 +33,22 @@ di modifica ai log\dump di debug.
 
 Non eseguire il lint sull'intero progetto
 
+REGOLA OUTPUT AGENTICI: il modello decide e racconta; l'orchestratore identifica,
+normalizza, collega e persiste. Gli output esposti ai modelli devono essere piatti, semplici
+e tolleranti. Tipizzare soltanto i campi necessari al controllo di flusso; mantenere
+narrativa la memoria semantica quando il testo contiene le stesse informazioni. Non esporre
+al modello DTO interni annidati, wrapper multipli o strutture che possono essere ricostruite
+deterministicamente da ledger, snapshot o stato autorevole. Prima di aggiungere o modificare
+un output model-facing, verificare esplicitamente se la stessa semantica puo' essere ottenuta
+con meno campi, testo libero o normalizzazione dell'orchestratore.
+
+Esempi positivi:
+
+- Exploration Reviewer restituisce decision, reason, direttive e un
+  `checkpoint_summary` narrativo piatto; l'orchestratore costruisce l'`AreaCheckpoint`
+  interno aggiungendo area id, file e source reference dallo snapshot autorevole.
+- Lead Novelty Reviewer puo' omettere `related_lead_id`: l'orchestratore normalizza
+  `same_hypothesis` incompleto a `unresolved`, invece di spendere retry per un errore
+  semantico recuperabile.
+
 I piani proposti devono essere incrementali, e concentrarsi inizialmente su piani concisi e ad alto ROI, evitando over-engeneering. Eventuali soluzioni più complesse, nice-to-have ma meno prioritarie o espansioni del piano iniziale vanno sempre proposte, ma facendo una distinzione tra P0 (modifiche immediate ad alto ROI, per validare l'idea, mantenendo gran parte del gain) e P1, P2 etc... per tutte le modifiche che possono essere successive

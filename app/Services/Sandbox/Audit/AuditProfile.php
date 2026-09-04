@@ -17,6 +17,7 @@ final readonly class AuditProfile
      * @param  array<int, array<string, mixed>>  $setup
      * @param  array<int, array<string, mixed>>  $readiness
      * @param  array<int, array<string, mixed>>  $database
+     * @param  array<int, array<string, string>>  $actors
      */
     public function __construct(
         public ?string $service,
@@ -25,6 +26,7 @@ final readonly class AuditProfile
         public array $setup,
         public array $readiness,
         public array $database,
+        public array $actors = [],
     ) {}
 
     public static function fromProject(string $projectPath): self
@@ -43,7 +45,7 @@ final readonly class AuditProfile
                 throw new InvalidArgumentException("Profilo audit inesistente: {$path}");
             }
 
-            return new self(null, null, null, [], [], []);
+            return new self(null, null, null, [], [], [], []);
         }
         $path = $resolved;
 
@@ -77,6 +79,7 @@ final readonly class AuditProfile
             self::steps($raw['setup'] ?? [], 'setup', $path),
             self::steps($raw['readiness'] ?? [], 'readiness', $path),
             self::steps($raw['database'] ?? [], 'database', $path),
+            self::actors($raw['actors'] ?? [], $path),
         );
     }
 
@@ -96,6 +99,51 @@ final readonly class AuditProfile
     public function hasPreparation(): bool
     {
         return $this->setup !== [] || $this->readiness !== [] || $this->database !== [];
+    }
+
+    /** @return array<int, array<string, string>> */
+    private static function actors(mixed $value, string $path): array
+    {
+        if ($value === []) {
+            return [];
+        }
+        if (! is_array($value) || ! array_is_list($value)) {
+            throw new InvalidArgumentException("Profilo audit non valido ({$path}): actors deve essere una lista.");
+        }
+
+        $actors = [];
+        foreach ($value as $index => $actor) {
+            if (! is_array($actor)) {
+                throw new InvalidArgumentException("Profilo audit non valido ({$path}): actors[{$index}] deve essere una mappa.");
+            }
+            $username = self::actorText($actor['username'] ?? null, "actors[{$index}].username", $path, optional: true);
+            $email = self::actorText($actor['email'] ?? null, "actors[{$index}].email", $path, optional: true);
+            $password = self::actorText($actor['password'] ?? null, "actors[{$index}].password", $path);
+            $role = self::actorText($actor['role'] ?? null, "actors[{$index}].role", $path);
+            if ($username === null && $email === null) {
+                throw new InvalidArgumentException("Profilo audit non valido ({$path}): actors[{$index}] richiede username oppure email.");
+            }
+            $actors[] = array_filter([
+                'username' => $username,
+                'email' => $email,
+                'password' => $password,
+                'role' => $role,
+            ], static fn (?string $item): bool => $item !== null);
+        }
+
+        return $actors;
+    }
+
+    private static function actorText(mixed $value, string $name, string $path, bool $optional = false): ?string
+    {
+        if ($value === null && $optional) {
+            return null;
+        }
+        if (! is_string($value) || trim($value) === '') {
+            throw new InvalidArgumentException("Profilo audit non valido ({$path}): {$name} deve essere una stringa non vuota.");
+        }
+
+        return trim($value);
     }
 
     /** @return array<int, array<string, mixed>> */

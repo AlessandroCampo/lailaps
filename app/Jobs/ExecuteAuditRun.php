@@ -23,6 +23,21 @@ final class ExecuteAuditRun implements ShouldQueue
 
     public function handle(AuditCommandBuilder $commands, AuditRunFinalizer $finalizer, RunStorage $storage): void
     {
+        $this->execute($commands, $finalizer, $storage);
+    }
+
+    /**
+     * Execute the same persisted run used by the queue worker, optionally
+     * mirroring process output to a foreground console.
+     *
+     * @param  callable(string, string): void|null  $output
+     */
+    public function execute(
+        AuditCommandBuilder $commands,
+        AuditRunFinalizer $finalizer,
+        RunStorage $storage,
+        ?callable $output = null,
+    ): void {
         $run = AuditRun::query()->findOrFail($this->runId);
         $storage->initializeRun($run);
         if ($run->cancellation_requested) {
@@ -56,8 +71,11 @@ final class ExecuteAuditRun implements ShouldQueue
 
         try {
             $this->status($run, AuditRunStatus::Running, $storage);
-            $process->start(function (string $type, string $buffer) use ($run, $storage): void {
+            $process->start(function (string $type, string $buffer) use ($run, $storage, $output): void {
                 $storage->appendLog((string) $run->run_path, $run->audit_id, $buffer);
+                if ($output !== null) {
+                    $output($type, $buffer);
+                }
             });
             while ($process->isRunning()) {
                 $run->refresh();

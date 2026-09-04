@@ -68,6 +68,11 @@ class AuditRun extends Model
         return $this->hasMany(BenchmarkEvaluation::class);
     }
 
+    public function roleEvaluations(): HasMany
+    {
+        return $this->hasMany(BenchmarkRoleEvaluation::class);
+    }
+
     public function isTerminal(): bool
     {
         return $this->status->terminal();

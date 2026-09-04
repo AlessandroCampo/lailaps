@@ -5,10 +5,12 @@ namespace App\Services\Audit;
 use App\Models\AuditRun;
 use App\Models\AuditRunModel;
 use App\Models\BenchmarkEvaluation;
+use App\Models\BenchmarkRoleEvaluation;
 use App\Services\Pentest\BenchmarkCatalog;
 use App\Services\Pentest\BenchmarkEvaluator;
 use App\Services\Pentest\BenchmarkManifest;
 use App\Services\Pentest\BenchmarkResultAggregator;
+use App\Services\Pentest\BenchmarkRoleEvaluator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\Process;
@@ -19,6 +21,7 @@ final class AuditRunFinalizer
         private readonly BenchmarkCatalog $catalog,
         private readonly BenchmarkEvaluator $evaluator,
         private readonly BenchmarkResultAggregator $aggregator,
+        private readonly BenchmarkRoleEvaluator $roleEvaluator,
         private readonly RunStorage $storage,
     ) {}
 
@@ -27,6 +30,7 @@ final class AuditRunFinalizer
         $root = rtrim((string) $run->run_path, '/\\');
         $targetId = (string) ($run->parameters['benchmark_id'] ?? $run->parameters['preset'] ?? '');
         $outcome = $this->storage->outcome($run);
+        $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : [];
         $benchmark = is_array($outcome['benchmark'] ?? null) ? $outcome['benchmark'] : null;
         if ($targetId !== '') {
             $benchmark = $this->recoverBenchmark($run, $targetId, $root, $benchmark) ?? $benchmark;
@@ -42,10 +46,10 @@ final class AuditRunFinalizer
             'target_commit' => $descriptor?->commit(),
             'reproducible' => ! $dirty,
         ]);
-        $this->projectModels($run, is_array($outcome['report'] ?? null) ? $outcome['report'] : []);
+        $this->projectModels($run, $report);
         if ($benchmark !== null && Schema::hasTable('benchmark_evaluations')) {
-            $this->storage->writeOutcome($root, $run->audit_id, is_array($outcome['report'] ?? null) ? $outcome['report'] : null, $benchmark);
-            $this->projectBenchmark($run, $benchmark, $this->storage->outcomePath($root, $run->audit_id));
+            $this->storage->writeOutcome($root, $run->audit_id, $report !== [] ? $report : null, $benchmark);
+            $this->projectBenchmark($run, $report, $benchmark, $this->storage->outcomePath($root, $run->audit_id));
         }
         if ($run->experiment !== null) {
             $experiment = $run->experiment;
@@ -73,7 +77,7 @@ final class AuditRunFinalizer
         ];
         $models = (array) ($report['models'] ?? []);
         if ($models === []) {
-            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium'] as $role => $effort) {
+            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium', 'judge' => 'medium'] as $role => $effort) {
                 $requested = $run->parameters[$role.'_model'] ?? null;
                 if (is_string($requested) && $requested !== '') {
                     $models[] = [
@@ -218,10 +222,11 @@ final class AuditRunFinalizer
     }
 
     /** @param array<string, mixed> $benchmark */
-    private function projectBenchmark(AuditRun $run, array $benchmark, string $path): void
+    private function projectBenchmark(AuditRun $run, array $report, array $benchmark, string $path): void
     {
         $results = isset($benchmark['by_category']) ? (array) $benchmark['by_category'] : [$benchmark];
-        DB::transaction(function () use ($run, $results, $path): void {
+        $run->load('models');
+        DB::transaction(function () use ($run, $report, $results, $path): void {
             foreach ($results as $result) {
                 if (! is_array($result) || ! isset($result['benchmark_id'])) {
                     continue;
@@ -282,8 +287,41 @@ final class AuditRunFinalizer
                         'payload' => $case,
                     ]);
                 }
+                if (Schema::hasTable('benchmark_role_evaluations')) {
+                    $this->projectRoleEvaluations($run, $evaluation, $report, $result);
+                }
             }
         });
+    }
+
+    /** @param array<string, mixed> $report @param array<string, mixed> $result */
+    private function projectRoleEvaluations(AuditRun $run, BenchmarkEvaluation $evaluation, array $report, array $result): void
+    {
+        $manifest = collect($this->catalog->forTarget((string) ($result['target_id'] ?? '')))
+            ->first(fn (BenchmarkManifest $candidate): bool => $candidate->id() === (string) ($result['benchmark_id'] ?? ''));
+        foreach ($this->roleEvaluator->evaluate($run, $report, $result, $manifest) as $scorecard) {
+            $cases = (array) ($scorecard['cases'] ?? []);
+            unset($scorecard['cases']);
+            $roleEvaluation = BenchmarkRoleEvaluation::query()->updateOrCreate([
+                'benchmark_evaluation_id' => $evaluation->id,
+                'role' => (string) $scorecard['role'],
+                'evaluator_version' => (string) $scorecard['evaluator_version'],
+            ], [
+                'audit_run_id' => $run->id,
+                ...$scorecard,
+            ]);
+            foreach ($cases as $case) {
+                if (! is_array($case) || ! isset($case['case_id'])) {
+                    continue;
+                }
+                $roleEvaluation->cases()->updateOrCreate(['case_id' => (string) $case['case_id']], [
+                    'expected_positive' => (bool) ($case['expected_positive'] ?? false),
+                    'reached' => (bool) ($case['reached'] ?? false),
+                    'score' => (float) ($case['score'] ?? 0),
+                    'payload' => (array) ($case['payload'] ?? []),
+                ]);
+            }
+        }
     }
 
     /** @param list<string> $arguments */

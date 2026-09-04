@@ -10,6 +10,7 @@ use Symfony\Component\Process\Process;
 final class BenchmarkTargetSync extends Command
 {
     protected $signature = 'benchmark:target:sync {target-id?} {--all : Sincronizza tutti i descriptor}';
+
     protected $description = 'Clona e verifica gli snapshot frozen dichiarati nel registry benchmark';
 
     public function handle(BenchmarkCatalog $catalog): int
@@ -40,9 +41,11 @@ final class BenchmarkTargetSync extends Command
             if (! is_dir($path.'/.git')) {
                 throw new \RuntimeException("Target esistente non gestito da Git: {$path}");
             }
-            $status = trim($this->output(['git', 'status', '--porcelain'], $path));
+            $status = trim($this->output([
+                'git', 'status', '--porcelain', '--untracked-files=no',
+            ], $path));
             if ($status !== '') {
-                throw new \RuntimeException("Target dirty, sync rifiutato: {$descriptor->id()}");
+                throw new \RuntimeException("Sorgente versionato modificato, sync rifiutato: {$descriptor->id()}");
             }
             $remote = rtrim(trim($this->output(['git', 'remote', 'get-url', 'origin'], $path)), '/');
             if (! hash_equals(strtolower($descriptor->repository()), strtolower($remote))) {

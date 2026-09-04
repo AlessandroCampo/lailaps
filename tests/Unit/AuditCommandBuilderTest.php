@@ -65,6 +65,20 @@ it('forwards an optional benchmark subcategory', function (): void {
     expect((new AuditCommandBuilder)->build($run))->toContain('--category=sqli');
 });
 
+it('forwards a test-only Recon area hint to the benchmark runner', function (): void {
+    $run = new AuditRun;
+    $run->audit_id = 'audit-bazar-area';
+    $run->parameters = [
+        'benchmark_id' => 'yeswiki',
+        'test_area' => 'Bazar: stored XSS in page rendering',
+        'keep' => false,
+        'test' => true,
+    ];
+
+    expect((new AuditCommandBuilder)->build($run))
+        ->toContain('--test-area=Bazar: stored XSS in page rendering');
+});
+
 it('forwards a dedicated Dynamic Judge model without changing the Worker', function (): void {
     $run = new AuditRun;
     $run->audit_id = 'audit-judge-model';
@@ -162,6 +176,17 @@ it('routes the YesWiki preset through benchmark:run and leaves all categories en
         ->not->toContain('pentest:run')
         ->not->toContain('--category=');
 });
+
+it('routes the Gitea and MLflow presets through their unbiased benchmarks', function (string $preset): void {
+    $run = new AuditRun;
+    $run->audit_id = 'audit-'.$preset;
+    $run->parameters = ['preset' => $preset, 'categories' => [], 'keep' => false, 'test' => false];
+
+    expect((new AuditCommandBuilder)->build($run))
+        ->toContain('benchmark:run')
+        ->toContain($preset)
+        ->not->toContain('--category=');
+})->with(['gitea', 'mlflow']);
 
 it('propagates the exploration reviewer model override', function (): void {
     $run = new AuditRun;

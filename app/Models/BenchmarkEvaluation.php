@@ -40,4 +40,9 @@ final class BenchmarkEvaluation extends Model
     {
         return $this->hasMany(BenchmarkAdjudication::class);
     }
+
+    public function roleEvaluations(): HasMany
+    {
+        return $this->hasMany(BenchmarkRoleEvaluation::class);
+    }
 }

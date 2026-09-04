@@ -1,0 +1,75 @@
+rules:
+  - id: lailaps.surface.sql
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Database query or raw-query construction primitive
+    severity: INFO
+    metadata: {family: database-injection}
+    pattern-regex: '(?i)\b(query|executeQuery|execute|rawQuery|whereRaw|orderByRaw|prepare)\s*\('
+  - id: lailaps.surface.process
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Process or shell execution primitive
+    severity: INFO
+    metadata: {family: command-injection}
+    pattern-regex: '(?i)\b(exec|system|shell_exec|passthru|popen|proc_open|subprocess\.(run|Popen)|child_process\.(exec|spawn))\s*\('
+  - id: lailaps.surface.dynamic-code.php
+    languages: [php]
+    message: Dynamic PHP code evaluation primitive
+    severity: WARNING
+    metadata: {family: dynamic-code, category: security, confidence: HIGH, lailaps_priority: high}
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: assert(...)
+  - id: lailaps.surface.dynamic-code.javascript
+    languages: [javascript, typescript]
+    message: Dynamic JavaScript code evaluation primitive
+    severity: WARNING
+    metadata: {family: dynamic-code, category: security, confidence: HIGH, lailaps_priority: high}
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: Function(...)
+      - pattern: new Function(...)
+  - id: lailaps.surface.dynamic-code.python
+    languages: [python]
+    message: Dynamic Python code evaluation primitive
+    severity: WARNING
+    metadata: {family: dynamic-code, category: security, confidence: HIGH, lailaps_priority: high}
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+      - pattern: compile(...)
+  - id: lailaps.surface.dynamic-code.ruby
+    languages: [ruby]
+    message: Dynamic Ruby code evaluation primitive
+    severity: WARNING
+    metadata: {family: dynamic-code, category: security, confidence: HIGH, lailaps_priority: high}
+    pattern: eval(...)
+  - id: lailaps.surface.dynamic-template
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Dynamic template compilation or rendering primitive
+    severity: INFO
+    metadata: {family: template-injection}
+    pattern-regex: '(?i)\b(renderFromString\w*|render_from_string\w*|createTemplate|compileString\w*|template_from_string|from_string\w*)\s*\('
+  - id: lailaps.surface.deserialization
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Deserialization primitive
+    severity: INFO
+    metadata: {family: unsafe-deserialization}
+    pattern-regex: '(?i)\b(unserialize|pickle\.loads|yaml\.load|ObjectInputStream|readObject)\s*\('
+  - id: lailaps.surface.filesystem
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Filesystem read, write, include, or archive primitive
+    severity: INFO
+    metadata: {family: filesystem-boundary}
+    pattern-regex: '(?i)\b(file_get_contents|file_put_contents|fopen|readFile|writeFile|send_file|include|require|extractTo)\s*\('
+  - id: lailaps.surface.redirect
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: Redirect or response-header primitive
+    severity: INFO
+    metadata: {family: redirect-header-injection}
+    pattern-regex: '(?i)\b(redirect|setHeader|header|Location)\s*\('
+  - id: lailaps.surface.llm
+    languages: [php, javascript, typescript, python, ruby, java, go, csharp, kotlin]
+    message: LLM invocation, agent, retrieval, or privileged tool primitive
+    severity: INFO
+    metadata: {family: llm-capability-chain}
+    pattern-regex: '(?i)\b(OpenAI|Anthropic|ChatCompletion|responses\.create|generateContent|invoke_model|tool_calls|register_tool|vector_store|retriev)\b'

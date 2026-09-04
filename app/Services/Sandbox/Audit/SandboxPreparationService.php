@@ -164,6 +164,13 @@ final class SandboxPreparationService
         }
 
         $options = [];
+        if (array_key_exists('headers', $step)) {
+            if (! is_array($step['headers'])) {
+                throw new InvalidArgumentException("{$label}: headers deve essere una mappa.");
+            }
+            $headers = $this->expand($step['headers'], $variables, $label);
+            $options['headers'] = $headers;
+        }
         if (array_key_exists('form', $step)) {
             if (! is_array($step['form'])) {
                 throw new InvalidArgumentException("{$label}: form deve essere una mappa.");

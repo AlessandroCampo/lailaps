@@ -19,6 +19,7 @@ final class BenchmarkRun extends Command
         {target-id : ID della directory target con manifest statici}
         {--path= : Path del target, default targets/<target-id>}
         {--url= : URL di un ambiente già avviato}
+        {--reuse-sandbox= : Audit ID di una sandbox Lailaps già avviata da riusare, mantenendo i comandi console}
         {--db= : DSN del DB del target remoto da verificare}
         {--health-path= : Endpoint applicativo che deve rispondere 2xx}
         {--category= : Sotto-categoria benchmark opzionale (es. sqli); default tutte}
@@ -31,6 +32,7 @@ final class BenchmarkRun extends Command
         {--judge-model= : Modello OpenRouter per il Dynamic Judge}
         {--operative-model= : Modello OpenRouter per Confirmer e Worker; sostituisce i default di ruolo}
         {--budget-category= : Preset cap categoria: small, regular, big oppure huge}
+        {--test-area= : Solo benchmark/test: area semantica da prioritizzare in Recon}
         {--tool-output : Mostra una sintesi compatta delle risposte dei tool durante la run}
         {--audit-id= : ID parlante della run}
         {--keep=true : Mantiene le sandbox avviate}
@@ -67,6 +69,9 @@ final class BenchmarkRun extends Command
             : base_path('targets/'.$targetId);
         if (! is_dir($source)) {
             throw new InvalidArgumentException("Path target inesistente: {$source}");
+        }
+        if ($this->option('url') && $this->option('reuse-sandbox')) {
+            throw new InvalidArgumentException('--url e --reuse-sandbox sono mutuamente esclusivi.');
         }
 
         $categories = $requested !== [] ? $requested : ['all'];
@@ -129,6 +134,7 @@ final class BenchmarkRun extends Command
                     '--judge-model' => $this->option('judge-model'),
                     '--operative-model' => $this->option('operative-model'),
                     '--budget-category' => $this->option('budget-category'),
+                    '--test-area' => $this->option('test-area'),
                     '--tool-output' => $this->enabledOption('tool-output'),
                     '--keep' => $this->enabledOption('keep'),
                     '--test' => $this->enabledOption('test'),
@@ -140,6 +146,9 @@ final class BenchmarkRun extends Command
                     if ($this->option($option)) {
                         $parameters['--'.$option] = $this->option($option);
                     }
+                }
+                if ($this->option('reuse-sandbox')) {
+                    $parameters['--reuse-sandbox'] = $this->option('reuse-sandbox');
                 }
                 $parameters['--assume-authorized'] = $this->enabledOption('assume-authorized');
                 $exit = Artisan::call('pentest:run', $parameters, $this->output);

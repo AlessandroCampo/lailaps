@@ -91,7 +91,10 @@ return new class extends Migration
             $table->string('case_id')->nullable();
             $table->text('comment')->nullable();
             $table->timestamps();
-            $table->unique(['benchmark_evaluation_id', 'finding_fingerprint']);
+            $table->unique(
+                ['benchmark_evaluation_id', 'finding_fingerprint'],
+                'benchmark_adjudications_eval_fingerprint_unique'
+            );
         });
     }
 

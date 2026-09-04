@@ -54,6 +54,8 @@ it('recovers a partial benchmark after a terminal outer-run path', function (Aud
         ->and($benchmark['score']['max_points'])->toBe(30)
         ->and($benchmark['cases'])->toHaveCount(7)
         ->and($run->evaluations()->count())->toBe(1)
+        ->and($run->roleEvaluations()->count())->toBe(5)
+        ->and($run->roleEvaluations()->where('status', 'not_exercised')->count())->toBe(5)
         ->and($run->models()->count())->toBe(4)
         ->and($run->models()->where('role', 'reviewer')->first()->reasoning_effort)->toBe('low')
         ->and($run->evaluations()->first()->artifact_state)->toBe('partial');

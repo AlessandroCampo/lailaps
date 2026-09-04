@@ -22,11 +22,14 @@ services:
       SOURCE_ROOT: /code
       CODEBASE_MEMORY_CACHE_ROOT: /cbm-cache
       CODEBASE_MEMORY_NATIVE_CACHE_DIR: /opt/codebase-memory-launcher-cache
+      MODELS_CONFIG_FILE: /models.json
     volumes:
       # La codebase da analizzare, in sola lettura. Punta AGENT_SOURCE_ROOT a ciò che
       # vuoi analizzare (default: la cartella target/ del repo). Deve corrispondere
       # all'app servita da ALLOWED_BASE_URL perché il match statico↔dinamico abbia senso.
       - ${AGENT_SOURCE_ROOT:-../target}:/code:ro
+      # Configurazione modelli editabile dall'host senza ricreare l'immagine.
+      - ./pentest-agent/Models.json:/models.json:ro
       # Indici separati per audit id; mai scritti nel target o nel piccolo /tmp.
       - cbm-cache:/cbm-cache
       # MVP locale: il client Python usa Docker per creare il toolbox isolato e

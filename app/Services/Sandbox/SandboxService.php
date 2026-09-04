@@ -82,6 +82,65 @@ class SandboxService
     }
 
     /**
+     * Ricollega una sandbox Lailaps ancora in esecuzione senza crearla, buildarla
+     * o smontarla. Il nuovo audit riceve comunque un SandboxDTO, quindi l'agente
+     * conserva il target-container-id per i comandi console.
+     */
+    public function reuse(string $sandboxAuditId, SandboxSpecDTO $spec): SandboxDTO
+    {
+        $sandboxAuditId = trim($sandboxAuditId);
+        if ($sandboxAuditId === '') {
+            throw new RuntimeException('--reuse-sandbox richiede un audit ID non vuoto.');
+        }
+
+        $containers = array_values(array_filter(
+            $this->docker->listContainersByLabel(SandboxLabels::AUDIT_ID, $sandboxAuditId),
+            fn (array $container): bool => ($container['Labels'][SandboxLabels::MANAGED_BY] ?? null) === SandboxLabels::OWNER
+                && is_string($container['Labels'][SandboxLabels::DRIVER] ?? null)
+                && is_numeric($container['Labels'][SandboxLabels::EXPIRES_AT] ?? null),
+        ));
+        if ($containers === []) {
+            throw new RuntimeException("Sandbox Lailaps '{$sandboxAuditId}' non trovata. Avviala prima con --keep.");
+        }
+
+        $drivers = array_values(array_unique(array_filter(array_map(
+            fn (array $container): ?string => $container['Labels'][SandboxLabels::DRIVER] ?? null,
+            $containers,
+        ))));
+        if (count($drivers) !== 1) {
+            throw new RuntimeException("Sandbox '{$sandboxAuditId}' priva di driver Lailaps coerente.");
+        }
+
+        $expiresAt = (int) ($containers[0]['Labels'][SandboxLabels::EXPIRES_AT] ?? 0);
+        if ($expiresAt <= now()->getTimestamp()) {
+            throw new RuntimeException("Sandbox '{$sandboxAuditId}' scaduta: avviane una nuova.");
+        }
+
+        $web = $this->resolver->resolve($containers, $spec->webService);
+        $port = $this->resolver->publishedPort($web)
+            ?? throw new RuntimeException("Sandbox '{$sandboxAuditId}' non espone una porta HTTP.");
+        $origin = "http://{$port['ip']}:{$port['public']}";
+        $url = $this->appendPath($origin, $spec->basePath);
+        $healthUrl = $this->appendPath($url, $spec->healthPath);
+        $this->waitUntilHealthy($healthUrl, $spec->healthTimeout);
+
+        $projectName = (string) ($web['Labels']['com.docker.compose.project'] ?? "audit-{$sandboxAuditId}");
+
+        return new SandboxDTO(
+            auditId: $sandboxAuditId,
+            driver: $drivers[0],
+            projectName: $projectName,
+            containerId: (string) $web['Id'],
+            containerName: ltrim((string) ($web['Names'][0] ?? $projectName), '/'),
+            serviceName: $this->resolver->serviceName($web),
+            networkName: $this->resolver->networkName($web, "{$projectName}_default"),
+            url: $url,
+            hostPort: $port['public'],
+            expiresAt: now()->setTimestamp($expiresAt),
+        );
+    }
+
+    /**
      * Smonta tutte le sandbox il cui TTL è scaduto, qualunque driver le abbia
      * avviate: è quello che rende ttlSeconds una garanzia e non un'annotazione.
      *

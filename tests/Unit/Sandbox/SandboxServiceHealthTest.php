@@ -53,3 +53,39 @@ it('can request diagnostic resource retention on a failed bootstrap', function (
 
     expect($spec->keepOnFailure)->toBeTrue();
 });
+
+it('reuses a live Lailaps sandbox while retaining its target container identity', function (): void {
+    Http::fake(['*' => Http::response('ready', 200)]);
+    $expiresAt = now()->addHour()->getTimestamp();
+    $containers = [[
+        'Id' => 'target-container-id',
+        'Names' => ['/audit-warm-target'],
+        'State' => 'running',
+        'Labels' => [
+            'sandbox.managed_by' => 'lailaps',
+            'sandbox.audit_id' => 'warm-target',
+            'sandbox.driver' => 'image',
+            'sandbox.expires_at' => (string) $expiresAt,
+        ],
+        'Ports' => [[
+            'Type' => 'tcp',
+            'PrivatePort' => 8080,
+            'PublicPort' => 49152,
+            'IP' => '127.0.0.1',
+        ]],
+        'NetworkSettings' => ['Networks' => ['audit-warm-target-net' => []]],
+    ]];
+    $docker = Mockery::mock(DockerClient::class);
+    $docker->shouldReceive('listContainersByLabel')
+        ->once()
+        ->with('sandbox.audit_id', 'warm-target')
+        ->andReturn($containers);
+    $service = new SandboxService(new WebServiceResolver, $docker, []);
+
+    $target = $service->reuse('warm-target', new SandboxSpecDTO('new-run', base_path()));
+
+    expect($target->auditId)->toBe('warm-target')
+        ->and($target->containerId)->toBe('target-container-id')
+        ->and($target->url())->toBe('http://127.0.0.1:49152/')
+        ->and($target->isRunning())->toBeTrue();
+});
