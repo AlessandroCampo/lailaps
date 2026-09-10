@@ -47,6 +47,28 @@ un solo worker con budget di 768 MiB. I container che avviano l'agente hanno un 
 2 GiB per lasciare headroom a launcher, parsing e processo Python: il budget del worker non
 viene moltiplicato in modo implicito su repository grandi.
 
+Il P0 data-flow aggiunge `trace_data_flow`, distinto dal call graph `trace_code_path`: il
+primo esegue un backward slice interprocedurale bounded dall'argomento di una chiamata,
+mentre il secondo naviga caller/callee. L'adattatore usa esclusivamente template CLI
+controllati di `joern-parse` e `joern-slice data-flow`; il modello non fornisce Scala, shell o
+query arbitrarie. Il backend riproducibile e' Joern `4.0.592` (Apache-2.0), con frontend P0
+validati PHP e Python. L'abilitazione e' indipendente per Reader e Confirmer e il default e'
+`false` per entrambi finche' RSS e latenza non sono misurati su un target rappresentativo
+nel provisioning da 2 GiB. Worker non riceve il tool. Backend assente, versione diversa,
+timeout, errore e linguaggio non supportato sono fail-open e non interrompono letture
+sorgente, processo agente o target HTTP.
+
+Indicizzazione e query sono separate. Un indice viene serializzato e riusato fra lead e
+ruoli tramite la cache gia' montata, fuori dagli artifact della run; la chiave include hash
+del contenuto sorgente, linguaggio, versione backend e configurazione strutturale. Il source
+root e' canonico: input assoluti, traversal, symlink esterni e locator Joern non risolvibili
+nel perimetro vengono rifiutati o proiettati come incertezza senza leggerli. Output e
+profondita' sono bounded e il CPG/ID backend non entra nel prompt. I passaggi ricevono una
+source reference soltanto dopo confronto dello snippet col sorgente reale; hash, ruolo e
+scope seguono lo stesso ledger delle letture ordinarie. L'edge statico resta advisory e non
+acquisisce provenance di esecuzione; assenza di path, dispatch dinamico e semantiche
+conservative delle dipendenze esterne non determinano un verdetto di sicurezza.
+
 Le categorie OWASP sono elaborate in sequenza. Ogni categoria ha stato e budget propri. I risultati durevoli confluiscono infine in un report aggregato; non è presente un Judge globale.
 
 Per ogni categoria il flusso è:
@@ -90,12 +112,48 @@ model-facing alternativi:
 4. `benchmark:confirmer` riceve ReaderLead canoniche e classificate, ricostruisce le source
    reference dal commit assegnato ed esegue soltanto Confirmer. Un CandidateHandoff o una
    LeadClosure terminale viene persistita come child della lead; Worker non parte.
+   I dataset comparativi sono congelati con una `label_set_version` dedicata (per esempio
+   `confirmer-gold-v1`): le lead storiche vengono clonate con parent/provenienza immutabili e
+   gli hard negative curati sono nuovi artifact versionati. L'oracle vive soltanto nei metadata
+   post-run, mai nel subject inviato al modello, e dichiara decisione attesa, anchor statici e
+   requisiti minimi del piano. L'evaluator separa classification score da quality score per
+   source/propagation/sink/controllabilita'/reachability e piano Worker; una `technical_error`
+   non puo' mai contare come LeadClosure corretta. Le metriche aggregate escludono i failure
+   tecnici dal denominatore semantico e riportano costo, token, retry/output failure e stabilita'.
+   Se `--dataset` e' valorizzato, la selezione resta limitata agli artifact canonici della
+   versione congelata; se e' omesso, il comando usa direttamente le ReaderLead `valid` del DB,
+   filtrate per progetto e per l'eventuale `--category`. `--artifact` resta l'override puntuale.
+5. `benchmark:worker` riceve un `CandidateHandoff` canonico congelato e ricostruisce le
+   source reference dal commit assegnato. Ogni ripetizione passa dal normale provisioning
+   `pentest:run` con sandbox e volumi nuovi, setup, readiness, attori, fixture probe e
+   post-readiness; il riuso stateful e `--keep` non fanno parte del percorso comparabile.
+   L'unico ruolo avviato e' il Worker reale, con assignment, prompt, toolset, sessioni,
+   compression, retry tecnici e persistenza ordinari. `ContinueInvestigation` conserva la
+   stessa conversazione e prosegue deterministicamente finche' resta budget; la prima
+   `ConfirmedDecision`, `RejectedDecision`, `BlockedDecision` o `NeedsInfoDecision` valida
+   termina l'episodio. Non esistono retry semantici del Judge in questo percorso.
+   La proposta terminale e' un boundary immutabile child del candidate; in sua assenza un
+   `WorkerRun` conserva termination reason e prove bounded senza fabbricare un verdetto.
+   L'oracle post-run, mai esposto al subject o ai tool, valuta separatamente correttezza
+   della proposta e sufficienza (`sufficient`, `partial`, `absent`) delle prove. Failure
+   tecnici, astensioni e casi non classificabili hanno contatori e denominatori distinti.
+   Una proposta `ConfirmedDecision` non muta il finding ordinario, non crea
+   `adjudication.role=dynamic_judge` e non imposta `dynamically_confirmed`.
+   I subject Worker sono congelati esclusivamente da artifact `CandidateHandoff` prodotti e
+   valutati dal benchmark Confirmer: il comando di freeze rifiuta payload curati, cosi' ogni
+   dataset Worker conserva lineage Confirmer immutabile e non attribuisce una fixture manuale
+   a una run agente.
+   Anche qui `--dataset` abilita la selezione frozen canonica, mentre la sua assenza seleziona
+   dal DB i `CandidateHandoff` `valid` prodotti dal Confirmer per progetto e categoria;
+   `--artifact` ha precedenza su entrambe le modalita'.
 
 La selezione Golden serve a misurare performance condizionale e non sostituisce il benchmark
 end-to-end. Una Golden viene congelata per progetto, categoria e commit: non viene riselezionata
-in funzione del modello Reader sottoposto a confronto. Judge e Worker restano fuori dal P0;
-una futura estensione puo' usare CandidateHandoff canonici come parent e valutare la coppia
-Worker/Judge senza modificare il lineage o il registry.
+in funzione del modello sottoposto a confronto. Il Worker-only P0 misura esclusivamente
+l'episodio precedente a qualsiasi feedback del Judge; Judge e benchmark congiunti
+Worker/Judge restano fuori dal P0. Il lineage project-scoped e' quindi
+Recon -> Reader -> Confirmer -> Worker, senza confondere una proposta Worker con una
+conferma attestata del report ordinario.
 
 La filosofia operativa privilegia l'autonomia dei ruoli ad alta capacita' (`Confirmer` e
 `Worker`): i loro supervisori non interrompono i boundary ordinari. Il Reader costituisce
@@ -202,8 +260,19 @@ i risultati upstream di sola correctness privi di metadata security. I signal so
 mai evidence o gate;
 la loro assenza non dimostra l'assenza di una superficie. Non esiste un vocabolario globale
 di wrapper applicativi (`getAll`, `count` e simili): i wrapper custom restano oggetto
-dell'esplorazione agentica. Con Codebase Memory disponibile
-Recon usa prima `codebase_architecture`, poi `search_code_graph`, `list_dir` e
+dell'esplorazione agentica.
+
+Prima dell'aggregazione, l'orchestratore conserva anche la proiezione interna completa dei
+singoli match Semgrep con identita' deterministica derivata da sensore, regola, famiglia,
+path e riga. Recon continua a ricevere il census aggregato; il Reader riceve nel prompt
+soltanto stato del sensore e conteggi per famiglia e consulta i match con
+`list_surface_signals(scope=active_area|all, path?, family?, cursor?)`. Lo scope area usa
+esclusivamente i path locator dell'Area Ledger e non pretende di coprire dipendenze. Il tool
+distingue scan indisponibile, risultato incompleto e assenza di match, pagina tutti i
+segnali e consente sempre l'allargamento all'intera categoria. L'assenza o l'esaurimento
+della lista non e' un gate di copertura: wrapper custom e superfici non segnalate restano
+parte dell'esplorazione ordinaria. Con Codebase Memory disponibile Recon usa prima
+`codebase_architecture`, poi `search_code_graph`, `list_dir` e
 `search_source`; senza Codebase Memory conserva listing e ricerca testuale. Questi tool e
 il Surface Context alimentano un registry dedicato dei path osservati, escludendo
 path inesistenti, esterni al source root e identificatori `tool-output-*`. Recon non può
@@ -247,8 +316,18 @@ privilegi, caller distanti o runtime restano da stabilire, questi diventano unkn
 Confirmer. Il dubbio generico privo dei tre elementi non genera una lead; l'ignorare una
 pista richiede invece una barriera locale esplicita, incondizionata e pertinente oppure
 l'assenza di una variabile meno trusted dopo il controllo bounded. Il Reviewer sorveglia
-soltanto il rispetto di questo confine operativo e non valida semanticamente il sink. I contratti
-Reader sono piatti: `ReaderLead` espone direttamente `coverage_delta` e `next_focus`, mentre
+soltanto il rispetto di questo confine operativo e non valida semanticamente il sink.
+Quando abilitato, `trace_data_flow` puo' costituire quel singolo controllo bounded ma non e'
+obbligatorio e non autorizza una ricostruzione esaustiva prima della lead.
+
+Il tracking dei signal e' memoria interna dell'orchestratore e sopravvive alle epoch Reader:
+separa `listed`, `read` e `evaluated`, collega le lead alle identita' pertinenti e proietta
+nel dossier soltanto conteggi e pochi esempi ancora aperti. Il listing non equivale a una
+lettura; `read_file` marca soltanto i match nel range realmente restituito; una lead o la
+chiusura Reviewer dell'area marca la valutazione. Questo stato non schedula il Reader e non
+sostituisce Area Ledger o Reviewer come autorita' di chiusura.
+
+I contratti Reader sono piatti: `ReaderLead` espone direttamente `coverage_delta` e `next_focus`, mentre
 `LeadEnrichment` contiene soltanto identita', evidenza e condizioni di riapertura. Non
 espongono `kind` ridondanti o `CategoryStateUpdate`; l'orchestratore aggiorna e sincronizza lo stato strategico
 da ledger, coverage, focus e checkpoint autorevoli. La persistenza non affida al Reader la
@@ -384,6 +463,10 @@ del sorgente originale anche dopo compression: una rilettura è necessaria solta
 range diverso, un hash cambiato o una contraddizione concreta. Gli snippet e gli edge del
 grafo restano indici euristici e non acquisiscono questa validità.
 
+Quando il flag Confirmer e' attivo riceve anche `trace_data_flow` per ricostruire in modo
+verticale source, propagation e sink della sola lead attiva; il Confirmer, non Joern, valuta
+semanticamente controllabilita', trasformazioni, condizioni e barriere.
+
 Ogni ruolo, non soltanto il Confirmer, dispone di due retry completi del turno per
 `UnexpectedModelBehavior`, `ModelAPIError` e l'eventuale `APIError` OpenAI non ancora
 normalizzato. Questi retry sono distinti sia dal singolo retry transport del provider sia dai retry Pydantic di
@@ -460,6 +543,16 @@ propria `Deps`/run, non accettano path filesystem e non effettuano nuove richies
 Gli output sono bounded e marcano il troncamento. Le response restano disponibili tra epoch
 boundary della stessa esecuzione, ma non generano file post-run.
 
+Ogni ispezione riuscita di una response Worker genera inoltre un'osservazione derivata
+bounded nel medesimo `evidence_ledger` atomico della transazione originaria. L'orchestratore
+deriva `observation_id`, run/categoria/lead, request e response id dalla response store e dalla
+transazione autorevole: il modello riceve soltanto il riferimento piatto opzionale
+`observation_refs`, senza ricopiare l'estratto. L'osservazione conserva locator, tipo di
+estrazione, rappresentazione (`text_excerpt`, proiezione JSON o DOM), trasformazioni,
+troncamento e redazione; una proiezione JSON/DOM non e' dichiarata copia byte-per-byte del
+body. Gli estratti restano redatti e bounded, non sono un archivio di body; un risultato vuoto
+o parziale non attesta l'assenza del comportamento fuori dalla porzione osservata.
+
 Dynamic Judge e' stateless, tool-free e separato dal Worker. Viene invocato sui verdetti
 semantici tipizzati del Worker e sui casi terminali che richiedono adjudication; non e'
 parte del normale pacing operativo. Un boundary Worker senza verdetto e senza errore
@@ -521,7 +614,12 @@ e nessun fallback dell'orchestratore conferma o respinge deterministicamente una
 vulnerabilità. Gli evidence ID usati dal gate differenziale derivano dall'ordine del ledger
 (ultima coppia valida control/test; ultima transazione pertinente per impatto diretto). Se
 Worker e Judge non producono un verdetto valido la lead resta `suspected` con inventario
-dinamico costruito dal ledger, senza perdere le transazioni.
+dinamico costruito dal ledger, senza perdere le transazioni. Lo stesso ledger include le
+osservazioni derivate delle inspection response, deduplicate per identita' e scope: la
+pubblicazione parziale/finale e il recovery le fondono con le transazioni senza cancellarle.
+Il Dynamic Judge riceve le osservazioni rilevanti della lead attiva, dando precedenza a quelle
+citate dal Worker; il fitting conserva la provenienza e dichiara conteggio/motivo delle
+osservazioni omesse o ulteriormente troncate, cosi' nessun estratto parziale appare completo.
 
 Il report include anche `category_recon_summary`, una proiezione compatta della Recon
 iniziale (`status`, aree ordinate, locator principali, `next_check` e unknowns). Lo stesso
@@ -761,6 +859,18 @@ espongono gli eventi `lead_stage_unlocked`/`lead_stage_denied`, il numero di pip
 dinamiche e, per lead, uso e residuo separati di `confirmer_stage` e `worker_stage`.
 
 Ogni round Worker→Judge registra inoltre il delta dei tool per nome e lo raggruppa in HTTP, source e runtime. Queste metriche, insieme alle operazioni precedenti alla prima HTTP e alla frequenza di `request_static_enrichment`, servono a distinguere rescue occasionali da handoff sistematicamente incompleti; non applicano soglie, validator o transizioni del ledger.
+
+La proiezione canonica `report.telemetry.tool_calls_details` aggrega tutte le categorie,
+epoch e lead per identita' di ruolo e nome stabile del tool. Ogni voce espone `enabled`,
+`available` e `calls`: `available=true` significa che lo schema e' stato esposto almeno una
+volta in una richiesta investigativa costruita per quel ruolo, mentre `calls` incrementa al
+boundary del dispatcher appena una tool call del modello viene ricevuta, inclusi parametri
+invalidi, errori e timeout. Il medesimo `tool_call_id` non viene ricontato su replay o
+compression e i retry interni del backend non producono call aggiuntive. I tool disponibili
+ma mai usati conservano zero esplicito; `enabled=false` distingue il rollback/configurazione
+spenta. I checkpoint e il finalizer proiettano sempre la stessa istanza autorevole della
+telemetria, quindi finalizzazioni ripetute non incrementano i contatori. Outcome storici non
+vengono migrati con zeri inventati e possono non contenere la sezione.
 
 Il Worker costituisce inoltre un'eccezione al cap generico di 5.500 token: usa un limite dedicato
 di 14.000 token, riservato nel calcolo della capacita' di history, per evitare retry completi

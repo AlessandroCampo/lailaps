@@ -22,6 +22,7 @@ services:
       SOURCE_ROOT: /code
       CODEBASE_MEMORY_CACHE_ROOT: /cbm-cache
       CODEBASE_MEMORY_NATIVE_CACHE_DIR: /opt/codebase-memory-launcher-cache
+      DATA_FLOW_CACHE_ROOT: /cbm-cache/data-flow
       MODELS_CONFIG_FILE: /models.json
     volumes:
       # La codebase da analizzare, in sola lettura. Punta AGENT_SOURCE_ROOT a ciò che

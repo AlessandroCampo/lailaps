@@ -4,10 +4,14 @@ namespace App\Console\Commands;
 
 use App\Models\BenchmarkStageArtifact;
 use App\Services\Audit\RunStorage;
+use App\Services\Pentest\BenchmarkAuditSource;
 use App\Services\Pentest\BenchmarkCatalog;
 use App\Services\Pentest\BenchmarkManifest;
 use App\Services\Pentest\BenchmarkStageArtifactRegistry;
+use App\Services\Pentest\BenchmarkStageSubjectSelector;
 use App\Services\Pentest\BenchmarkTechnicalFailure;
+use App\Services\Pentest\ConfirmerBenchmarkDataset;
+use App\Services\Pentest\ConfirmerBenchmarkOracle;
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Artisan;
@@ -18,21 +22,26 @@ final class BenchmarkConfirmer extends Command
 {
     protected $signature = 'benchmark:confirmer
         {target-id : Project key del target benchmark}
-        {--artifact=* : ReaderLead artifact; default tutte le lead canoniche classificate}
+        {--artifact=* : ReaderLead artifact; override della selezione automatica}
         {--path= : Path target; default targets/<target-id>}
         {--category= : Limita alla benchmark category}
         {--confirmer-model= : Modello Confirmer}
+        {--dataset= : Dataset congelato; se assente usa gli artifact validi dal DB}
         {--envelope-points=350000 : Hard cap per singola decisione}
-        {--repetitions=3 : Ripetizioni per lead, da 1 a 20}
+        {--repetitions=1 : Ripetizioni per lead, da 1 a 20}
         {--tool-output : Mostra output tool compatti}
         {--test : Ricostruisce immagine agente}';
 
-    protected $description = 'Valuta Confirmer su ReaderLead project-scoped congelate, senza Worker';
+    protected $description = 'Valuta Confirmer su ReaderLead frozen o valide nel DB, senza Worker';
 
     public function handle(
         BenchmarkCatalog $catalog,
+        BenchmarkAuditSource $auditSource,
         BenchmarkStageArtifactRegistry $registry,
+        BenchmarkStageSubjectSelector $subjectSelector,
         BenchmarkTechnicalFailure $technicalFailure,
+        ConfirmerBenchmarkOracle $oracle,
+        ConfirmerBenchmarkDataset $dataset,
         RunStorage $storage,
     ): int {
         $projectKey = (string) $this->argument('target-id');
@@ -42,13 +51,17 @@ final class BenchmarkConfirmer extends Command
             throw new InvalidArgumentException("Path target inesistente: {$source}");
         }
         $source = str_replace('\\', '/', $resolved);
+        $descriptor = $catalog->descriptor($projectKey);
+        if ($descriptor === null) {
+            throw new InvalidArgumentException("Descriptor benchmark assente: {$projectKey}");
+        }
         $envelope = $this->option('envelope-points');
         if (! is_numeric($envelope) || (float) $envelope <= 0) {
             throw new InvalidArgumentException('--envelope-points deve essere positivo.');
         }
-        $artifacts = $this->artifacts($projectKey);
+        $artifacts = $this->artifacts($subjectSelector, $projectKey);
         if ($artifacts->isEmpty()) {
-            $this->warn('Nessuna ReaderLead canonica e classificata da valutare.');
+            $this->warn('Nessuna ReaderLead valida per i filtri richiesti.');
 
             return self::SUCCESS;
         }
@@ -61,29 +74,30 @@ final class BenchmarkConfirmer extends Command
                 $runId = $location['run_id'];
                 $directory = $location['directory'];
                 $workDirectory = storage_path("framework/lailaps-confirmer/{$runId}");
+                $agentSource = $auditSource->materialize(
+                    $source,
+                    $workDirectory.'/source',
+                    $projectKey,
+                    $descriptor,
+                );
                 File::ensureDirectoryExists($workDirectory);
                 $subjectPath = $workDirectory.'/lead-subject.json';
-                File::put($subjectPath, json_encode([
-                    'schema' => 'lailaps.benchmark-stage-input',
-                    'version' => 1,
-                    'role' => 'reader',
-                    'artifact_id' => $leadArtifact->id,
-                    'project_key' => $projectKey,
-                    'category' => $this->auditCategory($manifests, $leadArtifact->category),
-                    'source_commit' => $leadArtifact->source_commit,
-                    'output' => (array) data_get($leadArtifact->payload, 'output', []),
-                    'source_refs' => (array) data_get($leadArtifact->payload, 'source_refs', []),
-                ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                File::put($subjectPath, json_encode($dataset->modelSubject($leadArtifact), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
                 $oldDirectory = getenv('LAILAPS_RUN_DIRECTORY');
                 $oldRunId = getenv('LAILAPS_RUN_ID');
                 $oldOutcome = getenv('LAILAPS_OUTCOME_FILE');
+                $oldHarnessEnvironment = [];
                 putenv('LAILAPS_RUN_DIRECTORY='.$directory);
                 putenv('LAILAPS_RUN_ID='.$runId);
                 putenv('LAILAPS_OUTCOME_FILE='.$storage->outcomePath($directory, $runId));
+                foreach ($descriptor->harnessEnvironment() as $name => $value) {
+                    $oldHarnessEnvironment[$name] = getenv($name);
+                    putenv($name.'='.$value);
+                }
                 try {
                     $exit = Artisan::call('pentest:run', [
-                        '--path' => $source,
+                        '--path' => $agentSource,
                         '--audit-id' => $runId,
                         '--project-name' => $projectKey,
                         '--category' => [$this->auditCategory($manifests, $leadArtifact->category)],
@@ -100,6 +114,7 @@ final class BenchmarkConfirmer extends Command
                     $technical = $technicalFailure->failed($report, $exit);
                     $summary = $this->persistOutputs(
                         $registry,
+                        $oracle,
                         $leadArtifact,
                         $report,
                         $projectKey,
@@ -125,6 +140,9 @@ final class BenchmarkConfirmer extends Command
                     $this->restoreEnv('LAILAPS_RUN_DIRECTORY', $oldDirectory);
                     $this->restoreEnv('LAILAPS_RUN_ID', $oldRunId);
                     $this->restoreEnv('LAILAPS_OUTCOME_FILE', $oldOutcome);
+                    foreach ($oldHarnessEnvironment as $name => $value) {
+                        $this->restoreEnv($name, $value);
+                    }
                 }
             }
         }
@@ -133,25 +151,19 @@ final class BenchmarkConfirmer extends Command
     }
 
     /** @return Collection<int, BenchmarkStageArtifact> */
-    private function artifacts(string $projectKey): Collection
+    private function artifacts(BenchmarkStageSubjectSelector $selector, string $projectKey): Collection
     {
         $ids = array_values(array_filter((array) $this->option('artifact')));
-        $query = BenchmarkStageArtifact::query()
-            ->where('project_key', $projectKey)
-            ->where('role', 'reader')
-            ->where('output_type', 'ReaderLead')
-            ->where('accepted', true);
-        if ($ids !== []) {
-            $query->whereIn('id', $ids);
-        } else {
-            $query->where('is_canonical', true)
-                ->whereIn('label', ['benchmark_positive', 'novel_valid', 'false_positive']);
-        }
-        if ($this->option('category')) {
-            $query->where('category', strtolower((string) $this->option('category')));
-        }
 
-        return $query->orderBy('created_at')->get();
+        return $selector->select(
+            projectKey: $projectKey,
+            role: 'reader',
+            outputType: 'ReaderLead',
+            category: $this->option('category') ? (string) $this->option('category') : null,
+            artifactIds: $ids,
+            dataset: $this->option('dataset') ? (string) $this->option('dataset') : null,
+            frozenLabels: ['benchmark_positive', 'novel_valid', 'false_positive'],
+        );
     }
 
     /** @param list<BenchmarkManifest> $manifests */
@@ -173,6 +185,7 @@ final class BenchmarkConfirmer extends Command
      */
     private function persistOutputs(
         BenchmarkStageArtifactRegistry $registry,
+        ConfirmerBenchmarkOracle $oracleEvaluator,
         BenchmarkStageArtifact $leadArtifact,
         array $report,
         string $projectKey,
@@ -184,14 +197,17 @@ final class BenchmarkConfirmer extends Command
         $outputs = collect((array) ($report['structured_outputs'] ?? []))
             ->filter(fn ($row): bool => is_array($row) && ($row['role'] ?? null) === 'confirmer')
             ->values();
-        $expectedCandidate = in_array($leadArtifact->label, ['benchmark_positive', 'novel_valid'], true);
+        $oracle = (array) data_get($leadArtifact->metrics, 'oracle', []);
         $decision = null;
         $correct = false;
         foreach ($outputs as $output) {
             $decision = (string) ($output['output_type'] ?? 'unknown');
-            $isCandidate = $decision === 'CandidateHandoff';
-            $isClosure = $decision === 'LeadClosure';
-            $correct = $expectedCandidate ? $isCandidate : $isClosure;
+            $evaluation = $oracleEvaluator->evaluate($oracle, $decision, (array) ($output['payload'] ?? []));
+            if ($technical) {
+                $evaluation['classification_correct'] = false;
+                $evaluation['quality_score'] = 0.0;
+            }
+            $correct = (bool) $evaluation['classification_correct'];
             $registry->record([
                 'project_key' => $projectKey,
                 'category' => $leadArtifact->category,
@@ -211,9 +227,7 @@ final class BenchmarkConfirmer extends Command
                 ],
                 'usage' => (array) ($output['usage'] ?? []),
                 'metrics' => [
-                    'expected' => $expectedCandidate ? 'CandidateHandoff' : 'LeadClosure',
-                    'correct' => $correct,
-                    'score' => $correct ? 100.0 : 0.0,
+                    ...$evaluation,
                     'economic_points' => (float) data_get($output, 'usage.economic_points', 0),
                 ],
                 'label' => $correct ? $leadArtifact->label : 'unresolved',
@@ -234,7 +248,11 @@ final class BenchmarkConfirmer extends Command
                 'output_type' => 'ConfirmerRun',
                 'status' => $technical ? 'technical_failure' : 'valid',
                 'accepted' => false,
-                'metrics' => ['expected' => $expectedCandidate ? 'CandidateHandoff' : 'LeadClosure', 'correct' => false],
+                'metrics' => [
+                    'expected_decision' => data_get($oracle, 'expected_decision'),
+                    'classification_correct' => false,
+                    'quality_score' => 0.0,
+                ],
                 'technical_error' => $technicalError,
             ]);
         }
