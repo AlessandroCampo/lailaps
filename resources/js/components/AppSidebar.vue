@@ -35,6 +35,11 @@ const mainNavItems: NavItem[] = [
         icon: ShieldCheck,
     },
     {
+        title: 'Progetti',
+        href: '/projects',
+        icon: FolderGit2,
+    },
+    {
         title: 'Audit Console',
         href: '/audit-console',
         icon: MonitorCog,

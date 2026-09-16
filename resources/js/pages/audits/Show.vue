@@ -1146,6 +1146,61 @@ onBeforeUnmount(() => source?.close());
                 per questa run.
             </div>
             <div v-else class="space-y-4">
+                <div
+                    v-if="benchmark.discovery_yield"
+                    class="grid gap-3 sm:grid-cols-2"
+                >
+                    <div class="rounded-xl border bg-card p-4">
+                        <span class="text-sm text-muted-foreground"
+                            >Catalog coverage</span
+                        >
+                        <p class="mt-1 text-2xl font-semibold">
+                            {{ benchmark.score?.normalized ?? 'â€”'
+                            }}<span v-if="benchmark.score?.normalized != null"
+                                >%</span
+                            >
+                        </p>
+                    </div>
+                    <div class="rounded-xl border bg-card p-4">
+                        <span class="text-sm text-muted-foreground"
+                            >Discovery yield</span
+                        >
+                        <p class="mt-1 text-2xl font-semibold">
+                            {{
+                                benchmark.discovery_yield?.credited_findings ??
+                                'â€”'
+                            }}
+                            <span
+                                v-if="benchmark.discovery_yield"
+                                class="text-sm font-normal text-muted-foreground"
+                            >
+                                finding ·
+                                {{ benchmark.discovery_yield.points }} pt
+                            </span>
+                        </p>
+                        <p
+                            v-if="benchmark.discovery_yield"
+                            class="mt-1 text-xs text-muted-foreground"
+                        >
+                            {{ benchmark.discovery_yield.statically_validated }}
+                            statici,
+                            {{
+                                benchmark.discovery_yield.dynamically_confirmed
+                            }}
+                            dinamici ·
+                            {{
+                                benchmark.discovery_yield
+                                    .catalog_matched_credited
+                            }}
+                            catalogo,
+                            {{
+                                benchmark.discovery_yield
+                                    .out_of_catalog_credited
+                            }}
+                            fuori catalogo
+                        </p>
+                    </div>
+                </div>
                 <div class="grid gap-3 sm:grid-cols-4">
                     <div
                         v-for="(value, label) in {
@@ -1539,9 +1594,7 @@ onBeforeUnmount(() => source?.close());
                 </summary>
                 <pre
                     class="mt-4 max-h-[700px] overflow-auto text-xs whitespace-pre-wrap"
-                    >{{
-                        JSON.stringify({ telemetry }, null, 2)
-                    }}</pre>
+                    >{{ JSON.stringify({ telemetry }, null, 2) }}</pre>
             </details>
         </section>
 

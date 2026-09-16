@@ -23,6 +23,7 @@ it('routes the OWASP preset through the unbiased benchmark command regardless of
         'benchmark:run',
         'owasp-benchmark-java',
         '--audit-id=audit-123',
+        '--keep=false',
         '--test',
         '--tool-output',
     ]);

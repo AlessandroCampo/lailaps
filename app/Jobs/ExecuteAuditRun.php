@@ -9,6 +9,7 @@ use App\Services\Audit\AuditRunFinalizer;
 use App\Services\Audit\RunStorage;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 use Throwable;
@@ -23,7 +24,17 @@ final class ExecuteAuditRun implements ShouldQueue
 
     public function handle(AuditCommandBuilder $commands, AuditRunFinalizer $finalizer, RunStorage $storage): void
     {
-        $this->execute($commands, $finalizer, $storage);
+        $lock = Cache::lock('lailaps-active-environment', $this->timeout + 600);
+        if (! $lock->get()) {
+            $this->release(10);
+
+            return;
+        }
+        try {
+            $this->execute($commands, $finalizer, $storage);
+        } finally {
+            $lock->release();
+        }
     }
 
     /**
@@ -52,19 +63,21 @@ final class ExecuteAuditRun implements ShouldQueue
         if (is_file($cancelMarker)) {
             unlink($cancelMarker);
         }
+        $environment = [
+            'LAILAPS_RUN_DIRECTORY' => (string) $run->run_path,
+            'LAILAPS_RUN_ID' => $run->audit_id,
+            'LAILAPS_OUTCOME_FILE' => $storage->outcomePath((string) $run->run_path, $run->audit_id),
+            // Il processo figlio scrive un transcript umano. Report e
+            // telemetria strutturata vivono nell'outcome JSON separato.
+            'LAILAPS_EVENT_STREAM' => '0',
+            'LAILAPS_SUPERVISED_LOG' => '1',
+            'NO_COLOR' => '1',
+            ...$this->preparationSecrets($run),
+        ];
         $process = new Process(
             $commands->build($run),
             base_path(),
-            [
-                'LAILAPS_RUN_DIRECTORY' => (string) $run->run_path,
-                'LAILAPS_RUN_ID' => $run->audit_id,
-                'LAILAPS_OUTCOME_FILE' => $storage->outcomePath((string) $run->run_path, $run->audit_id),
-                // Il processo figlio scrive un transcript umano. Report e
-                // telemetria strutturata vivono nell'outcome JSON separato.
-                'LAILAPS_EVENT_STREAM' => '0',
-                'LAILAPS_SUPERVISED_LOG' => '1',
-                'NO_COLOR' => '1',
-            ],
+            $environment,
             null,
             ((int) ($run->parameters['ttl'] ?? 9000)) + 300,
         );
@@ -153,5 +166,29 @@ final class ExecuteAuditRun implements ShouldQueue
     {
         $run->update(['status' => AuditRunStatus::Cancelled, 'finished_at' => now(), 'exit_code' => 130]);
         $storage->appendLog((string) $run->run_path, $run->audit_id, "[system] status=cancelled\n");
+    }
+
+    /** @return array<string, string> */
+    private function preparationSecrets(AuditRun $run): array
+    {
+        if ($run->preparation_id === null) {
+            return [];
+        }
+        $preparation = $run->preparation()->first();
+        if ($preparation === null) {
+            return [];
+        }
+        $answers = (array) $preparation->answers;
+        $secrets = [];
+        foreach ((array) data_get($preparation->configuration, 'secret_keys', []) as $key) {
+            if (! is_string($key) || preg_match('/^[A-Z][A-Z0-9_]{1,63}$/', $key) !== 1) {
+                continue;
+            }
+            if (is_string($answers[$key] ?? null) && $answers[$key] !== '') {
+                $secrets[$key] = $answers[$key];
+            }
+        }
+
+        return $secrets;
     }
 }

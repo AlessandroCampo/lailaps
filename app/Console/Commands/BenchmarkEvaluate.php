@@ -12,7 +12,7 @@ use Illuminate\Console\Command;
 
 final class BenchmarkEvaluate extends Command
 {
-    protected $signature = 'benchmark:evaluate {--run= : ID DB o audit_id} {--evaluator=3.2.1}';
+    protected $signature = 'benchmark:evaluate {--run= : ID DB o audit_id} {--evaluator=3.3.0}';
 
     protected $description = 'Ricalcola il benchmark dagli artefatti senza rilanciare il modello';
 
@@ -45,7 +45,12 @@ final class BenchmarkEvaluate extends Command
             }
             $results[$slug] = $evaluator->evaluate($suiteRoot, $manifest, $source, ['run_state' => $run->status->value]);
         }
-        $aggregate = $aggregator->aggregate($targetId, $run->audit_id, $results, ['run_state' => $run->status->value]);
+        $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : null;
+        $aggregate = $aggregator->aggregate($targetId, $run->audit_id, $results, [
+            'run_state' => $run->status->value,
+            'shared_run' => data_get($report, 'mode') === 'global',
+            'report' => $report,
+        ]);
         $path = $storage->outcomePath($suiteRoot, $run->audit_id);
         $storage->writeOutcome($suiteRoot, $run->audit_id, $outcome['report'] ?? null, $aggregate);
         $finalizer->finalize($run->fresh());

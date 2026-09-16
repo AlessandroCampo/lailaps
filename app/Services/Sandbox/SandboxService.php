@@ -81,6 +81,30 @@ class SandboxService
         $sandbox->markDead();
     }
 
+    public function destroyByAuditId(string $auditId): void
+    {
+        $containers = $this->docker->listContainersByLabel(SandboxLabels::AUDIT_ID, $auditId);
+        $driver = $containers[0]['Labels'][SandboxLabels::DRIVER] ?? null;
+        if (is_string($driver) && $driver !== '') {
+            $this->driverByName($driver)->destroy($auditId);
+        }
+    }
+
+    public function diagnosticLogs(string $auditId): string
+    {
+        $logs = [];
+        foreach ($this->docker->listContainersByLabel(SandboxLabels::AUDIT_ID, $auditId) as $container) {
+            $id = (string) ($container['Id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            $name = ltrim((string) (($container['Names'][0] ?? $id)), '/');
+            $logs[] = "[{$name}]\n".$this->docker->containerLogs($id);
+        }
+
+        return mb_substr(implode("\n", $logs), -50000);
+    }
+
     /**
      * Ricollega una sandbox Lailaps ancora in esecuzione senza crearla, buildarla
      * o smontarla. Il nuovo audit riceve comunque un SandboxDTO, quindi l'agente

@@ -84,7 +84,7 @@ class StoreAuditRunRequest extends FormRequest
             'confirmer_model' => null,
             'worker_model' => null, 'judge_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
-            'test' => true, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
+            'test' => false, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
         ], $this->validated());
     }
 

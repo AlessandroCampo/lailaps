@@ -55,6 +55,16 @@ class User extends Authenticatable implements PasskeyUser
         return $this->hasMany(AuditRun::class);
     }
 
+    public function projects(): HasMany
+    {
+        return $this->hasMany(Project::class);
+    }
+
+    public function githubConnection(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(GithubConnection::class);
+    }
+
     /** @return HasMany<BenchmarkExperiment, $this> */
     public function benchmarkExperiments(): HasMany
     {

@@ -28,13 +28,14 @@ final class BenchmarkWorker extends Command
         {--path= : Path target; default targets/<target-id>}
         {--category= : Limita alla benchmark category}
         {--worker-model= : Modello Worker}
+        {--judge-model= : Modello Dynamic Judge}
         {--dataset= : Dataset congelato; se assente usa gli artifact validi dal DB}
-        {--envelope-points=300000 : Hard cap Worker per episodio}
+        {--envelope-points=300000 : Hard cap condiviso Worker/Judge per episodio}
         {--repetitions=3 : Ripetizioni per candidate, da 1 a 20}
         {--tool-output : Mostra output tool compatti}
         {--test=true : Ricostruisce immagine agente; usa false solo con immagine pubblicata}';
 
-    protected $description = 'Valuta il solo Worker da CandidateHandoff frozen o validi nel DB, senza Judge';
+    protected $description = 'Valuta Worker e Dynamic Judge da CandidateHandoff frozen o validi nel DB';
 
     public function handle(
         BenchmarkCatalog $catalog,
@@ -119,6 +120,7 @@ final class BenchmarkWorker extends Command
                         '--fixture-probes' => $probePath,
                         '--envelope-points' => $envelope,
                         '--worker-model' => $this->option('worker-model'),
+                        '--judge-model' => $this->option('judge-model'),
                         '--tool-output' => (bool) $this->option('tool-output'),
                         // Every repetition owns a fresh sandbox and its fresh volumes.
                         '--keep' => false,
@@ -135,10 +137,14 @@ final class BenchmarkWorker extends Command
                     $storage->writeOutcome($directory, $runId, $report, $summary);
                     $failed = $failed || $technical;
                     $this->line(sprintf(
-                        '%s [%d/%d] proposal=%s evidence=%s requests=%d | %s',
+                        '%s [%d/%d] decision=%s worker=%s evidence=%s http=%d browser=%d | %s',
                         $candidate->id, $repetition, $repetitions,
-                        $summary['proposal'] ?? 'missing', $summary['evidence_sufficiency'] ?? 'absent',
-                        (int) ($summary['http_requests'] ?? 0), $technical ? 'TECHNICAL FAILURE' : 'valid',
+                        $summary['proposal'] ?? 'missing',
+                        $summary['worker_proposal'] ?? 'missing',
+                        $summary['evidence_sufficiency'] ?? 'absent',
+                        (int) ($summary['http_requests'] ?? 0),
+                        (int) ($summary['browser_actions'] ?? 0),
+                        $technical ? 'TECHNICAL FAILURE' : 'valid',
                     ));
                 } finally {
                     File::deleteDirectory($workDirectory);
@@ -207,43 +213,65 @@ final class BenchmarkWorker extends Command
             ],
             'evaluator_version' => WorkerBenchmarkOracle::VERSION,
             'budget_points' => $budget,
-            'continuity_policy' => 'continue-until-terminal-or-budget-v1',
-            'stop_policy' => 'first-valid-worker-terminal-v1',
+            'continuity_policy' => 'dynamic-judge-authorized-retry-v1',
+            'stop_policy' => 'dynamic-judge-terminal-v1',
             'toolset' => 'normal-worker-toolset-v1',
             'source_access' => filter_var(data_get(config('pentest.agent.env'), 'WORKER_SOURCE_ACCESS_ENABLED', true), FILTER_VALIDATE_BOOL),
+            'judge' => $this->judgeConfiguration(),
+        ];
+    }
+
+    /** @return array{model: string, reasoning_effort: string} */
+    private function judgeConfiguration(): array
+    {
+        $modelsFile = (string) data_get(config('pentest.agent'), 'models_file', base_path('agent/pentest-agent/Models.json'));
+        $configured = is_file($modelsFile)
+            ? json_decode((string) file_get_contents($modelsFile), true)
+            : [];
+
+        return [
+            'model' => (string) ($this->option('judge-model') ?: data_get($configured, 'judge.model', 'unknown')),
+            'reasoning_effort' => (string) data_get($configured, 'judge.reasoning_effort', 'unknown'),
         ];
     }
 
     /** @param array<string, mixed> $report @param array<string, mixed> $comparison @return array<string, mixed> */
     private function persist(BenchmarkStageArtifactRegistry $registry, WorkerBenchmarkOracle $oracleEvaluator, BenchmarkStageArtifact $candidate, array $report, string $runId, int $repetition, bool $technical, ?string $technicalError, string $signature, array $comparison): array
     {
-        $output = collect((array) ($report['structured_outputs'] ?? []))->first(
+        $workerOutput = collect((array) ($report['structured_outputs'] ?? []))->last(
             fn ($row): bool => is_array($row) && ($row['role'] ?? null) === 'worker'
                 && in_array($row['output_type'] ?? null, ['ConfirmedDecision', 'RejectedDecision', 'BlockedDecision', 'NeedsInfoDecision'], true)
         );
-        $proposalType = is_array($output) ? (string) ($output['output_type'] ?? '') : null;
-        $proposal = is_array($output) ? (array) ($output['payload'] ?? []) : null;
+        $judgeOutput = collect((array) ($report['structured_outputs'] ?? []))->last(
+            fn ($row): bool => is_array($row) && ($row['role'] ?? null) === 'judge'
+                && ($row['output_type'] ?? null) !== 'JudgeRetryWorkerDecision'
+        );
+        $proposalType = is_array($workerOutput) ? (string) ($workerOutput['output_type'] ?? '') : null;
+        $proposal = is_array($workerOutput) ? (array) ($workerOutput['payload'] ?? []) : null;
+        $decisionType = is_array($judgeOutput) ? (string) ($judgeOutput['output_type'] ?? '') : null;
+        $decision = is_array($judgeOutput) ? (array) ($judgeOutput['payload'] ?? []) : null;
         $evidence = (array) ($report['worker_benchmark'] ?? []);
         $termination = (string) ($report['termination_reason'] ?? 'missing_report');
-        $evaluation = $oracleEvaluator->evaluate((array) data_get($candidate->metrics, 'oracle', []), $proposalType, $proposal, $evidence, $termination, $technical);
+        $evaluation = $oracleEvaluator->evaluate((array) data_get($candidate->metrics, 'oracle', []), $decisionType, $decision, $evidence, $termination, $technical);
         $usage = (array) data_get($report, 'telemetry.role_usage.worker', []);
+        $judgeUsage = (array) data_get($report, 'telemetry.role_usage.judge', []);
         $registry->record([
             'project_key' => $candidate->project_key, 'category' => $candidate->category,
             'source_commit' => $candidate->source_commit, 'parent_artifact_id' => $candidate->id,
             'run_id' => $runId, 'repetition' => $repetition, 'role' => 'worker',
-            'output_type' => $proposalType ?: 'WorkerRun', 'model' => data_get($report, 'telemetry.role_usage.worker.model'),
-            'status' => $technical ? 'technical_failure' : 'valid', 'accepted' => $proposal !== null && ! $technical,
+            'output_type' => $decisionType ?: 'WorkerJudgeRun', 'model' => data_get($report, 'telemetry.role_usage.worker.model'),
+            'status' => $technical ? 'technical_failure' : 'valid', 'accepted' => $decision !== null && ! $technical,
             'configuration_signature' => $signature,
-            'payload' => ['output' => $proposal, 'evidence' => $evidence, 'termination_reason' => $termination],
+            'payload' => ['output' => $proposal, 'judge_decision' => $decision, 'evidence' => $evidence, 'termination_reason' => $termination],
             'usage' => $usage,
-            'metrics' => [...$evaluation, 'comparison_signature' => $signature, 'comparison' => $comparison, 'economic_points' => (float) ($usage['economic_points'] ?? 0), 'tool_calls' => (int) ($usage['tool_calls'] ?? 0), 'duration_ms' => (float) ($usage['duration_ms'] ?? 0), 'postflight_ready' => data_get($report, 'environment.postflight_ready')],
+            'metrics' => [...$evaluation, 'worker_proposal_type' => $proposalType, 'worker_proposal' => $proposal, 'adjudication_executed' => $decision !== null, 'judge_usage' => $judgeUsage, 'comparison_signature' => $signature, 'comparison' => $comparison, 'economic_points' => (float) data_get($report, 'telemetry.economic_points_used', 0), 'tool_calls' => (int) ($usage['tool_calls'] ?? 0), 'duration_ms' => (float) ($usage['duration_ms'] ?? 0) + (float) ($judgeUsage['duration_ms'] ?? 0), 'postflight_ready' => data_get($report, 'environment.postflight_ready')],
             'evaluator_version' => WorkerBenchmarkOracle::VERSION,
             'label' => $evaluation['proposal_correct'] ? $candidate->label : 'unresolved',
             'matched_case_id' => $candidate->matched_case_id, 'label_set_version' => $candidate->label_set_version,
             'technical_error' => $technicalError,
         ]);
 
-        return ['mode' => 'worker_only', 'dataset' => $candidate->label_set_version, 'comparison_signature' => $signature, 'proposal' => $evaluation['proposal_decision'], 'proposal_correct' => $evaluation['proposal_correct'], 'evidence_sufficiency' => $evaluation['evidence_sufficiency'], 'http_requests' => $evaluation['http_requests'], 'technical_failure' => $technical, 'termination_reason' => $termination];
+        return ['mode' => 'worker_judge', 'dataset' => $candidate->label_set_version, 'comparison_signature' => $signature, 'proposal' => $evaluation['proposal_decision'], 'proposal_correct' => $evaluation['proposal_correct'], 'worker_proposal' => $proposalType, 'adjudication_executed' => $decision !== null, 'evidence_sufficiency' => $evaluation['evidence_sufficiency'], 'http_requests' => $evaluation['http_requests'], 'browser_actions' => $evaluation['browser_actions'], 'technical_failure' => $technical, 'termination_reason' => $termination];
     }
 
     private function restoreEnv(string $key, string|false $value): void

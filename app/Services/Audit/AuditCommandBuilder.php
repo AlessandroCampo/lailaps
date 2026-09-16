@@ -36,8 +36,8 @@ final class AuditCommandBuilder
                 'benchmark:run',
                 (string) $benchmarkId,
                 '--audit-id='.$run->audit_id,
-                ...($p['keep'] ? ['--keep'] : []),
-                ...($p['test'] ? ['--test'] : []),
+                '--keep='.((bool) ($p['keep'] ?? false) ? 'true' : 'false'),
+                (bool) ($p['test'] ?? false) ? '--test' : '--no-test',
                 // The web transcript retains bounded result previews so the UI
                 // can reveal them on demand without loading raw tool payloads.
                 '--tool-output',
@@ -73,6 +73,7 @@ final class AuditCommandBuilder
             $argv[] = '--project-name='.(string) $p['project_name'];
         }
         $this->value($argv, 'path', $p['path'] ?? (isset($preset['path']) ? base_path($preset['path']) : null));
+        $this->value($argv, 'runtime-path', $p['runtime_path'] ?? null);
         foreach (($p['categories'] ?: [($preset['category'] ?? null)]) as $category) {
             if ($category) {
                 $argv[] = '--category='.$category;
@@ -87,6 +88,7 @@ final class AuditCommandBuilder
         $this->value($argv, 'port', $p['port'] ?? ($preset['port'] ?? null));
         $this->value($argv, 'service', $p['service'] ?? null);
         $this->value($argv, 'compose', $p['compose'] ?? null);
+        $this->value($argv, 'audit-profile', $p['audit_profile'] ?? null);
         $this->value($argv, 'reader-model', $p['reader_model'] ?? null);
         $this->value($argv, 'reviewer-model', $p['reviewer_model'] ?? null);
         $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
@@ -97,8 +99,6 @@ final class AuditCommandBuilder
         foreach ([
             'skip-health' => (bool) ($p['skip_health'] ?? false),
             'assume-authorized' => (bool) ($p['authorized'] ?? false),
-            'test' => (bool) ($p['test'] ?? false),
-            'keep' => (bool) ($p['keep'] ?? false),
             // Web runs always retain the compact preview; visibility is a
             // client-side preference and defaults to off.
             'tool-output' => true,
@@ -107,6 +107,8 @@ final class AuditCommandBuilder
                 $argv[] = '--'.$option;
             }
         }
+        $argv[] = '--test='.((bool) ($p['test'] ?? false) ? 'true' : 'false');
+        $argv[] = '--keep='.((bool) ($p['keep'] ?? false) ? 'true' : 'false');
 
         return $argv;
     }

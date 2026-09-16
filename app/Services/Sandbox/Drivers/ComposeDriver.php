@@ -20,7 +20,7 @@ class ComposeDriver implements SandboxDriver
 
     private const KEPT_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID', 'NET_BIND_SERVICE', 'KILL'];
 
-    private const UP_TIMEOUT = 180;
+    private const UP_TIMEOUT = 600;
 
     private const DOWN_TIMEOUT = 120;
 
@@ -42,6 +42,7 @@ class ComposeDriver implements SandboxDriver
             ?? throw new RuntimeException('Nessun compose file trovato nel progetto');
 
         $projectName = $spec->projectName();
+        $this->validateEffectiveConfig($composeFile, $spec, $projectName);
         $files = [$composeFile, $this->writeOverride($composeFile, $spec)];
 
         $process = $this->compose(dirname($composeFile), $projectName, $files, ['up', '-d', '--wait'], self::UP_TIMEOUT);
@@ -145,6 +146,7 @@ class ComposeDriver implements SandboxDriver
                 'security_opt' => ['no-new-privileges:true'],
                 'pids_limit' => $limits['pids'],
                 'mem_limit' => $limits['memory'],
+                'cpus' => (string) (((int) $limits['nano_cpus']) / 1_000_000_000),
                 'restart' => 'no',
                 'labels' => SandboxLabels::for($spec, $this->name(), service: (string) $service),
             ];
@@ -233,5 +235,79 @@ class ComposeDriver implements SandboxDriver
     private function overrideDirectory(string $auditId): string
     {
         return storage_path("framework/lailaps-sandbox/{$auditId}");
+    }
+
+    private function validateEffectiveConfig(string $composeFile, SandboxSpecDTO $spec, string $projectName): void
+    {
+        $process = $this->compose(dirname($composeFile), $projectName, [$composeFile], ['config', '--format', 'json'], 30);
+        $process->run();
+        if (! $process->isSuccessful()) {
+            throw new RuntimeException('Configurazione Compose non valida: '.trim($process->getErrorOutput()));
+        }
+        $config = json_decode($process->getOutput(), true);
+        if (! is_array($config) || ! is_array($config['services'] ?? null)) {
+            throw new RuntimeException('docker compose config non ha restituito una configurazione valida.');
+        }
+        foreach (['networks', 'volumes'] as $section) {
+            foreach ((array) ($config[$section] ?? []) as $name => $definition) {
+                if (($definition['external'] ?? false) === true) {
+                    throw new RuntimeException("Risorsa Compose esterna vietata: {$section}.{$name}");
+                }
+            }
+        }
+        $roots = array_values(array_unique(array_filter([
+            realpath($spec->projectPath),
+            realpath(dirname($composeFile)),
+        ])));
+        foreach ($config['services'] as $name => $service) {
+            if (! is_array($service)) {
+                continue;
+            }
+            foreach (['privileged', 'use_api_socket'] as $option) {
+                if (($service[$option] ?? false) === true) {
+                    throw new RuntimeException("Compose {$name}: {$option} vietato.");
+                }
+            }
+            foreach (['network_mode', 'pid', 'ipc'] as $option) {
+                if (($service[$option] ?? null) === 'host') {
+                    throw new RuntimeException("Compose {$name}: {$option}=host vietato.");
+                }
+            }
+            if (! empty($service['devices']) || ! empty($service['volumes_from'])) {
+                throw new RuntimeException("Compose {$name}: device o volumes_from host vietati.");
+            }
+            foreach ((array) ($service['volumes'] ?? []) as $volume) {
+                if (! is_array($volume) || ($volume['type'] ?? null) !== 'bind') {
+                    continue;
+                }
+                $source = (string) ($volume['source'] ?? '');
+                if ($source === '' || str_contains(str_replace('\\', '/', $source), '/var/run/docker.sock')) {
+                    throw new RuntimeException("Compose {$name}: bind mount vietato.");
+                }
+                $resolved = realpath($source);
+                if ($resolved === false || ! $this->withinRoots($resolved, $roots)) {
+                    throw new RuntimeException("Compose {$name}: bind mount fuori dal workspace: {$source}");
+                }
+            }
+            $context = data_get($service, 'build.context');
+            if (is_string($context)) {
+                $resolved = realpath($context);
+                if ($resolved === false || ! $this->withinRoots($resolved, $roots)) {
+                    throw new RuntimeException("Compose {$name}: build context fuori dal workspace.");
+                }
+            }
+        }
+    }
+
+    /** @param array<int, string> $roots */
+    private function withinRoots(string $path, array $roots): bool
+    {
+        foreach ($roots as $root) {
+            if ($path === $root || str_starts_with($path, $root.DIRECTORY_SEPARATOR)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

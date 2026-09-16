@@ -35,4 +35,11 @@ return [
         ],
     ],
 
+    'github_app' => [
+        'client_id' => env('GITHUB_APP_CLIENT_ID'),
+        'client_secret' => env('GITHUB_APP_CLIENT_SECRET'),
+        'slug' => env('GITHUB_APP_SLUG'),
+        'redirect' => env('GITHUB_APP_REDIRECT_URI', rtrim((string) env('APP_URL'), '/').'/github/callback'),
+    ],
+
 ];

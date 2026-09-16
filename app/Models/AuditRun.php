@@ -30,7 +30,7 @@ class AuditRun extends Model
     use HasUlids;
 
     protected $fillable = [
-        'user_id', 'benchmark_experiment_id', 'audit_id', 'type', 'repetition', 'status', 'parameters', 'run_path',
+        'user_id', 'source_revision_id', 'preparation_id', 'benchmark_experiment_id', 'audit_id', 'type', 'repetition', 'status', 'parameters', 'run_path',
         'harness_revision', 'target_commit', 'reproducible',
         'exit_code', 'error', 'cancellation_requested', 'started_at', 'finished_at',
     ];
@@ -51,6 +51,16 @@ class AuditRun extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function sourceRevision(): BelongsTo
+    {
+        return $this->belongsTo(SourceRevision::class);
+    }
+
+    public function preparation(): BelongsTo
+    {
+        return $this->belongsTo(Preparation::class);
     }
 
     public function experiment(): BelongsTo

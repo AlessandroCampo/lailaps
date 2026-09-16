@@ -65,6 +65,11 @@ it('probes the YesWiki home page instead of its redirecting root', function (): 
     $profile = AuditProfile::fromProject(dirname(__DIR__, 3).'/targets/yeswiki');
 
     expect($profile->service)->toBe('yeswiki-web')
+        ->and($profile->actors[0])->toMatchArray([
+            'username' => 'WikiAdmin',
+            'role' => 'administrator',
+            'description' => 'Amministratore sintetico del benchmark, autorizzato alle operazioni di gestione.',
+        ])
         ->and($profile->readiness[0])->toMatchArray([
             'path' => '/?PagePrincipale',
             'expected_status' => 200,

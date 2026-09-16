@@ -12,7 +12,7 @@ services:
     build: ./pentest-agent
     image: lailaps-pentest-agent:dev
     profiles: ["agent"]
-    depends_on: [dvwa]
+    depends_on: [dvwa, playwright-worker]
     env_file:
       - ./pentest-agent/.env        # OPENROUTER_API_KEY e altri segreti (mai nell'immagine)
     environment:
@@ -24,6 +24,9 @@ services:
       CODEBASE_MEMORY_NATIVE_CACHE_DIR: /opt/codebase-memory-launcher-cache
       DATA_FLOW_CACHE_ROOT: /cbm-cache/data-flow
       MODELS_CONFIG_FILE: /models.json
+      WORKER_BROWSER_ENABLED: ${WORKER_BROWSER_ENABLED:-false}
+      BROWSER_GATEWAY_URL: http://playwright-worker:3000
+      BROWSER_GATEWAY_TOKEN: ${BROWSER_GATEWAY_TOKEN:-dev-browser-token-change-me}
     volumes:
       # La codebase da analizzare, in sola lettura. Punta AGENT_SOURCE_ROOT a ciò che
       # vuoi analizzare (default: la cartella target/ del repo). Deve corrispondere
@@ -41,6 +44,29 @@ services:
       # (uv installa il progetto in editable, quindi le modifiche a src/ sono live).
       # Scommenta per sviluppare:
       # - ./pentest-agent/src:/app/src
+
+  # Dedicated P0 browser transport. It has no source/artifact/Docker-socket mounts;
+  # the Worker talks to it only over the compose-internal network with a token.
+  playwright-worker:
+    build: ./playwright-worker
+    image: lailaps-playwright-worker:dev
+    profiles: ["agent"]
+    environment:
+      BROWSER_GATEWAY_TOKEN: ${BROWSER_GATEWAY_TOKEN:-dev-browser-token-change-me}
+      BROWSER_TARGET_ORIGIN: http://dvwa
+      BROWSER_MAX_NETWORK_EVENTS: 200
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+      - /dev/shm:rw,noexec,nosuid,nodev,size=128m
+    cap_drop: ["ALL"]
+    cap_add: ["SYS_CHROOT"]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./playwright-worker/seccomp_profile.json
+    init: true
+    mem_limit: 768m
+    pids_limit: 256
 
 volumes:
   cbm-cache:

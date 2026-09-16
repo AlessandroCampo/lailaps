@@ -191,6 +191,19 @@ class DockerClient
         return $this->request('GET', "/containers/{$id}/json");
     }
 
+    public function containerLogs(string $id, int $tail = 200): string
+    {
+        try {
+            $response = $this->http->request('GET', "/containers/{$id}/logs", [
+                'query' => ['stdout' => 'true', 'stderr' => 'true', 'tail' => max(1, min(1000, $tail))],
+            ]);
+        } catch (GuzzleException $e) {
+            return 'Docker logs non disponibili: '.$e->getMessage();
+        }
+
+        return mb_substr((string) $response->getBody(), -20000);
+    }
+
     public function removeContainer(string $id, bool $force = true): void
     {
         $this->request('DELETE', "/containers/{$id}?force=".($force ? 'true' : 'false').'&v=true');

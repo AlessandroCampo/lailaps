@@ -50,7 +50,16 @@ final readonly class AuditProfile
         $path = $resolved;
 
         try {
-            $raw = Yaml::parseFile($path);
+            $contents = (string) file_get_contents($path);
+            $contents = preg_replace_callback('/\$\{([A-Z][A-Z0-9_]*)\}/', static function (array $match) use ($path): string {
+                $value = getenv($match[1]);
+                if ($value === false) {
+                    throw new InvalidArgumentException("Profilo audit non valido ({$path}): segreto {$match[1]} non disponibile.");
+                }
+
+                return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            }, $contents) ?? $contents;
+            $raw = Yaml::parse($contents);
         } catch (\Throwable $e) {
             throw new InvalidArgumentException("Profilo audit non valido ({$path}): {$e->getMessage()}", previous: $e);
         }
@@ -120,6 +129,7 @@ final readonly class AuditProfile
             $email = self::actorText($actor['email'] ?? null, "actors[{$index}].email", $path, optional: true);
             $password = self::actorText($actor['password'] ?? null, "actors[{$index}].password", $path);
             $role = self::actorText($actor['role'] ?? null, "actors[{$index}].role", $path);
+            $description = self::actorText($actor['description'] ?? null, "actors[{$index}].description", $path, optional: true);
             if ($username === null && $email === null) {
                 throw new InvalidArgumentException("Profilo audit non valido ({$path}): actors[{$index}] richiede username oppure email.");
             }
@@ -128,6 +138,7 @@ final readonly class AuditProfile
                 'email' => $email,
                 'password' => $password,
                 'role' => $role,
+                'description' => $description,
             ], static fn (?string $item): bool => $item !== null);
         }
 

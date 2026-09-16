@@ -4,13 +4,15 @@ namespace App\Services\Audit;
 
 use App\Enums\AuditRunStatus;
 use App\Models\AuditRun;
+use App\Models\Preparation;
+use App\Models\SourceRevision;
 use App\Models\User;
 use Illuminate\Support\Str;
 
 final class AuditRunFactory
 {
     /** @param array<string, mixed> $parameters */
-    public function create(User $user, array $parameters): AuditRun
+    public function create(User $user, array $parameters, ?SourceRevision $revision = null, ?Preparation $preparation = null): AuditRun
     {
         $id = (string) Str::ulid();
         $project = RunStorage::project($parameters);
@@ -24,6 +26,8 @@ final class AuditRunFactory
         return AuditRun::query()->create([
             'id' => $id,
             'user_id' => $user->id,
+            'source_revision_id' => $revision?->id,
+            'preparation_id' => $preparation?->id,
             'audit_id' => $location['run_id'],
             'type' => $parameters['type'],
             'status' => AuditRunStatus::Queued,

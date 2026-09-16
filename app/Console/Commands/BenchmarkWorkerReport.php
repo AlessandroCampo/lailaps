@@ -8,7 +8,8 @@ use Illuminate\Console\Command;
 final class BenchmarkWorkerReport extends Command
 {
     protected $signature = 'benchmark:worker:report {target-id} {--dataset=worker-gold-v1} {--model=}';
-    protected $description = 'Reports Worker proposal accuracy, evidence sufficiency, abstention, cost and stability';
+
+    protected $description = 'Reports Worker/Judge decision accuracy, evidence sufficiency, abstention, cost and stability';
 
     public function handle(): int
     {
@@ -19,10 +20,16 @@ final class BenchmarkWorkerReport extends Command
             ->where('role', 'worker')->whereIn('parent_artifact_id', $subjects->keys())
             ->when($this->option('model'), fn ($query) => $query->where('model', $this->option('model')))->get();
         $valid = $runs->where('status', 'valid');
-        $terminal = $valid->whereIn('output_type', ['ConfirmedDecision', 'RejectedDecision', 'BlockedDecision', 'NeedsInfoDecision']);
+        $terminal = $valid->whereIn('output_type', [
+            'JudgeConfirmedDecision', 'JudgeRejectedDecision', 'JudgeSuspectedDecision',
+            'JudgeBlockedDecision', 'JudgeRequestConfirmerDecision',
+            // Historical Worker-only benchmark artifacts remain reportable.
+            'ConfirmedDecision', 'RejectedDecision', 'BlockedDecision', 'NeedsInfoDecision',
+        ]);
         $rate = static fn ($rows, string $key): ?float => $rows->isEmpty() ? null : round(100 * $rows->avg(fn ($row) => (bool) data_get($row->metrics, $key)), 2);
         $matrix = $subjects->map(function ($subject) use ($runs): array {
             $rows = $runs->where('parent_artifact_id', $subject->id);
+
             return [
                 'subject' => $subject->id, 'case_id' => $subject->matched_case_id,
                 'runs' => $rows->count(), 'valid' => $rows->where('status', 'valid')->count(),
@@ -34,8 +41,11 @@ final class BenchmarkWorkerReport extends Command
         })->values();
         $report = [
             'dataset' => $this->option('dataset'), 'total_runs' => $runs->count(),
-            'semantic_denominator' => $valid->count(), 'terminal_proposals' => $terminal->count(),
+            'semantic_denominator' => $valid->count(),
+            'terminal_decisions' => $terminal->count(),
+            'terminal_proposals' => $terminal->count(),
             'technical_failures' => $runs->where('status', 'technical_failure')->count(),
+            'decision_accuracy_pct' => $rate($valid, 'proposal_correct'),
             'proposal_accuracy_pct' => $rate($valid, 'proposal_correct'),
             'full_credit_pct' => $rate($valid, 'full_credit'),
             'sufficient_evidence_pct' => $valid->isEmpty() ? null : round(100 * $valid->where('metrics.evidence_sufficiency', 'sufficient')->count() / $valid->count(), 2),
@@ -48,6 +58,7 @@ final class BenchmarkWorkerReport extends Command
             'matrix' => $matrix,
         ];
         $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
         return self::SUCCESS;
     }
 }

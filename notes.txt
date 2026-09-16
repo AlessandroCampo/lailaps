@@ -1,0 +1,9 @@
+Plans to run:
+
+attacker-sidecar 
+muticategory
+--agent-notebook
+
+
+ Worker responsabile del setup e del riuso: procedure di login, route, baseline e creazione degli oggetti verificate, annotate con lo scope già previsto dal piano.
+Non ho capito perchè semgrep non funziona su gitea

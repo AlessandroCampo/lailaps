@@ -42,7 +42,7 @@ const form = useForm({
     port: '' as string | number,
     service: '',
     ttl: 9000,
-    test: true,
+    test: false,
     keep: false,
     benchmark_id: '',
 });

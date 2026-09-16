@@ -109,6 +109,7 @@ final class AuditRunFinalizer
     /** @param array<string, mixed> $benchmark @return array<string, mixed> */
     private function refreshBenchmarkLifecycle(AuditRun $run, string $targetId, string $root, array $benchmark): array
     {
+        $outcome = $this->storage->outcome($root, $run->audit_id);
         if (isset($benchmark['by_category']) && is_array($benchmark['by_category'])) {
             $results = [];
             foreach ($benchmark['by_category'] as $slug => $result) {
@@ -124,6 +125,8 @@ final class AuditRunFinalizer
             }
             $benchmark = $this->aggregator->aggregate($targetId, $run->audit_id, $results, [
                 'run_state' => $run->status->value,
+                'shared_run' => data_get($outcome, 'report.mode') === 'global',
+                'report' => $outcome['report'] ?? null,
             ]);
         } else {
             $benchmark['run_state'] = $run->status->value;
@@ -132,7 +135,6 @@ final class AuditRunFinalizer
                 $benchmark['environment_state'] = $environment;
             }
         }
-        $outcome = $this->storage->outcome($root, $run->audit_id);
         $this->storage->writeOutcome($root, $run->audit_id, is_array($outcome['report'] ?? null) ? $outcome['report'] : null, $benchmark);
 
         return $benchmark;
@@ -185,6 +187,8 @@ final class AuditRunFinalizer
         }
         $benchmark = $this->aggregator->aggregate($targetId, $run->audit_id, $results, [
             'run_state' => $run->status->value,
+            'shared_run' => data_get($outcome, 'report.mode') === 'global',
+            'report' => $outcome['report'] ?? null,
         ]);
         if (! is_dir($root) && ! mkdir($root, 0755, true) && ! is_dir($root)) {
             return null;

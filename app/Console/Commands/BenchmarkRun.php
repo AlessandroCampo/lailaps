@@ -12,6 +12,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use InvalidArgumentException;
+use RuntimeException;
 
 final class BenchmarkRun extends Command
 {
@@ -23,19 +24,23 @@ final class BenchmarkRun extends Command
         {--db= : DSN del DB del target remoto da verificare}
         {--health-path= : Endpoint applicativo che deve rispondere 2xx}
         {--category= : Sotto-categoria benchmark opzionale (es. sqli); default tutte}
+        {--global : Una sola run OWASP A01-A10 valutata contro tutti i manifest}
         {--skip-health : Salta health check del target remoto}
         {--assume-authorized=true : Conferma autorizzazione per target non locale}
+        {--model= : Solo --global: modello predefinito per tutti i ruoli}
+        {--recon-model= : Modello OpenRouter per Global Recon e Category Recon}
         {--reader-model= : Modello OpenRouter per il Reader}
         {--reviewer-model= : Modello OpenRouter per l Exploration Reviewer}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
         {--worker-model= : Modello OpenRouter per il Worker}
         {--judge-model= : Modello OpenRouter per il Dynamic Judge}
         {--operative-model= : Modello OpenRouter per Confirmer e Worker; sostituisce i default di ruolo}
-        {--budget-category= : Preset cap categoria: small, regular, big oppure huge}
+        {--budget-category= : Preset discovery per categoria: small, regular, big oppure huge}
         {--test-area= : Solo benchmark/test: area semantica da prioritizzare in Recon}
         {--tool-output : Mostra una sintesi compatta delle risposte dei tool durante la run}
         {--audit-id= : ID parlante della run}
         {--keep=true : Mantiene le sandbox avviate}
+        {--ttl=9000 : Durata massima della sandbox in secondi}
         {--no-test : Disabilita rebuild e reasoning diagnostico dell’agente}
         {--test : Ricostruisce l’immagine dell’agente}';
 
@@ -57,6 +62,12 @@ final class BenchmarkRun extends Command
         if (count($requested) > 1) {
             throw new InvalidArgumentException('Il benchmark supporta una sola sotto-categoria per run.');
         }
+        if ($this->option('global') && $requested !== []) {
+            throw new InvalidArgumentException('--global non accetta il filtro --category benchmark.');
+        }
+        if ($this->option('model') && ! $this->option('global')) {
+            throw new InvalidArgumentException('--model e disponibile soltanto insieme a --global.');
+        }
         if ($requested !== []) {
             $manifests = array_values(array_filter($manifests, fn (BenchmarkManifest $manifest): bool => $this->matches($manifest, $requested[0])));
         }
@@ -74,7 +85,7 @@ final class BenchmarkRun extends Command
             throw new InvalidArgumentException('--url e --reuse-sandbox sono mutuamente esclusivi.');
         }
 
-        $categories = $requested !== [] ? $requested : ['all'];
+        $categories = $this->option('global') ? ['global'] : ($requested !== [] ? $requested : ['all']);
         $forcedDirectory = getenv('LAILAPS_RUN_DIRECTORY');
         $requestedRunId = $this->option('audit-id') ?: getenv('LAILAPS_RUN_ID');
         if ((is_string($forcedDirectory) && $forcedDirectory !== '' && (! is_string($requestedRunId) || $requestedRunId === ''))
@@ -115,45 +126,54 @@ final class BenchmarkRun extends Command
         try {
             $descriptor = $catalog->descriptor($targetId);
             $agentSource = $auditSource->materialize($source, $workDirectory.'/source', $targetId, $descriptor);
-            foreach ($descriptor?->harnessEnvironment() ?? [] as $name => $value) {
+            $runtimeOverlay = $descriptor === null ? null : dirname($descriptor->path).DIRECTORY_SEPARATOR.'runtime';
+            $runtimeSource = null;
+            if (is_dir((string) $runtimeOverlay)) {
+                $runtimeSource = $workDirectory.'/runtime';
+                if (! File::copyDirectory($source, $runtimeSource)
+                    || ! File::copyDirectory((string) $runtimeOverlay, $runtimeSource)) {
+                    throw new RuntimeException('Impossibile materializzare il runtime benchmark separato.');
+                }
+            }
+            foreach ($descriptor?->harnessEnvironment($runtimeSource) ?? [] as $name => $value) {
                 $oldHarnessEnvironment[$name] = getenv($name);
                 putenv($name.'='.$value);
             }
             $fixtureProbeFile = $this->writeFixtureProbeFile($workDirectory, $manifests);
-            foreach ($manifests as $manifest) {
-                $categorySlug = $manifest->benchmarkCategory() ?: strtolower($manifest->categoryId());
-                $parameters = [
-                    '--path' => $agentSource,
-                    '--audit-id' => $runId,
-                    '--project-name' => $targetId,
-                    '--category' => [$manifest->auditCategory()],
-                    '--reader-model' => $this->option('reader-model'),
-                    '--reviewer-model' => $this->option('reviewer-model'),
-                    '--confirmer-model' => $this->option('confirmer-model'),
-                    '--worker-model' => $this->option('worker-model'),
-                    '--judge-model' => $this->option('judge-model'),
-                    '--operative-model' => $this->option('operative-model'),
-                    '--budget-category' => $this->option('budget-category'),
-                    '--test-area' => $this->option('test-area'),
-                    '--tool-output' => $this->enabledOption('tool-output'),
-                    '--keep' => $this->enabledOption('keep'),
-                    '--test' => $this->enabledOption('test'),
-                ];
-                if ($fixtureProbeFile !== null) {
-                    $parameters['--fixture-probes'] = $fixtureProbeFile;
-                }
-                foreach (['url', 'db', 'health-path', 'skip-health'] as $option) {
-                    if ($this->option($option)) {
-                        $parameters['--'.$option] = $this->option($option);
-                    }
-                }
-                if ($this->option('reuse-sandbox')) {
-                    $parameters['--reuse-sandbox'] = $this->option('reuse-sandbox');
-                }
-                $parameters['--assume-authorized'] = $this->enabledOption('assume-authorized');
+            $global = (bool) $this->option('global');
+            $auditCategories = [];
+            $parameters = $this->pentestParameters(
+                $agentSource,
+                $runId,
+                $targetId,
+                $fixtureProbeFile,
+                $auditCategories,
+                $global,
+                $runtimeSource,
+            );
+            if ($global) {
                 $exit = Artisan::call('pentest:run', $parameters, $this->output);
                 $outcome = $storage->outcome($directory, $runId);
                 $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : null;
+                foreach ($manifests as $manifest) {
+                    $categorySlug = $manifest->benchmarkCategory() ?: strtolower($manifest->categoryId());
+                    $result = $report === null
+                        ? $evaluator->missingResult($manifest, ['run_state' => $exit === 0 ? 'completed' : 'failed'])
+                        : $evaluator->evaluate($directory, $manifest, $source, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
+                    $result['exit_code'] = $exit;
+                    $result['audit_id'] = $runId;
+                    $results[$categorySlug] = $result;
+                }
+                if ($report !== null) {
+                    $reports['global'] = $report;
+                }
+            } else {
+                foreach ($manifests as $manifest) {
+                    $categorySlug = $manifest->benchmarkCategory() ?: strtolower($manifest->categoryId());
+                    $parameters['--category'] = [$manifest->auditCategory()];
+                    $exit = Artisan::call('pentest:run', $parameters, $this->output);
+                    $outcome = $storage->outcome($directory, $runId);
+                    $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : null;
                 if ($report === null) {
                     $result = $evaluator->missingResult($manifest, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
                 } else {
@@ -163,11 +183,16 @@ final class BenchmarkRun extends Command
                 $result['exit_code'] = $exit;
                 $result['audit_id'] = $runId;
                 $results[$categorySlug] = $result;
+                }
             }
 
             $runState = in_array('failed', array_column($results, 'run_state'), true) ? 'failed' : 'completed';
-            $benchmark = $aggregator->aggregate($targetId, $runId, $results, ['run_state' => $runState]);
             $report = $this->aggregateReports($reports);
+            $benchmark = $aggregator->aggregate($targetId, $runId, $results, [
+                'run_state' => $runState,
+                'shared_run' => $global,
+                'report' => $report,
+            ]);
             $storage->writeOutcome($directory, $runId, $report, $benchmark);
 
             $outcomeMessage = 'Outcome benchmark: '.$storage->outcomePath($directory, $runId);
@@ -231,6 +256,58 @@ final class BenchmarkRun extends Command
         return $path;
     }
 
+    /** @param array<int, string> $categories */
+    private function pentestParameters(
+        string $agentSource,
+        string $runId,
+        string $targetId,
+        ?string $fixtureProbeFile,
+        array $categories,
+        bool $global,
+        ?string $runtimeSource,
+    ): array {
+        $parameters = [
+            '--path' => $agentSource,
+            '--runtime-path' => $runtimeSource,
+            '--audit-id' => $runId,
+            '--project-name' => $targetId,
+            '--model' => $this->option('model'),
+            '--recon-model' => $this->option('recon-model'),
+            '--reader-model' => $this->option('reader-model'),
+            '--reviewer-model' => $this->option('reviewer-model'),
+            '--confirmer-model' => $this->option('confirmer-model'),
+            '--worker-model' => $this->option('worker-model'),
+            '--judge-model' => $this->option('judge-model'),
+            '--operative-model' => $this->option('operative-model'),
+            '--budget-category' => $this->option('budget-category'),
+            '--test-area' => $this->option('test-area'),
+            '--tool-output' => $this->enabledOption('tool-output'),
+            '--keep' => $this->enabledOption('keep'),
+            '--test' => $this->enabledOption('test'),
+            '--ttl' => (string) $this->option('ttl'),
+            '--assume-authorized' => $this->enabledOption('assume-authorized'),
+        ];
+        if ($global) {
+            $parameters['--global'] = true;
+            if ($categories !== []) {
+                $parameters['--category'] = $categories;
+            }
+        }
+        if ($fixtureProbeFile !== null) {
+            $parameters['--fixture-probes'] = $fixtureProbeFile;
+        }
+        foreach (['url', 'db', 'health-path', 'skip-health'] as $option) {
+            if ($this->option($option)) {
+                $parameters['--'.$option] = $this->option($option);
+            }
+        }
+        if ($this->option('reuse-sandbox')) {
+            $parameters['--reuse-sandbox'] = $this->option('reuse-sandbox');
+        }
+
+        return $parameters;
+    }
+
     /** @param array<string, mixed> $benchmark @return list<string> */
     private function benchmarkSummary(array $benchmark): array
     {
@@ -239,7 +316,7 @@ final class BenchmarkRun extends Command
         $anchorReach = (array) data_get($benchmark, 'reach.anchor_reached', []);
         $conversions = (array) ($benchmark['conversions'] ?? []);
 
-        return [
+        $summary = [
             sprintf(
                 'Benchmark: %s | artifact %s | run %s | adjudication %s | pending %d',
                 (string) ($benchmark['status'] ?? 'unknown'),
@@ -272,6 +349,20 @@ final class BenchmarkRun extends Command
                 $this->formatRatio($conversions['static_to_dynamic'] ?? null),
             ),
         ];
+        $discovery = $benchmark['discovery_yield'] ?? null;
+        if (is_array($discovery)) {
+            $summary[] = sprintf(
+                'Discovery yield: %s pt | credited %d (static %d, dynamic %d) | catalog %d, out-of-catalog %d',
+                $this->formatMetric($discovery['points'] ?? null),
+                (int) ($discovery['credited_findings'] ?? 0),
+                (int) ($discovery['statically_validated'] ?? 0),
+                (int) ($discovery['dynamically_confirmed'] ?? 0),
+                (int) ($discovery['catalog_matched_credited'] ?? 0),
+                (int) ($discovery['out_of_catalog_credited'] ?? 0),
+            );
+        }
+
+        return $summary;
     }
 
     private function formatMetric(mixed $value): string
