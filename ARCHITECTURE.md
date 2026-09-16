@@ -47,6 +47,16 @@ massimo 32 subcall. Un broker JSON su stdin/stdout esegue le subcall nel process
 programma e binding sono contabilizzati separatamente. Timeout ed errori rimuovono sempre il
 container e restituiscono anche le osservazioni gia' acquisite, senza replay automatico.
 
+Per i progetti PHP il Confirmer dispone inoltre di `navigate_source`, un accesso semantico
+Phpactor limitato a definition, references, implementation e hover. Il release PHAR e il
+checksum sono fissati nell'immagine; il language server vive in un container lazy riusato
+per il source root della run, con sorgente read-only, rete e Composer disabilitati, root
+read-only, tmpfs e limiti di memoria/processi. Il client converte le coordinate model-facing
+1-based in UTF-16 LSP, rivalida ogni URI sotto `/workspace` e registra una source reference
+soltanto dopo aver letto localmente lo snippet restituito. Timeout, server assente e risultato
+vuoto sono stati recuperabili e non costituiscono prova di assenza o sicurezza; il Confirmer
+deve verificare il blocco decisivo con `read_file`.
+
 Il benchmark condizionale usa un registry separato dagli artifact filesystem della run.
 `benchmark_stage_artifacts` persiste esclusivamente boundary strutturati validi e bounded
 (`CategoryRecon`, output Reader e verdetti terminali Confirmer), mai reasoning, raw provider
