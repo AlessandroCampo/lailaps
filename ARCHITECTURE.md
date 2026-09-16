@@ -39,6 +39,14 @@ risultato strutturato; il percorso nativo ne rende poi una preview soggetta al b
 presentazione. I binding programmatici consumano il risultato strutturato entro gli stessi
 limiti senza dover interpretare la stringa model-facing.
 
+Il Confirmer dispone anche di `run_code(code, description)`: il codice e' un corpo Python
+async e puo' invocare sequenzialmente soltanto i binding strutturati `search_source` e
+`read_file`. Ogni programma gira in un container effimero senza rete, credenziali, sorgente
+o socket Docker, con root read-only, tmpfs bounded, 256 MiB RAM, 32 processi, 30 secondi e
+massimo 32 subcall. Un broker JSON su stdin/stdout esegue le subcall nel processo agente;
+programma e binding sono contabilizzati separatamente. Timeout ed errori rimuovono sempre il
+container e restituiscono anche le osservazioni gia' acquisite, senza replay automatico.
+
 Il benchmark condizionale usa un registry separato dagli artifact filesystem della run.
 `benchmark_stage_artifacts` persiste esclusivamente boundary strutturati validi e bounded
 (`CategoryRecon`, output Reader e verdetti terminali Confirmer), mai reasoning, raw provider
