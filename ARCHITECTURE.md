@@ -32,6 +32,19 @@ investigativi di listare, leggere a finestre e cercare letteralmente gli output 
 distinguendo disponibilita', espulsione e acquisizione incompleta. Il Dynamic Judge usa lo
 stesso archivio attraverso `inspect_persisted_evidence`, insieme alle evidenze HTTP, browser
 e source gia' indicizzate. I tool di recupero non reinseriscono una seconda copia nella LRU.
+Quando il Judge consulta un output, l'orchestratore conserva temporaneamente la finestra
+redatta realmente restituita; se il voto cita quell'output o una sua observation reference,
+l'estratto e la provenance vengono promossi nel finding prima di una possibile espulsione.
+
+La stessa LRU contiene gli eventi `investigation-event-*` di Confirmer, Worker e Judge:
+messaggi investigativi e decisioni vengono normalizzati e acquisiti prima di ogni compaction,
+restando disponibili attraverso le epoch della lead. `search_investigation_history` esegue
+ricerca letterale case-insensitive con massimo 20 estratti; `read_investigation_event` legge
+finestre dello stesso evento e dichiara l'espulsione. Scope e autorizzazione derivano dalla
+lead corrente. System prompt, metadata provider, credenziali e body dei tool non entrano nel
+corpus; per i tool restano solo nome e riferimenti agli output autorevoli. I risultati dei due
+tool di recupero non vengono reindicizzati. Un evento storico rimane un'affermazione o una
+decisione, non evidenza: Worker e Judge devono consultare l'output o l'osservazione indicata.
 
 `search_source` e `read_file` separano acquisizione e rendering: ripgrep, controllo path,
 limiti di acquisizione, registrazione delle source reference e provenance producono prima un
