@@ -25,6 +25,20 @@ output completi dei tool restano bounded in memoria per la durata del processo. 
 conserva lifecycle, metadati e proiezioni benchmark, ma non duplica il transcript in una
 tabella eventi.
 
+`ToolOutputManager` conserva ogni risultato prima della preview model-facing in una LRU da
+32 MiB per categoria. Ogni entry porta tool, ruolo, categoria, lead e area assegnati dal
+runtime; un ID non concede accesso fuori scope. `inspect_tool_output` permette ai ruoli
+investigativi di listare, leggere a finestre e cercare letteralmente gli output autorizzati,
+distinguendo disponibilita', espulsione e acquisizione incompleta. Il Dynamic Judge usa lo
+stesso archivio attraverso `inspect_persisted_evidence`, insieme alle evidenze HTTP, browser
+e source gia' indicizzate. I tool di recupero non reinseriscono una seconda copia nella LRU.
+
+`search_source` e `read_file` separano acquisizione e rendering: ripgrep, controllo path,
+limiti di acquisizione, registrazione delle source reference e provenance producono prima un
+risultato strutturato; il percorso nativo ne rende poi una preview soggetta al budget di
+presentazione. I binding programmatici consumano il risultato strutturato entro gli stessi
+limiti senza dover interpretare la stringa model-facing.
+
 Il benchmark condizionale usa un registry separato dagli artifact filesystem della run.
 `benchmark_stage_artifacts` persiste esclusivamente boundary strutturati validi e bounded
 (`CategoryRecon`, output Reader e verdetti terminali Confirmer), mai reasoning, raw provider
@@ -146,7 +160,9 @@ Per ogni categoria il flusso è:
 3. Exploration Reviewer produce il checkpoint semantico dell'area e decide se continuare,
    cambiare focus o chiudere l'area; continua soltanto con un test discriminante bounded e
    non reitera una direttiva inevasa o una tranche dominata da duplicati senza nuova evidenza.
-   L'orchestratore applica la transizione.
+   L'orchestratore applica la transizione usando l'identita' area catturata nello snapshot:
+   una chiusura duplicata o obsoleta conserva il checkpoint ma non chiude l'area successiva.
+   Decisione proposta, decisione applicata e causa di normalizzazione restano registrate.
 4. Confirmer ricostruisce ogni lead e prepara un piano di verifica ancorato all'istanza, eseguibile dal Worker fin dal primo passo.
 5. Worker verifica dinamicamente il candidate.
 6. Il Reader riprende la stessa area e history, aggiungendo una volta l'esito downstream; una lead non chiude l'area.
