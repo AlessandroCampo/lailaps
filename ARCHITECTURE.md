@@ -152,6 +152,13 @@ provider sono un override esplicito per confronti controllati e impostano
 `provider.only` con `allow_fallbacks=false`. Telemetria e outcome distinguono policy richiesta
 e provider osservato quando OpenRouter lo restituisce.
 
+Il contratto Chat Completions usato dal runtime e' verificato offline contro la versione
+Pydantic AI installata: la continuazione assistant tool-call → tool-result conserva un solo
+tool call ID, il campo reasoning supportato dal profilo provider e l'ordine stabile del
+prefisso. I pin provider sono applicati soltanto quando configurati e disabilitano i fallback.
+L'accounting distingue input totale, cache read e output; usage assente vale zero e il tee
+transport contabilizza una risposta una sola volta anche dopo lettura e chiusura dello stream.
+
 Per ogni categoria il flusso è:
 
 1. Category Recon costruisce la checklist iniziale di copertura focalizzata sulla categoria
