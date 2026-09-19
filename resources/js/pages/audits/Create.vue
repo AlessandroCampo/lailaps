@@ -29,6 +29,8 @@ const form = useForm({
     health_path: '',
     skip_health: false,
     authorized: false,
+    global: false,
+    depth: 1,
     categories: [''] as string[],
     reader_model: '',
     reviewer_model: '',
@@ -65,7 +67,7 @@ const submit = () =>
     form
         .transform((data) => ({
             ...data,
-            categories: data.categories.filter(Boolean),
+            categories: data.global ? [] : data.categories.filter(Boolean),
         }))
         .post('/audits');
 </script>
@@ -148,7 +150,7 @@ const submit = () =>
                     Il catalogo real-world è vuoto.
                 </p>
                 <InputError :message="form.errors.benchmark_id" />
-                <div v-if="form.benchmark_id" class="mt-4">
+                <div v-if="form.benchmark_id && !form.global" class="mt-4">
                     <Label for="benchmark-category">Sotto-categoria</Label>
                     <select
                         id="benchmark-category"
@@ -174,7 +176,48 @@ const submit = () =>
                 </div>
             </section>
 
-            <template v-else>
+            <section class="rounded-xl border bg-card p-5">
+                <h2 class="font-semibold">Copertura e profondita'</h2>
+                <div class="mt-4 grid gap-4 md:grid-cols-2">
+                    <label
+                        class="flex items-start gap-3 rounded-lg border p-4 text-sm"
+                    >
+                        <input
+                            v-model="form.global"
+                            type="checkbox"
+                            class="mt-0.5"
+                        />
+                        <span
+                            ><strong>Scansione globale per superfici</strong
+                            ><br />
+                            <span class="text-muted-foreground"
+                                >Una sola Recon e una sola pipeline
+                                investigativa, senza sweep per categoria.</span
+                            >
+                        </span>
+                    </label>
+                    <div>
+                        <Label for="depth">Pass sequenziali</Label>
+                        <Input
+                            id="depth"
+                            v-model.number="form.depth"
+                            type="number"
+                            min="1"
+                            class="mt-2"
+                        />
+                        <InputError :message="form.errors.depth" />
+                    </div>
+                </div>
+                <p
+                    v-if="form.depth > 1"
+                    class="mt-3 text-sm text-amber-700 dark:text-amber-300"
+                >
+                    Ogni pass riparte con contesto, cookie e budget nuovi; i
+                    dati gia' creati sul target non vengono ripristinati.
+                </p>
+            </section>
+
+            <template v-if="form.type !== 'benchmark'">
                 <section class="rounded-xl border bg-card p-5">
                     <h2 class="font-semibold">Sorgente e target</h2>
                     <div class="mt-4 grid gap-4 md:grid-cols-2">
@@ -245,7 +288,7 @@ const submit = () =>
                 <section class="rounded-xl border bg-card p-5">
                     <h2 class="font-semibold">Agente</h2>
                     <div class="mt-4 grid gap-4 md:grid-cols-2">
-                        <div>
+                        <div v-if="!form.global">
                             <Label>Categoria 1</Label
                             ><Input
                                 v-model="form.categories[0]"
@@ -253,7 +296,7 @@ const submit = () =>
                                 placeholder="A01:2025 Broken Access Control"
                             />
                         </div>
-                        <div>
+                        <div v-if="!form.global">
                             <Label>Categoria 2</Label
                             ><Input
                                 :model-value="form.categories[1] || ''"

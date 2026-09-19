@@ -9,6 +9,13 @@ use Illuminate\Validation\Validator;
 
 class StoreAuditRunRequest extends FormRequest
 {
+    protected function prepareForValidation(): void
+    {
+        if (! $this->has('depth')) {
+            $this->merge(['depth' => 1]);
+        }
+    }
+
     /** @return array<string, array<int, mixed>> */
     public function rules(): array
     {
@@ -22,6 +29,8 @@ class StoreAuditRunRequest extends FormRequest
             'health_path' => ['nullable', 'string', 'max:512'],
             'skip_health' => ['boolean'],
             'authorized' => ['boolean'],
+            'global' => ['boolean'],
+            'depth' => ['required', 'integer', 'min:1'],
             'categories' => ['array', 'max:2'],
             'categories.*' => ['string', 'max:160', 'distinct'],
             'reader_model' => ['nullable', 'string', 'max:255'],
@@ -77,15 +86,21 @@ class StoreAuditRunRequest extends FormRequest
     /** @return array<string, mixed> */
     public function normalized(): array
     {
-        return array_replace([
+        $normalized = array_replace([
             'preset' => null, 'path' => null, 'target_mode' => 'sandbox', 'url' => null,
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
-            'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
+            'global' => false, 'depth' => 1, 'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
             'confirmer_model' => null,
             'worker_model' => null, 'judge_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
             'test' => false, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
         ], $this->validated());
+
+        if ($normalized['global']) {
+            $normalized['categories'] = [];
+        }
+
+        return $normalized;
     }
 
     private function sourcePathAllowed(string $path): bool

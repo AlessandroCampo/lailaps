@@ -36,16 +36,22 @@ final class AuditCommandBuilder
                 'benchmark:run',
                 (string) $benchmarkId,
                 '--audit-id='.$run->audit_id,
+                '--depth='.(int) ($p['depth'] ?? 1),
                 '--keep='.((bool) ($p['keep'] ?? false) ? 'true' : 'false'),
                 (bool) ($p['test'] ?? false) ? '--test' : '--no-test',
                 // The web transcript retains bounded result previews so the UI
                 // can reveal them on demand without loading raw tool payloads.
                 '--tool-output',
             ];
-            foreach ((array) ($p['categories'] ?? []) as $category) {
-                if ($category) {
-                    $command[] = '--category='.$category;
+            if (! (bool) ($p['global'] ?? false)) {
+                foreach ((array) ($p['categories'] ?? []) as $category) {
+                    if ($category) {
+                        $command[] = '--category='.$category;
+                    }
                 }
+            }
+            if ((bool) ($p['global'] ?? false)) {
+                $command[] = '--global';
             }
             $this->value($command, 'url', $p['url'] ?? null);
             $this->value($command, 'db', $p['db'] ?? null);
@@ -68,16 +74,26 @@ final class AuditCommandBuilder
         }
 
         $preset = isset($p['preset']) ? (self::PRESETS[$p['preset']] ?? []) : [];
-        $argv = [...$argv, 'pentest:run', '--audit-id='.$run->audit_id];
+        $argv = [
+            ...$argv,
+            'pentest:run',
+            '--audit-id='.$run->audit_id,
+            '--depth='.(int) ($p['depth'] ?? 1),
+        ];
         if (isset($p['project_name']) && $p['project_name'] !== '') {
             $argv[] = '--project-name='.(string) $p['project_name'];
         }
         $this->value($argv, 'path', $p['path'] ?? (isset($preset['path']) ? base_path($preset['path']) : null));
         $this->value($argv, 'runtime-path', $p['runtime_path'] ?? null);
-        foreach (($p['categories'] ?: [($preset['category'] ?? null)]) as $category) {
-            if ($category) {
-                $argv[] = '--category='.$category;
+        if (! (bool) ($p['global'] ?? false)) {
+            foreach (($p['categories'] ?: [($preset['category'] ?? null)]) as $category) {
+                if ($category) {
+                    $argv[] = '--category='.$category;
+                }
             }
+        }
+        if ((bool) ($p['global'] ?? false)) {
+            $argv[] = '--global';
         }
         $this->value($argv, 'url', $p['url'] ?? null);
         $this->value($argv, 'db', $p['db'] ?? null);

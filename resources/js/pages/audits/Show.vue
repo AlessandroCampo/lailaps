@@ -161,6 +161,24 @@ const findings = computed(() => [
         _state: item.status || 'finding',
     })),
 ]);
+const passCoverage = computed(() => {
+    const passes = Array.isArray(props.report?.passes)
+        ? props.report.passes
+        : [{ pass_id: 'pass-001', pass_index: 1, report: props.report }];
+
+    return passes.flatMap((pass: any) => {
+        const coverage = pass?.report?.coverage || {};
+        const checkpoints = coverage.reader_area_checkpoints || {};
+
+        return (coverage.area_ledger || []).map((area: any) => ({
+            ...area,
+            pass_id: pass.pass_id,
+            pass_index: pass.pass_index,
+            visited: (coverage.visited_area_ids || []).includes(area.area_id),
+            checkpoint: checkpoints[area.area_id] || null,
+        }));
+    });
+});
 type RoleCostRow = Record<string, any> & { role: string };
 const roleCosts = computed<RoleCostRow[]>(() =>
     Object.entries(props.telemetry?.role_usage ?? {})
@@ -1026,7 +1044,7 @@ onBeforeUnmount(() => source?.close());
                 ancora disponibile.
             </div>
             <template v-else>
-                <div class="grid gap-3 sm:grid-cols-4">
+                <div class="grid gap-3 sm:grid-cols-5">
                     <div class="rounded-xl border bg-card p-4">
                         <span class="text-sm text-muted-foreground"
                             >Outcome</span
@@ -1063,6 +1081,53 @@ onBeforeUnmount(() => source?.close());
                             {{ report.blockers?.length || 0 }}
                         </p>
                     </div>
+                    <div class="rounded-xl border bg-card p-4">
+                        <span class="text-sm text-muted-foreground">Pass</span>
+                        <p class="mt-1 text-xl font-semibold">
+                            {{ report.passes_finished ?? (report ? 1 : 0) }}/{{
+                                report.depth_requested ?? 1
+                            }}
+                        </p>
+                    </div>
+                </div>
+                <div
+                    v-if="passCoverage.length"
+                    class="rounded-xl border bg-card p-5"
+                >
+                    <h3 class="font-medium">Aree e domande di sicurezza</h3>
+                    <div class="mt-3 grid gap-3 md:grid-cols-2">
+                        <div
+                            v-for="area in passCoverage"
+                            :key="`${area.pass_id}:${area.area_id}`"
+                            class="rounded-lg border p-3"
+                        >
+                            <div class="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline">{{
+                                    area.pass_id
+                                }}</Badge>
+                                <Badge
+                                    :variant="
+                                        area.visited ? 'secondary' : 'outline'
+                                    "
+                                    >{{
+                                        area.visited
+                                            ? 'visitata'
+                                            : 'non visitata'
+                                    }}</Badge
+                                >
+                            </div>
+                            <p class="mt-2 font-medium">{{ area.title }}</p>
+                            <p class="mt-1 text-sm text-muted-foreground">
+                                {{ area.next_check }}
+                            </p>
+                            <p
+                                v-if="area.checkpoint?.summary"
+                                class="mt-2 text-xs text-muted-foreground"
+                            >
+                                {{ area.checkpoint.summary }}
+                            </p>
+                        </div>
+                    </div>
                 </div>
                 <article
                     v-for="(finding, index) in findings"
@@ -1079,6 +1144,9 @@ onBeforeUnmount(() => source?.close());
                             >{{ finding._state }}</Badge
                         ><Badge variant="outline">{{
                             finding.severity || 'unknown'
+                        }}</Badge
+                        ><Badge v-if="finding.pass_id" variant="outline">{{
+                            finding.pass_id
                         }}</Badge
                         ><span class="text-xs text-muted-foreground">{{
                             finding.owasp_category

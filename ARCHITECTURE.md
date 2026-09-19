@@ -130,47 +130,43 @@ e quantità sono bounded e un rifiuto non tronca né cancella note. Le pubblicaz
 e telemetria preservano sempre la sezione esistente. Le note non sono evidenze, finding,
 credenziali o stato autorevole e non provocano transizioni del ledger.
 
-Le categorie OWASP sono elaborate in sequenza. Il percorso ordinario (una o due categorie)
-mantiene stato e budget per categoria. Il percorso CLI esplicito `--global` esegue invece
-un'unica run A01-A10 (o un sottoinsieme selezionato), senza includere il playbook benchmark
-`XSS`: inizializza una sola Codebase Memory e una sola Global Recon, poi riconcilia la mappa
-comune con il playbook di ogni categoria. Un fallback della Global Recon conserva
-l'inventario deterministico e non rimuove categorie dalla coda. History, sessioni, area
-attiva ed evidenze operative restano locali all'episodio; vengono condivisi soltanto Global
-Recon, memoria narrativa bounded, checkpoint e schede piatte del registro lead. Un fatal
-al confine di una categoria globale la finalizza come incompleta e conserva l'errore
-operatore-only, ma non interrompe le categorie successive.
+Il percorso ordinario puo' ancora eseguire una o due categorie filtrate in sequenza. Il
+percorso esplicito `--global` non effettua invece uno sweep A01-A10: esegue una sola Recon
+trasversale, inizializza un unico Area Ledger e avvia una sola pipeline investigativa
+Reader -> Confirmer -> Worker -> Dynamic Judge. Le aree Recon sono domande concrete su
+entrypoint, operazioni sensibili, confini di fiducia e controlli osservati; non sono nomi di
+categoria. Non esistono riconciliazioni o handoff intermedi per categoria.
 
-La run globale usa broker staged distinti per categoria, con allowance discovery locali.
-`GlobalBudgetCoordinator` controlla solo il cap economico comune: Global Recon viene
-addebitata una volta come lavoro condiviso, poi ciascun broker vede il residuo del cap
-all'ingresso della categoria. Non esistono fair-share, riserve per categorie future, pool
-discovery condiviso o slot dinamici globali. Il residuo discovery non viene redistribuito.
-Il report espone cap, usato, residuo e overshoot della run, oltre al consumo per categoria.
+Recon, Reader ed Exploration Reviewer consumano la stessa allowance discovery del broker
+staged del pass. Il cap e il preset sono quindi applicati una volta alla scansione globale,
+senza moltiplicazione per categoria; l'ammissione staged di Confirmer, Worker e Judge resta
+invariata. La categoria proposta dal Reader e' un attributo model-facing opzionale:
+l'orchestratore la normalizza sulla registry OWASP oppure usa `unclassified`. In una run
+filtrata il filtro richiesto resta autorevole indipendentemente dal valore proposto.
 
-Il registro globale assegna identità interne stabili indipendenti da classificazione e
-locator. La categoria guida la discovery ma non filtra le lead: in `--global` una pista
-fuori categoria passa subito alla pipeline corrente e una classificazione assente resta
-`unclassified`. Il Lead Novelty Reviewer confronta semanticamente tutte le disposizioni
-precedenti e distingue ipotesi nuova, duplicato senza novità, stessa ipotesi con nuova
-evidenza e relazione incerta. Soltanto il duplicato semantico viene soppresso; nuova
-evidenza crea una lead-delta collegata, mentre errore, ambiguità o riferimento non
-risolvibile ammettono la proposta. Uguaglianza di route, metodo, file o righe è soltanto un
-hint e non chiude più deterministicamente una lead.
+L'Exploration Reviewer vede schede bounded di tutte le aree note e puo' restituire
+`finish_pass` soltanto dopo almeno una visita a ciascuna area e in assenza di lead pending.
+Una terminazione prematura viene normalizzata senza retry verso la prima area non visitata o
+verso la continuazione necessaria. Un `finish_pass` valido persiste `semantic_stop`, lascia
+aperte le aree sospese e mantiene `coverage.complete=false` quando restano residui; la
+chiusura completa continua a dipendere dal gate deterministico `_can_complete_discovery`.
 
-I risultati durevoli confluiscono infine in un report aggregato. Per `--global` il path è
-`storage/app/runs/{target}/global/{run_id}`; non è presente un Judge globale.
+`--depth N` ripete l'intero pass in sequenza. Ogni pass riceve nuove dipendenze operative,
+ledger, history/provider session, notebook, evidence ledger, client HTTP, cookie e budget;
+riusa soltanto sorgente, indice Codebase Memory e infrastruttura target. Lo stato applicativo
+creato sul target non viene ripristinato fra pass. Le fixture isolate CVE/ReaderLead/
+CandidateHandoff accettano soltanto depth 1. Un failure fatale interrompe i pass successivi.
+`depth` non estende automaticamente TTL o timeout esterni della run.
 
-Il coordinatore e' l'unico publisher del report globale anche durante una categoria attiva:
-i checkpoint locali aggiornano una vista category-scoped e il coordinatore ricostruisce
-l'aggregato, conservando finding, coverage, evidenze, budget e telemetria precedenti. Gli
-aggiornamenti dello stesso outcome sono serializzati oltre a essere atomici. Un errore in
-costruzione dipendenze/orchestratore, Recon, run, handoff, contabilizzazione o aggregazione produce una categoria
-`technical_failure` incompleta con fase, causa, ultimo ruolo e checkpoint disponibili;
-cleanup e handoff best-effort non sostituiscono un report gia' valido. In modalita' globale
-la coda continua e l'outcome usa `partial_failure`, mantenendo score e risultati parziali.
-SIGKILL, OOM e crash del processo unico restano fuori da questa garanzia live e richiedono
-l'isolamento P1.
+L'outcome schema 10 contiene `depth_requested`, `passes_started`, `passes_finished`,
+`active_pass` e `passes[]`, con stato `running`, `finished`, `failed` o `cancelled` e report
+completo scoped; `passes_finished` conta soltanto gli stati `finished`. ArtifactStore isola
+notebook ed evidence ledger per pass pur mantenendo un
+solo file atomico. Finding confermati, sospetti e rifiutati sono concatenati nel root report
+con `pass_id` e ID qualificato, senza deduplica cross-pass. Checkpoint e aggregati vengono
+ricostruiti dai report autorevoli dei pass, non sommati incrementalmente. Gli outcome
+storici privi di depth sono letti come depth 1. Nei benchmark ogni pass riceve una
+valutazione separata, mentre l'aggregato cumulativo conta ogni ground-truth una sola volta.
 
 Le run globali accettano un modello comune con `--model` oppure override indipendenti per
 Recon, Reader, Reviewer, Confirmer, Worker e Dynamic Judge. La risoluzione è deterministica:
@@ -190,10 +186,10 @@ prefisso. I pin provider sono applicati soltanto quando configurati e disabilita
 L'accounting distingue input totale, cache read e output; usage assente vale zero e il tee
 transport contabilizza una risposta una sola volta anche dopo lettura e chiusura dello stream.
 
-Per ogni categoria il flusso è:
+Per ogni pass il flusso è:
 
-1. Category Recon costruisce la checklist iniziale di copertura focalizzata sulla categoria
-   e inizializza l'Area Ledger autorevole.
+1. Recon costruisce la mappa iniziale di domande di sicurezza e inizializza l'Area Ledger
+   autorevole; in modalita' globale la mappa e' trasversale alle categorie.
 2. Reader svolge la discovery statica in epoch cognitive limitate e isolate per area.
 3. Exploration Reviewer produce il checkpoint semantico dell'area e decide se continuare,
    cambiare focus o chiudere l'area; continua soltanto con un test discriminante bounded e
@@ -207,17 +203,20 @@ Per ogni categoria il flusso è:
 7. Il Reader puo' proporre una `AreaEnrichmentLead` come recovery per una superficie
    imprevedibile; il Reviewer decide semanticamente e l'orchestratore accoda l'area approvata.
 8. La chiusura Reviewer-owned dell'ultima area completa deterministicamente la discovery
-   quando non esistono lead pending.
-9. Se segue un'altra categoria, Handoff Reader trasferisce il contesto riutilizzabile.
+   quando non esistono lead pending; in alternativa `finish_pass` applica lo stop semantico
+   dopo la prima visita di tutte le aree note.
+9. Se `depth` richiede un altro pass, l'orchestratore crea un nuovo scope operativo isolato
+   e riparte da Recon senza trasferire memoria semantica dal pass precedente.
 
 ## Benchmark condizionale per stadio
 
 Il P0 di evaluation isola Recon, Reader e Confirmer senza introdurre agenti o contratti
 model-facing alternativi:
 
-1. `benchmark:recon` esegue piu' ripetizioni, valuta ogni `CategoryRecon`, persiste tutti i
-   boundary validi sotto la `project_key` e seleziona una Golden Recon con regola
-   deterministica: strict recall, recall@3, costo, compattezza e content hash.
+1. `benchmark:recon` puo' eseguire una categoria oppure una Global Recon trasversale a tutti
+   i manifest compatibili dello stesso snapshot. Ogni repetition persiste il `CategoryRecon`
+   completo e un artifact figlio `ReconArea` per ciascuna area. La fixture predefinita e' la
+   prima repetition tecnicamente valida, scelta senza usare lo score benchmark.
 2. `benchmark:reader` carica una Golden Recon congelata, ricostruisce l'Area Ledger
    autorevole e avvia il Reader normale. L'Exploration Reviewer resta un controllo operativo
    fisso necessario a checkpoint e chiusura aree, ma non riceve una scorecard autonoma. Le
@@ -765,15 +764,15 @@ ottiene un voto strutturalmente applicabile, la lead resta `suspected`/`judge_st
 `evidence_validation` v3 con `mode=structural_provenance_only`. L'evaluator benchmark
 continua a riconoscere `dynamically_confirmed` tramite questa attestazione.
 
-Handoff Reader produce il contesto riutilizzabile dalla categoria successiva con soli fatti
+Nel solo percorso filtrato multi-categoria, Handoff Reader produce il contesto riutilizzabile dalla categoria successiva con soli fatti
 `topic`/`fact` e `unknowns` model-facing. Le source ref dell'episodio restano un indice
 separato dell'handoff e non vengono assegnate indiscriminatamente a ogni fatto. Se non
 termina correttamente, l'orchestratore genera l'handoff dal report e dallo stato durevole.
 
 ## Ledger e resilienza
 
-Il ledger è la fonte canonica di lead, source reference, transazioni e finding. Ledger,
-report di categoria e report aggregato usano lo schema 9; i precedenti artefatti
+Il ledger è la fonte canonica di lead, source reference, transazioni e finding. Ledger e
+report del singolo pass usano lo schema 9; il report root multi-pass usa lo schema 10. I precedenti artefatti
 `CategoryRecon` v2 non vengono migrati o riletti. Solo l'orchestratore applica al ledger i
 verdetti attestati dal Dynamic Judge; gli output Worker restano proposte. `blocked` è
 riservato a impedimenti ambientali, tecnici o informativi reali:
@@ -837,17 +836,29 @@ opzioni senza imporre login, riuso o cambio identità. Il Worker può selezionar
 un altro handle, usare `anonymous` oppure azzerare il solo stato HTTP locale con
 `reset_actor_session`; il logout applicativo resta una normale richiesta al target.
 
-## Benchmark dedicato Category Recon
+## Benchmark dedicato Recon
 
 `benchmark:recon` e' un percorso sorgente-only distinto da `benchmark:run`: materializza la
 stessa vista sanitizzata, inizializza Codebase Memory e Surface Context, esegue il reale
-handoff Category Recon e termina prima di creare il Reader. Non prepara sandbox, non esegue
+handoff Recon e termina prima di creare il Reader. Con `--global` unisce i casi distinti di
+tutti i manifest dello stesso target e snapshot; duplicati incompatibili rendono invalida la
+fixture. Non prepara sandbox, non esegue
 health check, readiness o fixture probe e non richiede un URL. La ground truth resta fuori
 dal processo agente e viene letta dall'evaluator Laravel soltanto dopo l'handoff. L'outcome
 persiste Recon, Area Ledger iniziale, Surface Context, tool telemetry, costo e punteggi per
 caso. L'evaluator separa exact locator, guidance semantica e sola famiglia pertinente e
 riporta strict/guided/weak recall, score normalizzato, recall@1/3/5, aree, locator e unknown.
-Le ripetizioni del comando producono run e outcome distinti.
+Le ripetizioni del comando producono run e outcome distinti. Il profilo globale iniziale
+concede 32 richieste investigative, 640.000 punti, 24.000 token di output e fino a 48 aree;
+la Recon categoriale conserva i limiti precedenti. La Global Recon dispone di lettura file,
+segnali statici, recupero degli output e `run_code` con i soli binding statici
+`search_source`/`read_file`, oltre agli strumenti architetturali. Il benchmark impone per
+default un timeout di 20 minuti: il runner rimuove il container prima che Laravel legga
+l'ultimo outcome atomico o elimini il sorgente temporaneo.
+
+Nel registry il lineage e' `CategoryRecon -> ReconArea`; i figli contengono soltanto area,
+indice e riferimento al parent, mentre contesto comune, usage e configurazione rimangono sul
+parent. Le query per la fixture completa filtrano sempre `output_type=CategoryRecon`.
 
 ## AgentBench per modello e ruolo
 
@@ -999,8 +1010,9 @@ recuperati ed esauriti.
 
 Un ciclo Reader esaurito conserva l'episodio se la stessa area e il contesto sono ancora utilizzabili.
 Due cicli consecutivi esauriti, pari a sei tentativi complessivi, attivano il circuit breaker:
-la categoria viene pubblicata incompleta con `termination_reason=model_unavailable`, viene
-prodotto un handoff deterministico e l'audit prosegue con le categorie successive. Un output
+il pass viene pubblicato incompleto con `termination_reason=model_unavailable`. Il percorso
+filtrato puo' produrre l'handoff deterministico previsto; nel percorso globale il failure
+interrompe gli eventuali pass successivi. Un output
 Reader valido azzera il contatore. Recon, Reviewer, Confirmer, Worker, Dynamic Judge e Handoff
 restano contenuti nei rispettivi fallback descritti nelle sezioni dei ruoli.
 
@@ -1022,13 +1034,22 @@ del percorso end-to-end, ma valutano la proiezione contenente la sola case selez
 
 L'accounting usa `pricing_schema_version: 2`: per ogni richiesta i pesi sono derivati dal prezzo del modello effettivamente servente in `model_prices.json`, con anchor fisso `google/gemini-3.7-flash` ($0.375 input e $1.875 output per milione) e floor `0.2`. Il peso cache è il rapporto reale, limitato a `0.1x`, per sussidiare intenzionalmente il riuso della cache. Le voci `pricing_basis: simulated:*` producono punti ma non entrano in `provider_cost_usd`; telemetry e benchmark le distinguono, e lo schema segmenta i confronti economici incompatibili.
 
-Il budget economico usa allowance discovery separate per categoria e un unico cap globale di 100.000.000 EP per run. Non esiste hard cap sui raw token cumulativi: input uncached, cached e output contribuiscono al consumo con pesi per modello distinti. `--budget-category=small|regular|big|huge` scala soltanto discovery (1.500.000, 3.000.000, 4.500.000, 6.000.000 EP per categoria). Envelope indipendenti dal preset e dal peso del modello: Confirmer 500.000 EP iniziali e 250.000 per continuazione; Worker 1.000.000 iniziali e 500.000 per continuazione; Judge 100.000 per voto. Il peso del modello si applica al consumo, mai al grant. Cap, impegni, uso e overshoot restano visibili negli snapshot; gli artifact storici non vengono ricalcolati.
+Il budget economico usa una allowance discovery e un cap di 100.000.000 EP per pass. Non
+esiste hard cap sui raw token cumulativi: input uncached, cached e output contribuiscono al
+consumo con pesi per modello distinti. `--budget-category=small|regular|big|huge` scala
+soltanto discovery (1.500.000, 3.000.000, 4.500.000, 6.000.000 EP per pass). Envelope
+indipendenti dal preset e dal peso del modello: Confirmer 500.000 EP iniziali e 250.000 per
+continuazione; Worker 1.000.000 iniziali e 500.000 per continuazione; Judge 100.000 per
+voto. Il peso del modello si applica al consumo, mai al grant. Cap, impegni, uso e overshoot
+restano visibili negli snapshot; gli artifact storici non vengono ricalcolati.
 
-Recon di categoria, Reader, Reviewer di discovery/novelty e Handoff consumano una sola volta la discovery locale. Global Recon viene addebitata solo al cap comune. Ogni lead ammette Confirmer indipendentemente; `statically_validated` rilascia il residuo Confirmer e ammette Worker più Judge atomicamente. Confirmer, Worker, Judge e relative estensioni non erodono discovery. Alla chiusura della lead gli impegni inutilizzati vengono rilasciati senza cancellare il consumo. Una continuazione approvata è finanziata soltanto se il cap ammette una nuova tranche e il voto seguente, con accounting idempotente e overshoot visibile. Non esistono limiti ordinali di pipeline o requeue nel percorso ordinario.
-
-Global Recon conserva il consumo anche se fallisce dopo richieste ammesse. Se il cap
-globale e' esaurito prima di una categoria, questa pubblica direttamente un report
-incompleto senza avviare modelli.
+Recon, Reader e Reviewer di discovery/novelty consumano la discovery condivisa del pass;
+nel percorso filtrato vi rientra anche l'eventuale Handoff. Ogni lead ammette Confirmer
+indipendentemente; `statically_validated` rilascia il residuo Confirmer e ammette Worker più
+Judge atomicamente. Confirmer, Worker, Judge e relative estensioni non erodono discovery.
+Alla chiusura della lead gli impegni inutilizzati vengono rilasciati senza cancellare il
+consumo. Una continuazione approvata è finanziata soltanto se il cap ammette una nuova
+tranche e il voto seguente, con accounting idempotente e overshoot visibile.
 
 I request limit sono guardrail anti-loop, non budget economici e non pacing ordinario. Il
 Confirmer riceve una tranche iniziale da 12 richieste e ogni estensione concede fino
@@ -1181,8 +1202,9 @@ Il suo costo viene attribuito al ruolo attivo e la telemetria espone per ogni ev
 token prima/dopo, token del summary, modalità `llm_summary` o
 `deterministic_fallback` e l'eventuale carattere forzato dal retry/preflight.
 
-Category Recon è l'eccezione: essendo una fase breve di quattro richieste investigative,
-non usa la compression episodica. Se la history raggiunge la soglia hard del 90%,
+Recon non usa la compression episodica. Il percorso categoriale conserva la tranche breve;
+quello globale puo' usare fino a 32 richieste investigative. Se la history raggiunge la
+soglia hard del 90%,
 l'orchestratore disabilita i tool e richiede immediatamente l'output terminale sulla
 history integra. La telemetria registra `recon_status`, `recon_terminal_reason` e rende
 quindi esplicita qualsiasi futura regressione che introducesse una compaction Recon.
@@ -1257,7 +1279,7 @@ fatal rende terminali i successivi tool della run.
 
 ### Vincoli generali
 
-## Policy operativa corrente (schema 9)
+## Policy operativa corrente (ledger schema 9, aggregato schema 10)
 
 Questa sezione e' normativa e sostituisce le descrizioni legacy precedenti su quote,
 terminalizzazione automatica, hard cap per-lead e compression deterministica.

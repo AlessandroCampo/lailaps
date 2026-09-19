@@ -23,6 +23,7 @@ it('routes the OWASP preset through the unbiased benchmark command regardless of
         'benchmark:run',
         'owasp-benchmark-java',
         '--audit-id=audit-123',
+        '--depth=1',
         '--keep=false',
         '--test',
         '--tool-output',
@@ -206,4 +207,42 @@ it('propagates the exploration reviewer model override', function (): void {
 
     expect((new AuditCommandBuilder)->build($run))
         ->toContain('--reviewer-model=reviewer/test');
+});
+
+it('propagates global surface mode and depth to audit commands', function (): void {
+    $run = new AuditRun;
+    $run->audit_id = 'audit-depth';
+    $run->type = 'audit';
+    $run->parameters = [
+        'preset' => 'dvwa',
+        'categories' => ['A01:2025 Broken Access Control'],
+        'global' => true,
+        'depth' => 3,
+        'ttl' => 1800,
+    ];
+
+    expect((new AuditCommandBuilder)->build($run))
+        ->toContain('--global')
+        ->toContain('--depth=3')
+        ->not->toContain('--category=A01:2025 Broken Access Control');
+});
+
+it('propagates global surface mode and depth to benchmark commands', function (): void {
+    $run = new AuditRun;
+    $run->audit_id = 'benchmark-depth';
+    $run->type = 'benchmark';
+    $run->parameters = [
+        'benchmark_id' => 'yeswiki',
+        'categories' => ['xss'],
+        'global' => true,
+        'depth' => 2,
+        'keep' => false,
+        'test' => false,
+    ];
+
+    expect((new AuditCommandBuilder)->build($run))
+        ->toContain('benchmark:run')
+        ->toContain('--global')
+        ->toContain('--depth=2')
+        ->not->toContain('--category=xss');
 });

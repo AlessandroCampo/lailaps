@@ -18,6 +18,7 @@ it('exposes independent worker and operative model options', function (): void {
         ->and($definition->hasOption('test-area'))->toBeTrue()
         ->and($definition->hasOption('reuse-sandbox'))->toBeTrue()
         ->and($definition->hasOption('global'))->toBeTrue()
+        ->and($definition->hasOption('depth'))->toBeTrue()
         ->and($definition->hasOption('ttl'))->toBeTrue();
 });
 

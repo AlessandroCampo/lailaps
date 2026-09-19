@@ -45,6 +45,7 @@ interface CompactFinding {
     status: string;
     severity?: string | null;
     category?: string | null;
+    passId?: string | null;
 }
 
 interface RunSnapshot {
@@ -58,6 +59,10 @@ interface RunSnapshot {
     suspected: number;
     findings: CompactFinding[];
     usage: Record<string, unknown>;
+    depthRequested: number;
+    passesStarted: number;
+    passesFinished: number;
+    activePass: string | null;
 }
 
 type LogKind =
@@ -96,6 +101,8 @@ const form = useForm({
     health_path: '',
     skip_health: false,
     authorized: false,
+    global: false,
+    depth: 1,
     categories: [
         props.presets[0]?.category || 'A01:2025 Broken Access Control',
     ],
@@ -178,7 +185,7 @@ const {
 function submit() {
     form.transform((data) => ({
         ...data,
-        categories: data.categories.filter(Boolean),
+        categories: data.global ? [] : data.categories.filter(Boolean),
     })).post('/audit-console/runs');
 }
 
@@ -575,13 +582,33 @@ onBeforeUnmount(() => {
                         {{ form.errors.path }}
                     </p>
                 </div>
-                <div class="md:col-span-2">
+                <div v-if="!form.global" class="md:col-span-2">
                     <Label>Categoria OWASP</Label>
                     <Input
                         v-model="form.categories[0]"
                         class="mt-2 bg-black/20"
                     />
                 </div>
+                <label class="flex items-start gap-2 text-sm text-zinc-300">
+                    <input v-model="form.global" type="checkbox" class="mt-1" />
+                    <span>Scansione globale per superfici</span>
+                </label>
+                <label class="flex items-center gap-2 text-sm text-zinc-300">
+                    Pass
+                    <Input
+                        v-model.number="form.depth"
+                        type="number"
+                        min="1"
+                        class="w-24 bg-black/20"
+                    />
+                </label>
+                <p
+                    v-if="form.depth > 1"
+                    class="text-xs text-amber-200 md:col-span-2"
+                >
+                    I pass isolano agente, cookie e budget; non ripristinano i
+                    dati del target.
+                </p>
                 <div>
                     <Label>Target</Label>
                     <select
@@ -677,6 +704,17 @@ onBeforeUnmount(() => {
                             {{
                                 new Date(run.createdAt).toLocaleString('it-IT')
                             }}
+                        </p>
+                        <p
+                            v-if="snapshot?.passesStarted"
+                            class="mt-1 text-xs text-cyan-300"
+                        >
+                            Pass
+                            {{ snapshot.activePass || snapshot.passesFinished }}
+                            · {{ snapshot.passesFinished }}/{{
+                                snapshot.depthRequested
+                            }}
+                            terminati
                         </p>
                     </div>
                     <div class="ml-auto flex flex-wrap gap-2">

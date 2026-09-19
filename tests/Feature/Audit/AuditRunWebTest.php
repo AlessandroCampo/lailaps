@@ -6,8 +6,8 @@ use App\Models\AuditRun;
 use App\Models\User;
 use App\Services\Audit\RunStorage;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
@@ -64,6 +64,41 @@ test('the operator console launches the same pentest run through the web queue',
     $run = AuditRun::query()->firstOrFail();
     $response->assertRedirect(route('audits.console.show', $run));
     Queue::assertPushed(ExecuteAuditRun::class, fn (ExecuteAuditRun $job) => $job->runId === $run->id);
+});
+
+test('web runs persist global surface mode and depth', function () {
+    Queue::fake();
+    $user = User::factory()->create();
+
+    $this->actingAs($user)->post(route('audits.store'), [
+        'type' => 'audit',
+        'preset' => 'dvwa',
+        'target_mode' => 'sandbox',
+        'global' => true,
+        'depth' => 2,
+        'categories' => ['A01:2025 Broken Access Control'],
+        'ttl' => 1800,
+    ])->assertSessionHasNoErrors();
+
+    $run = AuditRun::query()->firstOrFail();
+    expect($run->parameters['global'])->toBeTrue()
+        ->and($run->parameters['depth'])->toBe(2)
+        ->and($run->parameters['categories'])->toBe([]);
+});
+
+test('web runs reject an invalid depth', function () {
+    Queue::fake();
+    $user = User::factory()->create();
+
+    $this->actingAs($user)->post(route('audits.store'), [
+        'type' => 'audit',
+        'preset' => 'dvwa',
+        'target_mode' => 'sandbox',
+        'depth' => 0,
+        'ttl' => 1800,
+    ])->assertSessionHasErrors('depth');
+
+    Queue::assertNothingPushed();
 });
 
 test('the audit console index exposes only the authenticated user runs', function () {

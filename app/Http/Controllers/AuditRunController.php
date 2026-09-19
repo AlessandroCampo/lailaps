@@ -461,7 +461,16 @@ final class AuditRunController extends Controller
     /** @return array<string, mixed> */
     private function runSnapshot(AuditRun $run, bool $includeArtifacts = true): array
     {
-        $artifactData = ['confirmed' => 0, 'suspected' => 0, 'findings' => [], 'usage' => []];
+        $artifactData = [
+            'confirmed' => 0,
+            'suspected' => 0,
+            'findings' => [],
+            'usage' => [],
+            'depthRequested' => 1,
+            'passesStarted' => 0,
+            'passesFinished' => 0,
+            'activePass' => null,
+        ];
         if ($includeArtifacts) {
             $signature = $this->snapshotArtifactSignature($run);
             $cacheKey = 'audit-console.snapshot.'.$run->id;
@@ -486,7 +495,7 @@ final class AuditRunController extends Controller
         ];
     }
 
-    /** @return array{confirmed: int, suspected: int, findings: array<int, array<string, mixed>>, usage: array<string, mixed>} */
+    /** @return array<string, mixed> */
     private function snapshotArtifactData(AuditRun $run): array
     {
         $report = $this->outcomePart($run, 'report') ?? [];
@@ -500,6 +509,12 @@ final class AuditRunController extends Controller
             'confirmed' => count($confirmed),
             'suspected' => count($suspected),
             'findings' => $findings,
+            'depthRequested' => (int) ($report['depth_requested'] ?? 1),
+            'passesStarted' => (int) ($report['passes_started'] ?? ($report === [] ? 0 : 1)),
+            'passesFinished' => (int) ($report['passes_finished'] ?? (
+                ($report['publication_state'] ?? null) === 'final' ? 1 : 0
+            )),
+            'activePass' => is_string($report['active_pass'] ?? null) ? $report['active_pass'] : null,
             'usage' => collect($this->telemetry($run) ?? [])->only([
                 'model_requests', 'total_model_input_tokens', 'total_model_output_tokens',
                 'cached_model_input_tokens', 'uncached_model_input_tokens', 'total_tokens',
@@ -519,6 +534,7 @@ final class AuditRunController extends Controller
             'status' => (string) ($finding['status'] ?? $fallbackStatus),
             'severity' => $finding['severity'] ?? null,
             'category' => $finding['owasp_category'] ?? null,
+            'passId' => $finding['pass_id'] ?? null,
         ];
     }
 

@@ -24,7 +24,8 @@ final class BenchmarkRun extends Command
         {--db= : DSN del DB del target remoto da verificare}
         {--health-path= : Endpoint applicativo che deve rispondere 2xx}
         {--category= : Sotto-categoria benchmark opzionale (es. sqli); default tutte}
-        {--global : Una sola run OWASP A01-A10 valutata contro tutti i manifest}
+        {--global : Unica scansione globale per superfici valutata contro tutti i manifest}
+        {--depth=1 : Numero di pass completi e isolati da eseguire in sequenza}
         {--skip-health : Salta health check del target remoto}
         {--assume-authorized=true : Conferma autorizzazione per target non locale}
         {--model= : Solo --global: modello predefinito per tutti i ruoli}
@@ -53,6 +54,9 @@ final class BenchmarkRun extends Command
         BenchmarkResultAggregator $aggregator,
         RunStorage $storage,
     ): int {
+        if ((int) $this->option('depth') < 1) {
+            throw new InvalidArgumentException('--depth deve essere almeno 1.');
+        }
         $targetId = (string) $this->argument('target-id');
         $manifests = $catalog->forTarget($targetId);
         $requested = array_values(array_filter(array_map(
@@ -160,6 +164,16 @@ final class BenchmarkRun extends Command
                     $result = $report === null
                         ? $evaluator->missingResult($manifest, ['run_state' => $exit === 0 ? 'completed' : 'failed'])
                         : $evaluator->evaluate($directory, $manifest, $source, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
+                    if ($report !== null) {
+                        $result['pass_results'] = $this->evaluatePasses(
+                            $evaluator,
+                            $directory,
+                            $manifest,
+                            $source,
+                            $report,
+                            ['run_state' => $exit === 0 ? 'completed' : 'failed'],
+                        );
+                    }
                     $result['exit_code'] = $exit;
                     $result['audit_id'] = $runId;
                     $results[$categorySlug] = $result;
@@ -174,15 +188,23 @@ final class BenchmarkRun extends Command
                     $exit = Artisan::call('pentest:run', $parameters, $this->output);
                     $outcome = $storage->outcome($directory, $runId);
                     $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : null;
-                if ($report === null) {
-                    $result = $evaluator->missingResult($manifest, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
-                } else {
-                    $reports[$categorySlug] = $report;
-                    $result = $evaluator->evaluate($directory, $manifest, $source, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
-                }
-                $result['exit_code'] = $exit;
-                $result['audit_id'] = $runId;
-                $results[$categorySlug] = $result;
+                    if ($report === null) {
+                        $result = $evaluator->missingResult($manifest, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
+                    } else {
+                        $reports[$categorySlug] = $report;
+                        $result = $evaluator->evaluate($directory, $manifest, $source, ['run_state' => $exit === 0 ? 'completed' : 'failed']);
+                        $result['pass_results'] = $this->evaluatePasses(
+                            $evaluator,
+                            $directory,
+                            $manifest,
+                            $source,
+                            $report,
+                            ['run_state' => $exit === 0 ? 'completed' : 'failed'],
+                        );
+                    }
+                    $result['exit_code'] = $exit;
+                    $result['audit_id'] = $runId;
+                    $results[$categorySlug] = $result;
                 }
             }
 
@@ -221,7 +243,7 @@ final class BenchmarkRun extends Command
                 );
             }
 
-        return array_intersect(['incomplete', 'incompatible'], array_column($results, 'status')) !== [] ? self::FAILURE : self::SUCCESS;
+            return array_intersect(['incomplete', 'incompatible'], array_column($results, 'status')) !== [] ? self::FAILURE : self::SUCCESS;
         } finally {
             File::deleteDirectory($workDirectory);
             $this->restoreEnv('LAILAPS_RUN_DIRECTORY', $oldDirectory);
@@ -256,6 +278,41 @@ final class BenchmarkRun extends Command
         return $path;
     }
 
+    /** @return array<int, array<string, mixed>> */
+    private function evaluatePasses(
+        BenchmarkEvaluator $evaluator,
+        string $directory,
+        BenchmarkManifest $manifest,
+        string $source,
+        array $report,
+        array $lifecycle,
+    ): array {
+        $passes = is_array($report['passes'] ?? null) ? $report['passes'] : [];
+        if ($passes === []) {
+            return [];
+        }
+
+        $results = [];
+        foreach ($passes as $pass) {
+            if (! is_array($pass) || ! is_array($pass['report'] ?? null)) {
+                continue;
+            }
+            $passResult = $evaluator->evaluate(
+                $directory,
+                $manifest,
+                $source,
+                $lifecycle,
+                $pass['report'],
+            );
+            $passResult['pass_id'] = $pass['pass_id'] ?? null;
+            $passResult['pass_index'] = $pass['pass_index'] ?? null;
+            $passResult['pass_status'] = $pass['status'] ?? null;
+            $results[] = $passResult;
+        }
+
+        return $results;
+    }
+
     /** @param array<int, string> $categories */
     private function pentestParameters(
         string $agentSource,
@@ -285,6 +342,7 @@ final class BenchmarkRun extends Command
             '--keep' => $this->enabledOption('keep'),
             '--test' => $this->enabledOption('test'),
             '--ttl' => (string) $this->option('ttl'),
+            '--depth' => (string) $this->option('depth'),
             '--assume-authorized' => $this->enabledOption('assume-authorized'),
         ];
         if ($global) {
