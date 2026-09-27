@@ -25,6 +25,7 @@ final class BenchmarkReader extends Command
         {--recon-artifact= : Artifact Recon; default golden del progetto/categoria}
         {--reader-model= : Modello Reader}
         {--reviewer-model= : Reviewer operativo fisso}
+        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
         {--budget-category= : Preset economico; default identico alla run configurata}
         {--repetitions=3 : Ripetizioni, da 1 a 20}
         {--tool-output : Mostra output tool compatti}';
@@ -55,6 +56,12 @@ final class BenchmarkReader extends Command
             : $registry->goldenRecon($projectKey, $artifactCategory, $commit);
         if ($recon->project_key !== $projectKey || $recon->role !== 'recon' || $recon->status !== 'valid') {
             throw new InvalidArgumentException('Artifact Recon non compatibile con il progetto richiesto.');
+        }
+        $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
+        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+            throw new InvalidArgumentException(
+                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+            );
         }
 
         $repetitions = max(1, min(20, (int) $this->option('repetitions')));
@@ -90,6 +97,7 @@ final class BenchmarkReader extends Command
                     '--audit-id', $runId, '--category', $manifest->auditCategory(),
                     '--recon-fixture', $containerized ? '/recon-fixture.json' : $fixture,
                     '--benchmark-context', $containerized ? '/benchmark-context.json' : $context,
+                    '--reader-checkpoint-strategy', $readerCheckpointStrategy,
                 ];
                 if ($this->option('budget-category')) {
                     array_push($args, '--budget-category', (string) $this->option('budget-category'));
@@ -134,6 +142,7 @@ final class BenchmarkReader extends Command
                 $result = $report === []
                     ? $evaluator->missingResult($manifest, ['run_state' => $technical ? 'failed' : 'completed'])
                     : $evaluator->evaluate($directory, $manifest, $source, ['run_state' => $technical ? 'failed' : 'completed']);
+                $result['reader_checkpoint_strategy'] = $readerCheckpointStrategy;
                 $this->persistOutputs(
                     $registry, $report, $result, $recon, $projectKey, $manifest,
                     $commit, $runId, $repetition, $technical, $technicalFailure->summary($report, $exit),
@@ -208,6 +217,9 @@ final class BenchmarkReader extends Command
                 'termination_reason' => $report['termination_reason'] ?? null,
                 'coverage' => $report['coverage'] ?? null,
                 'parent_recon_artifact_id' => $recon->id,
+                'reader_checkpoint_strategy' => data_get(
+                    $report, 'reader_checkpoint_strategy', 'reviewer'
+                ),
             ],
             'usage' => [
                 'reader' => (array) data_get($report, 'telemetry.role_usage.reader', []),

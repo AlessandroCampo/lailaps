@@ -32,6 +32,7 @@ final class BenchmarkRun extends Command
         {--recon-model= : Modello OpenRouter per Global Recon e Category Recon}
         {--reader-model= : Modello OpenRouter per il Reader}
         {--reviewer-model= : Modello OpenRouter per l Exploration Reviewer}
+        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
         {--worker-model= : Modello OpenRouter per il Worker}
         {--judge-model= : Modello OpenRouter per il Dynamic Judge}
@@ -56,6 +57,12 @@ final class BenchmarkRun extends Command
     ): int {
         if ((int) $this->option('depth') < 1) {
             throw new InvalidArgumentException('--depth deve essere almeno 1.');
+        }
+        $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
+        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+            throw new InvalidArgumentException(
+                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+            );
         }
         $targetId = (string) $this->argument('target-id');
         $manifests = $catalog->forTarget($targetId);
@@ -130,6 +137,10 @@ final class BenchmarkRun extends Command
         try {
             $descriptor = $catalog->descriptor($targetId);
             $agentSource = $auditSource->materialize($source, $workDirectory.'/source', $targetId, $descriptor);
+            $sourceSnapshot = $descriptor?->commit() ?: (string) (
+                data_get($manifests[0]->data, 'source.commit')
+                ?: data_get($manifests[0]->data, 'source.snapshot')
+            );
             $runtimeOverlay = $descriptor === null ? null : dirname($descriptor->path).DIRECTORY_SEPARATOR.'runtime';
             $runtimeSource = null;
             if (is_dir((string) $runtimeOverlay)) {
@@ -154,6 +165,7 @@ final class BenchmarkRun extends Command
                 $auditCategories,
                 $global,
                 $runtimeSource,
+                $sourceSnapshot,
             );
             if ($global) {
                 $exit = Artisan::call('pentest:run', $parameters, $this->output);
@@ -215,6 +227,7 @@ final class BenchmarkRun extends Command
                 'shared_run' => $global,
                 'report' => $report,
             ]);
+            $benchmark['reader_checkpoint_strategy'] = $readerCheckpointStrategy;
             $storage->writeOutcome($directory, $runId, $report, $benchmark);
 
             $outcomeMessage = 'Outcome benchmark: '.$storage->outcomePath($directory, $runId);
@@ -322,16 +335,20 @@ final class BenchmarkRun extends Command
         array $categories,
         bool $global,
         ?string $runtimeSource,
+        string $sourceSnapshot,
     ): array {
         $parameters = [
             '--path' => $agentSource,
             '--runtime-path' => $runtimeSource,
             '--audit-id' => $runId,
             '--project-name' => $targetId,
+            '--benchmark-target-id' => $targetId,
+            '--source-snapshot' => $sourceSnapshot,
             '--model' => $this->option('model'),
             '--recon-model' => $this->option('recon-model'),
             '--reader-model' => $this->option('reader-model'),
             '--reviewer-model' => $this->option('reviewer-model'),
+            '--reader-checkpoint-strategy' => $this->option('reader-checkpoint-strategy'),
             '--confirmer-model' => $this->option('confirmer-model'),
             '--worker-model' => $this->option('worker-model'),
             '--judge-model' => $this->option('judge-model'),
@@ -457,6 +474,9 @@ final class BenchmarkRun extends Command
         }
         $aggregate = [
             'schema_version' => 8,
+            'reader_checkpoint_strategy' => (string) $this->option(
+                'reader-checkpoint-strategy'
+            ),
             'publication_state' => 'final',
             'outcome' => 'clean',
             'categories' => [],

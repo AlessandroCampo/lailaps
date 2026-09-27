@@ -3,6 +3,7 @@
 use App\Services\Sandbox\DockerClient;
 use App\Services\Sandbox\DTO\SandboxSpecDTO;
 use App\Services\Sandbox\SandboxService;
+use App\Services\Sandbox\Support\SandboxLabels;
 use App\Services\Sandbox\Support\WebServiceResolver;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -88,4 +89,30 @@ it('reuses a live Lailaps sandbox while retaining its target container identity'
         ->and($target->containerId)->toBe('target-container-id')
         ->and($target->url())->toBe('http://127.0.0.1:49152/')
         ->and($target->isRunning())->toBeTrue();
+});
+
+it('rejects a reused sandbox from a different benchmark snapshot', function (): void {
+    $expiresAt = now()->addHour()->getTimestamp();
+    $docker = Mockery::mock(DockerClient::class);
+    $docker->shouldReceive('listContainersByLabel')
+        ->once()
+        ->with(SandboxLabels::AUDIT_ID, 'warm-target')
+        ->andReturn([[
+            'Id' => 'target-container-id',
+            'State' => 'running',
+            'Labels' => [
+                SandboxLabels::MANAGED_BY => SandboxLabels::OWNER,
+                SandboxLabels::AUDIT_ID => 'warm-target',
+                SandboxLabels::DRIVER => 'image',
+                SandboxLabels::EXPIRES_AT => (string) $expiresAt,
+                SandboxLabels::BENCHMARK_TARGET => 'fixture',
+                SandboxLabels::SOURCE_SNAPSHOT => 'old-snapshot',
+            ],
+        ]]);
+
+    $service = new SandboxService(new WebServiceResolver, $docker, []);
+
+    expect(fn () => $service->reuse('warm-target', new SandboxSpecDTO(
+        'new-run', base_path(), benchmarkTargetId: 'fixture', sourceSnapshot: 'current-snapshot',
+    )))->toThrow(RuntimeException::class, SandboxLabels::SOURCE_SNAPSHOT);
 });

@@ -198,6 +198,7 @@ it('propagates the exploration reviewer model override', function (): void {
         'preset' => 'dvwa',
         'categories' => [],
         'reviewer_model' => 'reviewer/test',
+        'reader_checkpoint_strategy' => 'reader_checkpoint',
         'ttl' => 1800,
         'skip_health' => false,
         'authorized' => false,
@@ -206,7 +207,8 @@ it('propagates the exploration reviewer model override', function (): void {
     ];
 
     expect((new AuditCommandBuilder)->build($run))
-        ->toContain('--reviewer-model=reviewer/test');
+        ->toContain('--reviewer-model=reviewer/test')
+        ->toContain('--reader-checkpoint-strategy=reader_checkpoint');
 });
 
 it('propagates global surface mode and depth to audit commands', function (): void {

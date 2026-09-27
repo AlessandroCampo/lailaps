@@ -19,6 +19,7 @@ final class BenchmarkExperimentRun extends Command
 {
     protected $signature = 'benchmark:experiment:run
         {--config= : JSON o YAML della matrice}
+        {--reader-checkpoint-strategy= : Override reviewer oppure reader_checkpoint}
         {--foreground : Esegue le run sequenzialmente mostrando il transcript live, senza queue worker}
         {--allow-dirty : Consente una run marcata non riproducibile}';
 
@@ -43,6 +44,15 @@ final class BenchmarkExperimentRun extends Command
             $this->error('La matrice richiede targets e una matrice modelli valida.');
 
             return self::INVALID;
+        }
+        $readerCheckpointStrategy = (string) (
+            $this->option('reader-checkpoint-strategy')
+            ?: ($definition['reader_checkpoint_strategy'] ?? 'reviewer')
+        );
+        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+            throw new \InvalidArgumentException(
+                'reader_checkpoint_strategy deve essere reviewer oppure reader_checkpoint.'
+            );
         }
         $modelMatrix = $this->modelMatrix($definition);
         $status = $this->git(['status', '--porcelain', '--untracked-files=no']);
@@ -82,6 +92,7 @@ final class BenchmarkExperimentRun extends Command
                         'categories' => $categories,
                         'reader_model' => $models['reader'] ?? null,
                         'reviewer_model' => $models['reviewer'] ?? null,
+                        'reader_checkpoint_strategy' => $readerCheckpointStrategy,
                         'worker_model' => $models['worker'] ?? null,
                         'confirmer_model' => $models['confirmer'] ?? null,
                         'judge_model' => $models['judge'] ?? null,

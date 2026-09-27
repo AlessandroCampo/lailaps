@@ -14,6 +14,7 @@ final class AppTest extends Command
                             {--test : Mantiene la modalità test (attiva per default)}
                             {--no-test : Disabilita la modalità test}
                             {--ttl=9000 : Durata massima della sandbox in secondi}
+                            {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
                             {--keep=true : Non smontare la sandbox a fine run}';
 
     protected $description = 'Esegue il pentest sul progetto selezionato usando pentest:run';
@@ -43,6 +44,12 @@ final class AppTest extends Command
     public function handle(): int
     {
         $project = (string) $this->argument('project');
+        $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
+        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+            throw new InvalidArgumentException(
+                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+            );
+        }
 
         if ($project === 'owasp-benchmark-java') {
             $category = $this->option('category');
@@ -55,6 +62,7 @@ final class AppTest extends Command
                 '--path' => base_path('targets/'.$project),
                 '--keep' => $this->enabledOption('keep'),
                 '--test' => ! $this->option('no-test'),
+                '--reader-checkpoint-strategy' => $readerCheckpointStrategy,
             ];
             if ($category) {
                 $parameters['--category'] = $category;
@@ -94,6 +102,9 @@ final class AppTest extends Command
             '--ttl' => (int) ($this->option('ttl') ?: 9000),
             '--test' => ! $this->option('no-test'),
             '--keep' => $this->enabledOption('keep'),
+            '--reader-checkpoint-strategy' => (string) $this->option(
+                'reader-checkpoint-strategy'
+            ),
         ];
 
         if (isset($config['image'])) {

@@ -4,6 +4,7 @@ use App\Console\Commands\BenchmarkExperimentRun;
 use App\Console\Commands\BenchmarkRun;
 use App\Jobs\ExecuteAuditRun;
 use App\Services\Pentest\BenchmarkResultAggregator;
+use Symfony\Component\Console\Input\ArrayInput;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -15,11 +16,31 @@ it('exposes independent worker and operative model options', function (): void {
         ->and($definition->hasOption('model'))->toBeTrue()
         ->and($definition->hasOption('recon-model'))->toBeTrue()
         ->and($definition->hasOption('worker-model'))->toBeTrue()
+        ->and($definition->getOption('reader-checkpoint-strategy')->getDefault())->toBe('reviewer')
         ->and($definition->hasOption('test-area'))->toBeTrue()
         ->and($definition->hasOption('reuse-sandbox'))->toBeTrue()
         ->and($definition->hasOption('global'))->toBeTrue()
         ->and($definition->hasOption('depth'))->toBeTrue()
         ->and($definition->hasOption('ttl'))->toBeTrue();
+});
+
+it('passes benchmark identity to pentest sandbox creation', function (): void {
+    $command = app(BenchmarkRun::class);
+    $input = new ArrayInput([
+        'target-id' => 'fixture',
+        '--reader-checkpoint-strategy' => 'reader_checkpoint',
+    ], $command->getDefinition());
+    $command->setInput($input);
+    $method = new ReflectionMethod(BenchmarkRun::class, 'pentestParameters');
+
+    $parameters = $method->invoke(
+        $command, base_path(), 'report-run', 'fixture', null, [], false, null, 'fixture-snapshot',
+    );
+
+    expect($parameters['--audit-id'])->toBe('report-run')
+        ->and($parameters['--benchmark-target-id'])->toBe('fixture')
+        ->and($parameters['--reader-checkpoint-strategy'])->toBe('reader_checkpoint')
+        ->and($parameters['--source-snapshot'])->toBe('fixture-snapshot');
 });
 
 it('builds a one-variable-at-a-time role model matrix', function (): void {
@@ -42,6 +63,7 @@ it('supports sequential foreground experiments without a queue worker', function
     $definition = app(BenchmarkExperimentRun::class)->getDefinition();
 
     expect($definition->hasOption('foreground'))->toBeTrue()
+        ->and($definition->hasOption('reader-checkpoint-strategy'))->toBeTrue()
         ->and((new ReflectionMethod(ExecuteAuditRun::class, 'execute'))->isPublic())->toBeTrue();
 });
 

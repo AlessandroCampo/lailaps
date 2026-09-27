@@ -2,6 +2,12 @@
 
 Data: 18 settembre 2026. Stato: proposta implementativa da discutere; pipeline non modificata e nessun agent loop avviato.
 
+**Aggiornamento del 19 settembre:** questo documento conserva la proposta storica.
+La decisione corrente sostituisce il benchmark Recon isolato con il test congiunto
+Recon -> Reader seriale, descritto in
+[Recon/Reader P0](recon-reader-assignments-p0-20260919.md). La concorrenza e il nuovo
+protocollo InvestigationPacket restano fuori dal primo esperimento.
+
 ## 1. Decisione e obiettivo
 
 Mantenere e potenziare Global Recon. Misurare prima se individua superfici che permettono di raggiungere il codice vulnerabile; successivamente misurare se Reader indipendenti trasformano quelle superfici in domande investigative utili e se i Confirmer ne ricavano vulnerabilità staticamente sostenute.

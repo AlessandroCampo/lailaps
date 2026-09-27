@@ -35,6 +35,9 @@ class StoreAuditRunRequest extends FormRequest
             'categories.*' => ['string', 'max:160', 'distinct'],
             'reader_model' => ['nullable', 'string', 'max:255'],
             'reviewer_model' => ['nullable', 'string', 'max:255'],
+            'reader_checkpoint_strategy' => [
+                'nullable', Rule::in(['reviewer', 'reader_checkpoint']),
+            ],
             'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
             'judge_model' => ['nullable', 'string', 'max:255'],
@@ -90,6 +93,7 @@ class StoreAuditRunRequest extends FormRequest
             'preset' => null, 'path' => null, 'target_mode' => 'sandbox', 'url' => null,
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
             'global' => false, 'depth' => 1, 'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
+            'reader_checkpoint_strategy' => 'reviewer',
             'confirmer_model' => null,
             'worker_model' => null, 'judge_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,

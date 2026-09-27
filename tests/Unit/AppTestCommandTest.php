@@ -59,11 +59,13 @@ it('supports the remaining audit targets and option overrides', function (): voi
         '--no-test' => true,
         '--ttl' => '900',
         '--keep' => true,
+        '--reader-checkpoint-strategy' => 'reader_checkpoint',
     ]))->toMatchArray([
         '--category' => ['A07:2025 Authentication Failures'],
         '--test' => false,
         '--ttl' => 900,
         '--keep' => true,
+        '--reader-checkpoint-strategy' => 'reader_checkpoint',
     ]);
 });
 

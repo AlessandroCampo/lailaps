@@ -135,6 +135,25 @@ class SandboxService
             throw new RuntimeException("Sandbox '{$sandboxAuditId}' priva di driver Lailaps coerente.");
         }
 
+        foreach ([
+            SandboxLabels::BENCHMARK_TARGET => $spec->benchmarkTargetId,
+            SandboxLabels::SOURCE_SNAPSHOT => $spec->sourceSnapshot,
+        ] as $label => $expected) {
+            if ($expected === null) {
+                continue;
+            }
+            $actual = array_values(array_unique(array_map(
+                fn (array $container): mixed => $container['Labels'][$label] ?? null,
+                $containers,
+            )));
+            if ($actual !== [$expected]) {
+                throw new RuntimeException(
+                    "Sandbox '{$sandboxAuditId}' incompatibile: label {$label} attesa "
+                    .var_export($expected, true).', trovata '.var_export($actual, true).'.'
+                );
+            }
+        }
+
         $expiresAt = (int) ($containers[0]['Labels'][SandboxLabels::EXPIRES_AT] ?? 0);
         if ($expiresAt <= now()->getTimestamp()) {
             throw new RuntimeException("Sandbox '{$sandboxAuditId}' scaduta: avviane una nuova.");

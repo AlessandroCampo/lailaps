@@ -52,13 +52,17 @@ risultato strutturato; il percorso nativo ne rende poi una preview soggetta al b
 presentazione. I binding programmatici consumano il risultato strutturato entro gli stessi
 limiti senza dover interpretare la stringa model-facing.
 
-Il Confirmer dispone anche di `run_code(code, description)`: il codice e' un corpo Python
-async e puo' invocare sequenzialmente soltanto i binding strutturati `search_source` e
-`read_file`. Ogni programma gira in un container effimero senza rete, credenziali, sorgente
-o socket Docker, con root read-only, tmpfs bounded, 256 MiB RAM, 32 processi, 30 secondi e
-massimo 32 subcall. Un broker JSON su stdin/stdout esegue le subcall nel processo agente;
-programma e binding sono contabilizzati separatamente. Timeout ed errori rimuovono sempre il
-container e restituiscono anche le osservazioni gia' acquisite, senza replay automatico.
+Il Confirmer, la Global Recon e il Reader dell'esperimento Recon/Reader dispongono anche di
+`run_code(code, description)`: il codice e' gia' un corpo Python async e puo' invocare
+sequenzialmente soltanto i binding strutturati `search_source` e `read_file`. Il processo
+agente fidato riceve il socket Docker sia nelle run ordinarie sia nei runner benchmark e usa
+l'immagine agente configurata come toolbox; il programma gira invece in un container fratello
+effimero senza rete, credenziali, sorgente o socket Docker, con root read-only, tmpfs bounded,
+256 MiB RAM, 32 processi, 30 secondi e massimo 32 subcall. Un broker JSON su stdin/stdout
+esegue le subcall nel processo agente; programma e binding sono contabilizzati separatamente.
+Sintassi invalida, daemon o immagine indisponibili, errore programma e timeout tornano come
+risultati recuperabili al modello. Il cleanup rimuove sempre il container e conserva le
+osservazioni gia' acquisite, senza replay o retry LLM automatico.
 
 Per i progetti PHP il Confirmer dispone inoltre di `navigate_source`, un accesso semantico
 Phpactor limitato a definition, references, implementation e hover. Il release PHAR e il
@@ -212,6 +216,62 @@ Per ogni pass il flusso è:
 
 Il P0 di evaluation isola Recon, Reader e Confirmer senza introdurre agenti o contratti
 model-facing alternativi:
+
+### Golden Recon e fan-out Reader globale
+
+Il percorso `benchmark:reader-global` congela la Recon globale nel registry e mantiene il
+payload completo soltanto nel coordinatore Laravel. Ogni processo Python riceve una fixture
+proiettata con briefing e coverage notes comuni, una sola `ReconArea` e i metadati
+`parent_artifact_id`/`assignment_area_id`; titoli e dettagli delle altre aree non entrano nel
+contesto del Reader. Le 16 aree golden sono eseguite da una coda rolling con massimo quattro
+processi: appena un assignment termina, il coordinatore avvia il successivo disponibile.
+`finished_at` e durata sono fissati nel momento della terminazione del singolo processo.
+Sorgente e target sono condivisi in sola lettura, mentre outcome, transcript, history, cache
+CBM e stato agente restano per-assignment.
+
+Reader ed Exploration Reviewer consumano per ogni assignment un unico envelope economico
+con cap configurabile (500.000 punti di default); i limiti dei due ruoli non partizionano il
+cap e Confirmer/Worker/Judge non vengono avviati. Le lead restano locali durante la ricerca e
+sono qualificate con l'area soltanto nell'aggregato parent. La deduplica cross-area non blocca
+output Reader.
+
+Nel Reader globale con fixture congelata a una sola area, la prima proposta di `close_area` o
+`finish_pass` non chiude subito: l'orchestratore conserva il checkpoint e concede una sola
+tranche di recall con il budget residuo. Il Reader riceve solo briefing e assignment autorevoli,
+checkpoint proposto, lead dell'area, indice delle source reference osservate, segnali statici
+non riconciliati e domande residue; riesamina operazioni sensibili, trust boundary e rami
+sorelli e serializza ogni ipotesi plausibile senza provarla. Il flag interno
+`closure_recall_sweep_completed` rende lo sweep idempotente attraverso review ripetute e
+compaction. La seconda chiusura è ordinaria. Dopo lo sweep, un `finish_pass` della sola area
+visitata senza lead pending o rami aperti viene normalizzato a `close_area`; il checkpoint
+conserva `proposed_decision=finish_pass`, `applied_decision=close_area` e
+`normalization_reason=single_assignment_finish`. La semantica multi-area di `finish_pass`
+resta invariata.
+
+Una `AreaEnrichmentLead` approvata viene checkpointata dal processo proponente ma non modifica
+il suo ledger: il coordinatore normalizza il payload, assegna un ID deterministico, elimina
+solo proposte normalizzate identiche e le accoda FIFO dopo tutte le aree golden. Anche gli
+enrichment possono produrre ulteriori enrichment, fino al limite complessivo di 48 aree.
+Per uno screening mirato, `benchmark:reader-global --area` seleziona soltanto gli incarichi
+iniziali indicati dalla Golden Recon, senza limitare i file leggibili dal Reader.
+`--defer-enrichments` conserva nel parent proposte approvate, respinte e duplicate con
+provenienza e stato, ma non avvia aree derivate. L'outcome distingue la fine degli
+assignment selezionati dalla completezza globale; i task rinviati restano copertura
+residua. Senza questi flag rimane il fan-out ordinario.
+Tutte le aree chiuse producono `complete`; budget o limite aree producono un outcome valido
+`incomplete`; gli errori infrastrutturali sono `technical_failure` per l'area e non fermano
+le altre aree.
+
+L'aggregato globale aggiunge una diagnostica post-run per case, costruita esclusivamente dopo
+la conclusione e mai inviata agli agenti: `matched_lead`, `anchor_read_without_lead`,
+`file_only`, `unreached` oppure `wrong_hypothesis_same_anchor`. Un overlap di range è soltanto
+un locator: conta come `matched_lead` solo il match `anchor_semantic` del manifest.
+
+L'identita' Docker del processo e l'autorita' sul target sono separate: `audit_id` nomina e
+delimita il toolbox univoco del Reader, mentre `target_audit_id` serve esclusivamente a
+validare e inventariare i container della sandbox condivisa. Il cleanup di un processo puo'
+quindi rimuovere soltanto il proprio container di stage e il proprio toolbox, mai quelli di
+un altro Reader o il target riutilizzato.
 
 1. `benchmark:recon` puo' eseguire una categoria oppure una Global Recon trasversale a tutti
    i manifest compatibili dello stesso snapshot. Ogni repetition persiste il `CategoryRecon`
@@ -429,8 +489,10 @@ diagnostico `pentest surface-context` esegue solo questo sensore e stampa il JSO
 senza inizializzare Codebase Memory o ruoli LLM.
 
 Reader cerca piste statiche concrete e puo' produrre `ReaderLead`, `LeadEnrichment`,
-`AreaEnrichmentLead` o il yield leggero `ReaderReviewRequested`. Non produce checkpoint,
-proposte di chiusura o completion. La soglia di `ReaderLead` e' deliberatamente la plausibilita', non la
+`AreaEnrichmentLead` o il yield leggero `ReaderReviewRequested`. Nel contratto operativo
+non produce checkpoint, proposte di chiusura o completion; l'opzione sperimentale
+`reader_checkpoint` sostituisce temporaneamente quel contratto soltanto al boundary
+tool-free descritto sotto. La soglia di `ReaderLead` e' deliberatamente la plausibilita', non la
 conferma: richiede un sink o un'operazione sensibile, una source reference, un possibile
 input controllabile o trust boundary e un collegamento plausibile. Appena la soglia è
 visibile il Reader serializza la lead senza completare il lavoro del Confirmer. Come P0
@@ -482,9 +544,11 @@ reference ricavate deterministicamente dallo snapshot; il modello non serializza
 persistito. L'orchestratore completa deterministicamente la categoria
 dopo la chiusura dell'ultima area se non esistono lead pending.
 
-Il Reviewer entra su `ReaderReviewRequested`, soglia cognitiva soft/hard, intervallo massimo
-di 16 richieste o proposta `AreaEnrichmentLead`. La novelty review delle lead resta separata.
-Non entra nei boundary ordinari di Confirmer o Worker.
+Con la strategia di default `reviewer`, il Reviewer entra su `ReaderReviewRequested`, soglia
+cognitiva soft/hard, intervallo massimo di 16 richieste o proposta `AreaEnrichmentLead`.
+La novelty review delle lead resta separata. Non entra nei boundary ordinari di Confirmer o
+Worker. La strategia alternativa del benchmark sostituisce soltanto le prime tre review
+ordinarie; enrichment e novelty restano sempre al Reviewer.
 
 `CategoryRecon` resta la fotografia iniziale immutabile; l'Area Ledger separato e' la fonte
 autorevole per scheduling e completion e contiene record `queued`, `active` e `closed` con
@@ -1208,6 +1272,108 @@ soglia hard del 90%,
 l'orchestratore disabilita i tool e richiede immediatamente l'output terminale sulla
 history integra. La telemetria registra `recon_status`, `recon_terminal_reason` e rende
 quindi esplicita qualsiasi futura regressione che introducesse una compaction Recon.
+
+## Esperimento Recon -> Reader per incarichi funzionali (P0)
+
+Il branch sperimentale espone `benchmark:recon-reader {target-id}` in Laravel e
+`pentest recon --global --with-reader` in Python. Esegue una Recon nuova e poi un solo
+Reader attivo alla volta, riusando il lifecycle Reader/Exploration Reviewer esistente.
+Il flag interno `recon_reader_test` richiede modalita' globale e `stop_after_reader`:
+Confirmer, Worker, Judge e Handoff non vengono eseguiti. I comandi ordinari conservano
+il proprio contratto Recon. Questo esperimento valuta il percorso congiunto, non Recon
+in isolamento.
+
+Ogni ingresso che inizializza il Reader espone per run
+`--reader-checkpoint-strategy=reviewer|reader_checkpoint`, con `reviewer` come default:
+`pentest scan`, `pentest reader`, `pentest recon --with-reader` e i relativi comandi
+Laravel `pentest:run`, `benchmark:run`, `benchmark:reader`, `benchmark:reader-global` e
+`benchmark:recon-reader`. Anche gli shortcut e le matrici benchmark propagano lo stesso
+valore; il fan-out globale lo applica indipendentemente a ogni assignment. La scelta vive
+in `Deps`, non in settings globali, ed e' persistita nei report e negli outcome disponibili.
+Nel secondo percorso gli stessi identici boundary ordinari chiedono al modello Reader un
+`ReaderCheckpoint` tool-free sulla sua `ReaderConversationState`, conservando modello,
+sessione, epoch e history append-only. Il contratto model-facing e' piatto: decisione
+`continue|area_closed`, motivo, singolo `next_step` obbligatorio solo per `continue`,
+`checkpoint_summary` e `category_notes` opzionali. Area, source reference, superfici lette,
+scheduling e completion restano autorevoli nell'orchestratore, che converte il risultato
+nell'`ExplorationReview` interno e riusa grant, stale guard, chiusura area e transizioni epoch
+esistenti. Il checkpoint non riceve tool e il normale contratto Reader viene ripristinato
+subito dopo. Errori tecnici o structured-output exhaustion producono la continuazione
+conservativa corrente senza cascata verso il Reviewer.
+
+I self-checkpoint sono contabilizzati sotto `reader`, non `reviewer`. Telemetria ed artifact
+registrano strategia, boundary originario, epoch/sessione, decisione proposta e applicata,
+normalizzazione/fallback e delta di richieste, input cached/uncached, output ed EP. Restano
+inoltre i contatori concettuali degli exploration boundary; le review enrichment sono
+contate separatamente. L'outcome Laravel conserva la strategia per ogni repetition, senza
+stato globale mutabile fra run.
+
+Recon parte dal briefing deterministico del progetto, da Codebase Memory quando
+disponibile, dalle directory e da letture mirate del sorgente. Riceve lo stato dei
+sensori, senza il censimento iniziale degli hotspot. Dopo una prima mappa funzionale,
+il prompt richiede di consultare i segnali statici e riconciliare componenti mancanti,
+esclusioni e incertezze. `list_surface_signals`, lettura/ricerca sorgente, directory,
+recupero degli output, `run_code` con i soli binding statici e i tool CBM restano disponibili durante tutta la fase
+investigativa: la sequenza e' una direttiva semantica, non tre nuovi agenti o un gate
+deterministico sui tool. Indice e sensori sono acquisiti una volta per la run; un
+sensore assente o incompleto non esclude componenti dalla ricerca.
+
+L'output model-facing e' `ReconPlan`: `briefing` narrativo, `assignments` ordinati e
+`coverage_notes` narrative. Un incarico contiene solo `title`, `paths` e `next_check`;
+quest'ultimo descrive comportamento, proprieta' da verificare e prima lettura utile.
+Sono ammessi incarichi senza path, con una ricerca di localizzazione nel testo, e
+senza alcun sospetto preliminare. La priorita' dipende da esposizione, autorita', dati
+e dipendenze osservate; i path orientano la ricerca e non delimitano l'accesso al codice.
+Non vengono aggiunti al modello ID, status, score, matrici CWE o DTO di coordinamento:
+l'orchestratore assegna gli ID e normalizza il piano nel `CategoryRecon`/area ledger
+esistente. Briefing e note restano testo, senza duplicarli in nuovi campi semantici.
+
+Ogni epoch Reader riceve briefing e note comuni, l'incarico attivo completo e un indice
+con ID e titoli degli altri incarichi. Il Reviewer conserva la vista di coordinamento
+completa. Reader sceglie le letture successive fra percorsi inesplorati, controlli da
+confrontare e dipendenze condivise; puo' seguire codice fuori dai locator e proporre
+`AreaEnrichmentLead` per comportamenti non rappresentati anche senza un sink sospetto.
+Emette zero, una o piu' `ReaderLead`, con osservazioni e domande discriminanti negli
+unknowns: il nuovo protocollo autonomo `InvestigationPacket` non e' implementato nel P0.
+Una lead acquisita resta non validata e non finanziata dal downstream; Reader prosegue
+nella stessa epoch. Chiusura, pivot e checkpoint sono coordinati dal Reviewer; al cambio
+di incarico viene aperta una nuova epoch. L'ordine iniziale segue gli incarichi Recon,
+con i pivot semantici gia' previsti dal lifecycle.
+
+Recon, Reader e Reviewer consumano il budget discovery condiviso esistente, entro il
+cap della run e i limiti di ruolo. Non esistono riserve per incarico o garanzia di
+completare tutti gli incarichi: un cutoff conserva lavoro residuo e risultati parziali.
+Se Recon non produce un piano valido, la run termina con `recon_unavailable`, senza
+avviare silenziosamente un Reader privo del piano sperimentale.
+
+Il benchmark materializza solo il sorgente sanitizzato; manifest, oracle e diagnostici
+restano in Laravel. In modalita' workspace-only il runner passa al command executor il path
+host della vista sanitizzata, distinto dal `/workspace` interno all'agente. Con
+`--reuse-sandbox` Laravel ricollega una sandbox Lailaps pronta, conserva separati il nuovo
+run ID del report e l'audit ID del target e passa al Python soltanto container ID e identita'
+autorevole della sandbox. Target benchmark e snapshot sorgente sono scritti nelle label alla
+creazione e devono coincidere su tutti i container al riuso. L'outcome registra
+`workspace_only` oppure `reused_sandbox`; non
+esiste provisioning implicito nel comando congiunto. Il report conserva piano grezzo,
+Recon normalizzata, lead accettate,
+osservazioni, checkpoint, telemetria e metadati `functional_assignments_v1`, anche negli
+snapshot parziali. L'outcome unico contiene costo totale e diagnostici per manifest
+dello stesso snapshot. Il vecchio evaluator e' solo un ausilio al riesame: le letture
+Recon non valgono come copertura Reader e i costi ripetuti nei diagnostici non vanno
+sommati. Una run eseguita senza errori resta `pending_semantic_review`, senza attribuire
+conferme statiche alle lead; errore di processo, report mancante o Recon indisponibile
+sono fallimenti tecnici. Timeout arresta il processo con il runner esistente e conserva
+l'ultimo output durevole. Le repetitions, quando richieste, sono seriali e indipendenti.
+
+Recon e Reader ricevono `run_workspace_command` quando esiste l'executor e ricevono
+`run_target_command` e `run_target_probe` soltanto quando il target e' collegato. Il contesto
+discovery espone una vista redatta con capability, working directory e servizi logici, senza
+credenziali o dossier database. I comandi possono essere usati prima di un'area o di una lead
+per inventari mirati e non sono obbligatori. Output, exit code, timeout, scope, comando o argv,
+servizio e nomi dei file temporanei sono conservati nel broker bounded con ruolo e area quando
+presente. stdout non diventa source reference e un'osservazione CLI non equivale a reachability
+HTTP o conferma. Timeout diagnostici del target sono recuperabili e non arrestano
+l'applicazione; i probe conservano il cleanup temporaneo esistente.
 
 ## Perimetro e guardrail
 

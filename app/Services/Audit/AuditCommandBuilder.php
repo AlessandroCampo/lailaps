@@ -58,6 +58,11 @@ final class AuditCommandBuilder
             $this->value($command, 'health-path', $p['health_path'] ?? null);
             $this->value($command, 'reader-model', $p['reader_model'] ?? null);
             $this->value($command, 'reviewer-model', $p['reviewer_model'] ?? null);
+            $this->value(
+                $command,
+                'reader-checkpoint-strategy',
+                $p['reader_checkpoint_strategy'] ?? null,
+            );
             $this->value($command, 'confirmer-model', $p['confirmer_model'] ?? null);
             $this->value($command, 'worker-model', $p['worker_model'] ?? null);
             $this->value($command, 'judge-model', $p['judge_model'] ?? null);
@@ -107,6 +112,11 @@ final class AuditCommandBuilder
         $this->value($argv, 'audit-profile', $p['audit_profile'] ?? null);
         $this->value($argv, 'reader-model', $p['reader_model'] ?? null);
         $this->value($argv, 'reviewer-model', $p['reviewer_model'] ?? null);
+        $this->value(
+            $argv,
+            'reader-checkpoint-strategy',
+            $p['reader_checkpoint_strategy'] ?? null,
+        );
         $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
         $this->value($argv, 'worker-model', $p['worker_model'] ?? null);
         $this->value($argv, 'judge-model', $p['judge_model'] ?? null);

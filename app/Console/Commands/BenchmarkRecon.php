@@ -143,6 +143,7 @@ final class BenchmarkRecon extends Command
                     : $evaluator->evaluate($report, $manifests[0]);
                 $result['exit_code'] = $exit;
                 $result['repetition'] = $repetition;
+                $result['source_snapshot'] = $commit;
                 $result['timing'] = [
                     'wall_duration_seconds' => $wallDuration,
                     'bootstrap_duration_ms' => data_get($report, 'telemetry.cbm_index_duration_ms'),

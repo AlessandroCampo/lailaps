@@ -40,6 +40,10 @@ final class SandboxSpecDTO
         public array $options = [],
         /** Compose esterno alla codebase, usato dai runtime benchmark controllati. */
         public ?string $composeFile = null,
+        /** Identita' benchmark usata per impedire il riuso contro un target diverso. */
+        public ?string $benchmarkTargetId = null,
+        /** Commit/snapshot sorgente atteso dal benchmark. */
+        public ?string $sourceSnapshot = null,
         /** Conserva le risorse Docker se il bootstrap fallisce, per diagnostica. */
         public bool $keepOnFailure = false,
     ) {
@@ -57,6 +61,13 @@ final class SandboxSpecDTO
 
         if ($healthTimeout < 1) {
             throw new InvalidArgumentException('healthTimeout deve essere positivo');
+        }
+        if ($benchmarkTargetId !== null
+            && preg_match('/^[a-z0-9][a-z0-9._-]*$/', $benchmarkTargetId) !== 1) {
+            throw new InvalidArgumentException('benchmarkTargetId non valido');
+        }
+        if ($sourceSnapshot !== null && trim($sourceSnapshot) === '') {
+            throw new InvalidArgumentException('sourceSnapshot non puo essere vuoto');
         }
 
         $this->basePath = $this->normalizePath($basePath, 'basePath');

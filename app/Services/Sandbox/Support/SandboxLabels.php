@@ -25,6 +25,10 @@ final class SandboxLabels
 
     public const EXPIRES_AT = 'sandbox.expires_at';
 
+    public const BENCHMARK_TARGET = 'sandbox.benchmark_target';
+
+    public const SOURCE_SNAPSHOT = 'sandbox.source_snapshot';
+
     /** @return array<string, string> */
     public static function for(SandboxSpecDTO $spec, string $driver, ?string $service = null): array
     {
@@ -37,6 +41,12 @@ final class SandboxLabels
 
         if ($service !== null) {
             $labels[self::SERVICE] = $service;
+        }
+        if ($spec->benchmarkTargetId !== null) {
+            $labels[self::BENCHMARK_TARGET] = $spec->benchmarkTargetId;
+        }
+        if ($spec->sourceSnapshot !== null) {
+            $labels[self::SOURCE_SNAPSHOT] = $spec->sourceSnapshot;
         }
 
         return $labels;
