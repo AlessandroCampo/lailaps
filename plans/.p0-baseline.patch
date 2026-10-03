@@ -1,0 +1,3585 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 906f4c0..b5889ef 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -229,7 +229,7 @@ ### Golden Recon e fan-out Reader globale
+ Sorgente e target sono condivisi in sola lettura, mentre outcome, transcript, history, cache
+ CBM e stato agente restano per-assignment.
+ 
+-Reader ed Exploration Reviewer consumano per ogni assignment un unico envelope economico
++Reader ed eventuale Exploration Reviewer consumano per ogni assignment un unico envelope economico
+ con cap configurabile (500.000 punti di default); i limiti dei due ruoli non partizionano il
+ cap e Confirmer/Worker/Judge non vengono avviati. Le lead restano locali durante la ricerca e
+ sono qualificate con l'area soltanto nell'aggregato parent. La deduplica cross-area non blocca
+@@ -262,6 +262,23 @@ ### Golden Recon e fan-out Reader globale
+ `incomplete`; gli errori infrastrutturali sono `technical_failure` per l'area e non fermano
+ le altre aree.
+ 
++Nel confronto con `--reader-checkpoint-strategy=reader_checkpoint`, i boundary
++ordinari sono self-checkpoint dello stesso Reader. Il benchmark non avvia Reviewer
++online per novelty o enrichment: le lead ulteriori restano acquisite con novelty
++`unresolved`, le proposte di enrichment restano `pending_review`, e la valutazione
++di deduplica e qualita' e' offline. `--defer-enrichments` mantiene a zero il dispatch
++di aree derivate. Le scorecard child e parent distinguono produzione ordinaria e
++checkpoint, costo provider completo o mancante, stima, EP, token/cache, tool con
++esito noto o pendente, retry, tempo e pressione di contesto; la qualita' offline
++resta `pending` finche' non valutata. Il parent calcola rapporti da somme e conserva
++separati il tempo totale degli assignment e il proprio wall-clock concorrente.
++`benchmark:reader-global` propaga il pin `--reader-provider` e i cap
++`--operational-context-window`/`--max-prompt-input-tokens` a ogni figlio; il
++catalogo prezzi con fonte e data e la finestra richiesta/effettiva vengono
++congelati negli outcome. Le tariffe statiche entrano nelle stime USD soltanto
++quando il provider osservato o fissato coincide con quello verificato nel catalogo.
++Gli EP restano un limite operativo distinto dal costo reale del provider.
++
+ L'aggregato globale aggiunge una diagnostica post-run per case, costruita esclusivamente dopo
+ la conclusione e mai inviata agli agenti: `matched_lead`, `anchor_read_without_lead`,
+ `file_only`, `unreached` oppure `wrong_hypothesis_same_anchor`. Un overlap di range è soltanto
+@@ -902,16 +919,24 @@ ## Attori applicativi autorizzati
+ 
+ ## Benchmark dedicato Recon
+ 
+-`benchmark:recon` e' un percorso sorgente-only distinto da `benchmark:run`: materializza la
++`benchmark:recon` e' un percorso Recon-only distinto da `benchmark:run`: materializza la
+ stessa vista sanitizzata, inizializza Codebase Memory e Surface Context, esegue il reale
+ handoff Recon e termina prima di creare il Reader. Con `--global` unisce i casi distinti di
+ tutti i manifest dello stesso target e snapshot; duplicati incompatibili rendono invalida la
+-fixture. Non prepara sandbox, non esegue
+-health check, readiness o fixture probe e non richiede un URL. La ground truth resta fuori
++fixture. Di default usa soltanto il sorgente; con `--reuse-sandbox` ricollega una sandbox
++Lailaps gia' pronta dello stesso target e snapshot, verifica la readiness e rende disponibili
++i comandi nel target, come `benchmark:recon-reader`. Non prepara una nuova sandbox ne' esegue
++fixture probe. La ground truth resta fuori
+ dal processo agente e viene letta dall'evaluator Laravel soltanto dopo l'handoff. L'outcome
+ persiste Recon, Area Ledger iniziale, Surface Context, tool telemetry, costo e punteggi per
+ caso. L'evaluator separa exact locator, guidance semantica e sola famiglia pertinente e
+ riporta strict/guided/weak recall, score normalizzato, recall@1/3/5, aree, locator e unknown.
++Con `--global --assignments` la sola Recon usa il contratto funzionale `ReconPlan` gia'
++usato da `benchmark:recon-reader`: l'orchestratore assegna gli ID, normalizza il briefing
++e gli incarichi in `CategoryRecon` e termina senza avviare Reader. In questa modalita'
++solo un piano acquisito puo' essere promosso a Golden Recon. `benchmark:reader-global` accetta una Golden Recon
++ready dello stesso target e snapshot con almeno un incarico, senza imporre il numero di
++aree della fixture YesWiki; ogni figlio riceve un solo incarico e il briefing comune.
+ Le ripetizioni del comando producono run e outcome distinti. Il profilo globale iniziale
+ concede 32 richieste investigative, 640.000 punti, 24.000 token di output e fino a 48 aree;
+ la Recon categoriale conserva i limiti precedenti. La Global Recon dispone di lettura file,
+@@ -1127,9 +1152,9 @@ ### Conferma benchmark per singola CVE
+ percorso dinamico). La terminalizzazione tool-free mantiene una riserva di retry di output
+ piu' generosa per assorbire problemi di serializzazione strutturata. Il limite della
+ singola risposta e' 6.500 token per Reader e ruoli generici, 5.000 per Reviewer, 12.000 per Recon e
+-14.000 per il Confirmer. Il guardrail predefinito dell'input e' 96.000 token stimati,
++14.000 per il Confirmer. Il guardrail predefinito dell'input e' 230.000 token stimati,
+ includendo history, nuovo prompt, prompt persistente e schemi: resta distinto dalla
+-finestra operativa da 128k e permette la review della history Reader disponibile. Un
++finestra operativa da 256k e permette la review della history Reader disponibile. Un
+ rifiuto locale `PromptInputGuardExceeded` e' deterministico e non viene reinviato identico
+ nella retry ladder. La capacita' utile della history viene calcolata per ruolo e fase
+ sottraendo il limite reale della risposta, oltre al prompt persistente e al margine di
+@@ -1199,6 +1224,56 @@ ### Conferma benchmark per singola CVE
+ 
+ ## History, cache e compression
+ 
++### Vincolo obbligatorio: le fasi dello stesso agente preservano il prefisso
++
++Discovery, self-checkpoint, produzione del summary di compaction e serializzazione
++terminale sono fasi dello **stesso agente**, salvo un cambio di agente esplicito.
++Una transizione di fase non autorizza a sostituire il contratto inviato al provider.
++Devono restare identici modello, system prompt, provider session ID, definizioni e
++ordine dell'intero toolset, inclusi gli schemi degli output strutturati. La history
++gia' inviata deve mantenere contenuto, ordine e rappresentazione: le istruzioni della
++nuova fase si aggiungono in coda, senza riscrivere il prefisso o ricostruire la
++conversazione come un nuovo prompt. Riutilizzare soltanto l'oggetto conversation o
++il `session_id` non soddisfa questo requisito.
++
++Cambia **quale azione/output e' abilitato**, non quali definizioni sono presenti
++nella richiesta. Il catalogo stabile comprende fin dall'inizio i contratti delle
++diverse fasi. Nel checkpoint le chiamate operative (letture, ricerche, probe) sono
++bloccate: il modello deve produrre un output terminale ammesso, anche il solo
++`ReaderCheckpoint` che autorizza a continuare la discovery. I tool di output
++strutturato non sono tool investigativi. "Tool-free" indica questa restrizione
++operativa, **non la rimozione dei tool o la sostituzione dello schema**.
++
++La restrizione va applicata con un meccanismo di selezione degli output compatibile
++con il provider e con un controllo nell'harness prima di eseguire qualsiasi tool
++operativo. Il solo prompt non basta. Un filtro SDK che elimina o riordina le
++definizioni prima dell'invio viola il vincolo, anche se chiamato `tool_choice` o
++`prepare_tools`. La verifica riguarda la richiesta realmente serializzata, non
++soltanto la configurazione dell'Agent.
++
++Per la compaction distinguere la **richiesta che produce la memoria**, che deve
++ancora leggere la history integra con il prefisso stabile, dall'**applicazione
++della memoria**: sostituire i vecchi messaggi con il summary cambia necessariamente
++la history della nuova epoch e puo' perdere la cache di quella parte. Questo e'
++un costo esplicito della riduzione del contesto; non giustifica invalidare prima
++anche la richiesta di compaction. Non comprimere, filtrare o ripacchettare la
++history solo per entrare in checkpoint. I recovery che devono scartare messaggi
++corrotti sono eccezioni tecniche esplicite, da registrare, non transizioni ordinarie.
++
++La stabilita' del prefisso rende possibile il cache hit, non lo garantisce: routing,
++scadenza e politiche del backend restano esterni. Le verifiche devono confrontare
++toolset/schema e prefisso dei messaggi prima/dopo il cambio di fase e misurare
++input cached/uncached per fase. Un contatore di sessione invariato non prova il riuso.
++
++**Stato di conformita' (27 settembre 2026):** il Reader operativo e il suo
++self-checkpoint costruiscono lo stesso catalogo ordinato di tool e output, con lo
++stesso system prompt e session ID. La fase checkpoint blocca nell'harness le
++chiamate investigative pur mantenendo le definizioni nel payload. I tool Reader
++sono eseguiti sequenzialmente tramite la barriera nativa Pydantic AI: anche batch
++grandi non moltiplicano le esecuzioni sincrone e i relativi thread. La compaction
++inizia una nuova epoch solo dopo la decisione semantica. I percorsi di summary
++Confirmer/Worker con prompt dedicato restano distinti e vanno verificati a parte.
++
+ Reader mantiene una conversazione append-only dentro l'area attiva attraverso review
+ periodiche, approfondimenti e ritorni downstream; Confirmer per lead e Worker per candidate.
+ Recon e Handoff la mantengono per il rispettivo episodio. L'uscita
+@@ -1237,10 +1312,16 @@ ## History, cache e compression
+ boundary operativo. La prima lead di una categoria non richiede confronto di novita' perche'
+ non esiste ancora un antecedente adjudicated.
+ 
+-Per il Reader la finestra tecnica e quella cognitiva sono distinte: soft limit assoluta
+-40.000 token e hard limit 48.000 token, calibrabili per ruolo e non espresse come percentuale
+-della context provider. Alla soglia l'Exploration Reviewer produce il checkpoint; il Reader
+-non riassume mai la propria history degradata. Per Confirmer e Worker la compression dipende
++Per il Reader la finestra tecnica e quella cognitiva sono distinte. `model_prices.json`
++contiene prezzi, provider di riferimento, capacita' fisica e `cognitive_window_tokens`:
++default 128.000, override 256.000 per MiMo-V2.6-Pro e DeepSeek V4.1 Flash. La finestra
++effettiva della history e' il minimo tra finestra cognitiva, capacita' fisica al netto di
++prompt/schema, output e margine, e cap esplicito dell'input completo. Il clamp e il motivo
++sono persistiti. Soft 75% e hard 90% si applicano una sola volta alla finestra effettiva:
++96.000/115.200 per 128k, 192.000/230.400 per 256k non clamped. Il controllo precede
++la richiesta successiva; una review periodica che gia' fornisce memoria sufficiente puo'
++applicare subito la compaction includendo il prossimo step, senza un checkpoint equivalente.
++Per Confirmer e Worker la compression dipende
+ dalla pressione reale della context, non dallo score economico o dal semplice completamento di un turno.
+ Una history lunga con prefisso cacheabile è economicamente preferibile a una history corta
+ ricostruita: la compression è un fallback di qualità e capienza, non un'ottimizzazione del
+@@ -1291,19 +1372,32 @@ ## Esperimento Recon -> Reader per incarichi funzionali (P0)
+ valore; il fan-out globale lo applica indipendentemente a ogni assignment. La scelta vive
+ in `Deps`, non in settings globali, ed e' persistita nei report e negli outcome disponibili.
+ Nel secondo percorso gli stessi identici boundary ordinari chiedono al modello Reader un
+-`ReaderCheckpoint` tool-free sulla sua `ReaderConversationState`, conservando modello,
+-sessione, epoch e history append-only. Il contratto model-facing e' piatto: decisione
++turno tool-free sulla sua `ReaderConversationState`, conservando modello, sessione, epoch e
++history append-only. Puo' restituire direttamente `ReaderLead` o `AreaEnrichmentLead` gia'
++sostenuti dalle evidenze, oppure `ReaderCheckpoint`. Il contratto di quest'ultimo e' piatto: decisione
+ `continue|area_closed`, motivo, singolo `next_step` obbligatorio solo per `continue`,
+ `checkpoint_summary` e `category_notes` opzionali. Area, source reference, superfici lette,
+ scheduling e completion restano autorevoli nell'orchestratore, che converte il risultato
+ nell'`ExplorationReview` interno e riusa grant, stale guard, chiusura area e transizioni epoch
+-esistenti. Il checkpoint non riceve tool e il normale contratto Reader viene ripristinato
+-subito dopo. Errori tecnici o structured-output exhaustion producono la continuazione
++esistenti. La factory checkpoint mantiene toolset e output schema operativi;
++il flag di fase nel runtime blocca l'esecuzione dei tool investigativi senza
++rimuoverne le definizioni. Errori tecnici o
++structured-output exhaustion producono la continuazione
+ conservativa corrente senza cascata verso il Reviewer.
+ 
++I prodotti restituiti al checkpoint attraversano la stessa acquisizione degli output Reader
++operativi prima di qualsiasi nuova richiesta. Non chiudono l'area; in caso di budget esaurito
++la lead valida resta acquisita con novelty `unresolved`, mentre una proposta enrichment
++valida resta `pending_review` e non viene accodata finche' manca l'approvazione del Reviewer.
++Nel benchmark globale self-checkpoint tutte le proposte enrichment restano pending
++per la valutazione offline e le lead non richiedono novelty review online.
++Il parent del benchmark distingue questa proposta da quelle respinte e da quelle approvate
++ma differite. Un prodotto non inventa una decisione `continue` o `area_closed`.
++
+ I self-checkpoint sono contabilizzati sotto `reader`, non `reviewer`. Telemetria ed artifact
+-registrano strategia, boundary originario, epoch/sessione, decisione proposta e applicata,
+-normalizzazione/fallback e delta di richieste, input cached/uncached, output ed EP. Restano
++registrano strategia, boundary originario, epoch/sessione, tipo di output e, quando presente,
++decisione proposta e applicata,
++normalizzazione/fallback e delta di richieste, input cached/uncached, output, USD e relativa completezza, ed EP. Restano
+ inoltre i contatori concettuali degli exploration boundary; le review enrichment sono
+ contate separatamente. L'outcome Laravel conserva la strategia per ogni repetition, senza
+ stato globale mutabile fra run.
+@@ -1499,7 +1593,7 @@ ## Policy operativa corrente (ledger schema 9, aggregato schema 10)
+ suspected come `terminal_output_exhausted`, mentre gli errori infrastrutturali distinti
+ continuano a poter produrre `blocked`.
+ 
+-Il profilo operativo predefinito e' 128k. Dopo prompt/schema, riserva output e safety
++Il profilo operativo predefinito e' 256k. Dopo prompt/schema, riserva output e safety
+ margin, il Confirmer comprime all'85% della capacità utile e punta al 35%; il Worker usa
+ 75% e 25%. La soglia hard resta al 90%. Sotto la soglia del ruolo la history resta
+ invariata per favorire cache hit. Confirmer e Worker usano un summarizer LLM con prompt
+@@ -1508,3 +1602,10 @@ ## Policy operativa corrente (ledger schema 9, aggregato schema 10)
+ inspection/query e next experiment; i raw body restano soltanto in memoria durante la run.
+ 
+ L'isolamento del source root e del target URL, i health check, la separazione delle sessioni actor, i controlli sulle transazioni, la paginazione e i limiti di context restano invariati. Questi vincoli proteggono sicurezza e qualità, ma non sostituiscono il budget economico a score.
++
++Il manifest del confronto Reader conserva gli eventi di consumo USD/EP e i tempi di
++acquisizione delle lead per assignment; il parent conserva offset di partenza,
++configurazione Reader effettiva e fingerprint dei sorgenti runtime/lockfile.
++Le curve a pari USD richiedono costi provider completi e deduplica offline;
++non vengono estrapolate oltre la spesa raggiunta. Gli esiti tool usano status
++di esecuzione/validazione: errori in codice letto e risultati vuoti non sono fallimenti.
+diff --git a/agent/pentest-agent/src/pentest_agent/cli.py b/agent/pentest-agent/src/pentest_agent/cli.py
+index b733e3e..28efd34 100644
+--- a/agent/pentest-agent/src/pentest_agent/cli.py
++++ b/agent/pentest-agent/src/pentest_agent/cli.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import json
++import time
+ import os
+ from decimal import Decimal
+ from pathlib import Path
+@@ -735,6 +736,9 @@ def recon_only(
+     with_reader: bool = typer.Option(
+         False, "--with-reader", help="Esperimento globale Recon funzionale -> Reader seriale."
+     ),
++    assignments: bool = typer.Option(
++        False, "--assignments", help="Recon funzionale per Reader, senza avviare Reader."
++    ),
+     budget_category: str | None = typer.Option(None, "--budget-category"),
+     source_root: str | None = typer.Option(None, "--source-root"),
+     audit_id: str | None = typer.Option(None, "--audit-id"),
+@@ -756,6 +760,8 @@ def recon_only(
+ 
+     if with_reader and not global_mode:
+         raise typer.BadParameter("--with-reader richiede --global")
++    if assignments and (not global_mode or with_reader):
++        raise typer.BadParameter("--assignments richiede --global e non puo essere usato con --with-reader")
+     if not with_reader and reader_checkpoint_strategy != ReaderCheckpointStrategy.REVIEWER:
+         raise typer.BadParameter(
+             "--reader-checkpoint-strategy=reader_checkpoint richiede --with-reader"
+@@ -804,7 +810,7 @@ def recon_only(
+             artifacts=artifacts,
+             current_category="global" if global_mode else category,
+             global_mode=global_mode,
+-            recon_reader_test=with_reader,
++            recon_reader_test=with_reader or assignments,
+             reader_checkpoint_strategy=reader_checkpoint_strategy,
+             benchmark_context=public_context,
+             runtime_dossier=commands.runtime_dossier() if commands is not None else {},
+@@ -827,7 +833,7 @@ def recon_only(
+             budget_category=selected_budget,
+             budget_multiplier=multiplier,
+             budget_cap=cap,
+-            stop_after_reader=with_reader,
++            stop_after_reader=with_reader or assignments,
+         )
+         report = asyncio.run(orchestrator.run() if with_reader else orchestrator.run_recon_only())
+         if with_reader:
+@@ -862,6 +868,9 @@ def reader_only(
+     budget_category: str | None = typer.Option(None, "--budget-category"),
+     reader_model: str | None = typer.Option(None, "--reader-model"),
+     reviewer_model: str | None = typer.Option(None, "--reviewer-model"),
++    reader_provider: str | None = typer.Option(None, "--reader-provider"),
++    operational_context_window: int | None = typer.Option(None, "--operational-context-window", min=1),
++    max_prompt_input_tokens: int | None = typer.Option(None, "--max-prompt-input-tokens", min=1),
+     reader_checkpoint_strategy: ReaderCheckpointStrategy = typer.Option(
+         ReaderCheckpointStrategy.REVIEWER,
+         "--reader-checkpoint-strategy",
+@@ -872,6 +881,7 @@ def reader_only(
+ ) -> None:
+     """Run Reader and its operational Reviewer from a frozen Recon artifact."""
+ 
++    reader_started_at = time.monotonic()
+     fixture = _load_stage_fixture(recon_fixture, expected_role="recon")
+     selected_category = str(fixture.get("category") or category)
+     if category != settings.category and category != selected_category:
+@@ -900,6 +910,15 @@ def reader_only(
+     public_context = _load_benchmark_context(benchmark_context)
+     selected_reader = reader_model or settings.reader_model or settings.model
+     selected_reviewer = reviewer_model or settings.reviewer_model or selected_reader
++    if operational_context_window is not None:
++        settings.operational_max_context_window = operational_context_window
++    if max_prompt_input_tokens is not None:
++        settings.max_prompt_input_tokens = max_prompt_input_tokens
++    if reader_provider:
++        settings.openrouter_model_provider_pins = {
++            **settings.openrouter_model_provider_pins,
++            selected_reader: reader_provider,
++        }
+     cbm_session = initialize_codebase_memory(
+         source_root=src,
+         audit_id=audit_id,
+@@ -942,6 +961,7 @@ def reader_only(
+             recon_reader_test=global_assignment,
+             reader_checkpoint_strategy=reader_checkpoint_strategy,
+         )
++        deps.telemetry._benchmark_started_at = reader_started_at
+         report = asyncio.run(
+             TripleAgentOrchestrator(
+                 deps,
+@@ -973,6 +993,22 @@ def reader_only(
+             ),
+             "assignment_area_id": fixture.get("assignment_area_id"),
+             "reader_checkpoint_strategy": reader_checkpoint_strategy.value,
++            "reader_provider": settings.openrouter_model_provider_pins.get(selected_reader),
++            "operational_context_window": settings.operational_max_context_window,
++            "max_prompt_input_tokens": settings.max_prompt_input_tokens,
++            "reader_context": deps.telemetry.reader_context,
++            "runtime_settings": {
++                key: getattr(settings, key) for key in (
++                    "reader_reasoning_effort", "reader_episode_request_limit",
++                    "reader_review_request_interval", "reader_extension_request_grant",
++                    "effective_context_percent", "estimated_system_prompt_tokens",
++                    "estimated_tool_schema_tokens", "estimated_output_schema_tokens",
++                    "response_reserve_tokens", "context_safety_tokens", "max_tokens",
++                    "tool_output_max_tokens", "tool_output_step_max_tokens",
++                    "recent_history_keep_tokens", "codebase_memory_enabled",
++                    "reader_data_flow_enabled", "terminal_output_retry_reserve",
++                )
++            },
+         }
+         if deps.artifacts:
+             deps.artifacts.write_report(report)
+diff --git a/agent/pentest-agent/src/pentest_agent/config.py b/agent/pentest-agent/src/pentest_agent/config.py
+index 15a793c..7534b73 100644
+--- a/agent/pentest-agent/src/pentest_agent/config.py
++++ b/agent/pentest-agent/src/pentest_agent/config.py
+@@ -21,7 +21,7 @@ from dotenv import dotenv_values
+ from pydantic import model_validator
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ 
+-ContextProfileName = Literal["32k", "64k", "128k"]
++ContextProfileName = Literal["32k", "64k", "128k", "256k"]
+ ReasoningEffort = Literal["low", "medium", "high", "max"]
+ ModelRole = Literal["recon", "reader", "reviewer", "confirmer", "worker", "judge"]
+ 
+@@ -113,6 +113,7 @@ CONTEXT_PROFILES: dict[ContextProfileName, ContextProfile] = {
+     "32k": ContextProfile(32_000, 2_500, 5_000, 4_000, 3_000, 2_000),
+     "64k": ContextProfile(64_000, 4_000, 8_000, 6_000, 4_000, 3_000),
+     "128k": ContextProfile(128_000, 6_000, 12_000, 10_000, 6_000, 5_000),
++    "256k": ContextProfile(256_000, 6_000, 12_000, 10_000, 6_000, 5_000),
+ }
+ 
+ 
+@@ -229,10 +230,8 @@ class Settings(BaseSettings):
+     # Reviewer and the category cap, not by a per-lead request ceiling.
+     confirmer_lead_request_limit: int = 56
+     handoff_request_limit: int = 4
+-    # Guardrail del singolo prompt (system/tool/output schema inclusi). I ruoli
+-    # operativi usano una context da 128k: 48k lascia spazio a history, risposta e
+-    # safety margin senza rifiutare handoff strutturati legittimi.
+-    max_prompt_input_tokens: int = 96_000
++    # Guardrail dell'input completo, distinto dalla history cognitiva del Reader.
++    max_prompt_input_tokens: int = 230_000
+ 
+     # --- Perimetro (per-ambiente: cambia tra le tue macchine / i target) ---
+     allowed_base_url: str = "http://localhost:8080"
+@@ -294,17 +293,14 @@ class Settings(BaseSettings):
+ 
+     context_profile: ContextProfileName = "64k"
+     max_context_window: int = 64_000
+-    operational_context_profile: ContextProfileName = "128k"
+-    operational_max_context_window: int = 128_000
++    operational_context_profile: ContextProfileName = "256k"
++    operational_max_context_window: int = 256_000
+     effective_context_percent: float = 0.90
+     compression_threshold: float = 0.78
+     compression_hard_threshold: float = 0.90
+     # Gli episodi dei ruoli vengono compressi prima del limite di contesto: il loro costo
+     # e' dominato dalla history rispedita a ogni tool turn, non solo dalla capienza.
+     episodic_compression_threshold: float = 0.90
+-    # Empirical cognitive limits are absolute and independent from provider capacity.
+-    reader_cognitive_soft_limit_tokens: int = 40_000
+-    reader_cognitive_hard_limit_tokens: int = 48_000
+     # Worker e Confirmer comprimono soltanto per pressione reale della history; il
+     # checkpoint durevole conserva gli identificatori mentre il summarizer LLM mantiene
+     # le relazioni narrative utili alla continuazione della lead.
+@@ -391,16 +387,6 @@ class Settings(BaseSettings):
+             raise ValueError(
+                 "episodic_compression_threshold deve essere in (0, compression_hard_threshold)"
+             )
+-        if not (
+-            0
+-            < self.reader_cognitive_soft_limit_tokens
+-            <= self.reader_cognitive_hard_limit_tokens
+-            <= self.operational_max_context_window
+-        ):
+-            raise ValueError(
+-                "reader_cognitive_soft_limit_tokens e reader_cognitive_hard_limit_tokens "
+-                "devono essere positivi, ordinati e non superare la context operativa"
+-            )
+         if not 0 < self.worker_compression_threshold <= self.compression_hard_threshold:
+             raise ValueError(
+                 "worker_compression_threshold deve essere in (0, compression_hard_threshold)"
+diff --git a/agent/pentest-agent/src/pentest_agent/context_budget.py b/agent/pentest-agent/src/pentest_agent/context_budget.py
+index 6e937f0..7bb5c63 100644
+--- a/agent/pentest-agent/src/pentest_agent/context_budget.py
++++ b/agent/pentest-agent/src/pentest_agent/context_budget.py
+@@ -6,6 +6,8 @@ from collections.abc import Sequence
+ from dataclasses import dataclass
+ from typing import Protocol
+ 
++from pentest_agent.pricing import model_cognitive_window_tokens, model_context_window_tokens
++
+ 
+ class ContextSettingsLike(Protocol):
+     max_context_window: int
+@@ -130,3 +132,34 @@ def context_budget_from_settings(
+         ),
+         safety_reserve_tokens=int(settings.context_safety_tokens),
+     )
++
++
++def reader_context_limits(settings: ContextSettingsLike, model: str, provider: str | None = None) -> dict[str, int | str | None]:
++    """Resolve the Reader's history window once for operations and checkpoints."""
++    budget = context_budget_from_settings(settings, role="reader")
++    provider_window = model_context_window_tokens(model, provider)
++    physical_window = min(budget.context_window, provider_window) if provider_window else budget.context_window
++    physical = ContextBudget(
++        context_window=physical_window,
++        effective_context_percent=budget.effective_context_percent,
++        persistent_tokens=budget.persistent_tokens,
++        response_reserve_tokens=budget.response_reserve_tokens,
++        safety_reserve_tokens=budget.safety_reserve_tokens,
++    )
++    prompt_cap = max(0, int(getattr(settings, "max_prompt_input_tokens")) - budget.persistent_tokens)
++    requested = model_cognitive_window_tokens(model)
++    effective = min(requested, physical.history_capacity, prompt_cap)
++    clamp = (
++        "physical_context" if physical.history_capacity == effective and effective < requested
++        else "prompt_input_cap" if prompt_cap == effective and effective < requested
++        else None
++    )
++    return {
++        "requested_window_tokens": requested,
++        "effective_window_tokens": effective,
++        "soft_limit_tokens": int(effective * 0.75),
++        "hard_limit_tokens": int(effective * 0.90),
++        "physical_context_tokens": physical_window,
++        "max_prompt_input_tokens": int(getattr(settings, "max_prompt_input_tokens")),
++        "clamp_reason": clamp,
++    }
+diff --git a/agent/pentest-agent/src/pentest_agent/deps.py b/agent/pentest-agent/src/pentest_agent/deps.py
+index 70ba1dd..87ff0f0 100644
+--- a/agent/pentest-agent/src/pentest_agent/deps.py
++++ b/agent/pentest-agent/src/pentest_agent/deps.py
+@@ -218,6 +218,12 @@ class RunTelemetry:
+     reader_self_checkpoints: int = 0
+     reader_self_checkpoint_decisions: dict[str, int] = field(default_factory=dict)
+     reader_self_checkpoint_events: list[dict[str, Any]] = field(default_factory=list)
++    reader_context: dict[str, int | str | None] = field(default_factory=dict)
++    reader_request_inputs: dict[str, list[int]] = field(default_factory=lambda: {"operational": [], "checkpoint": []})
++    reader_economic_events: list[dict[str, Any]] = field(default_factory=list)
++    reader_tool_outcomes: dict[str, dict[str, int]] = field(default_factory=dict)
++    first_reader_lead_seconds: float | None = None
++    _benchmark_started_at: float = field(default_factory=time.monotonic)
+     exploration_enrichment_reviews: int = 0
+     reader_requests_granted: int = 0
+     exploration_tool_results: int = 0
+@@ -525,6 +531,14 @@ class RunTelemetry:
+             self._dispatcher_tool_call_ids.add(key)
+         self._increment_tool_call(role, tool_name)
+ 
++    def record_reader_tool_attempt(self, tool_name: str) -> None:
++        row = self.reader_tool_outcomes.setdefault(tool_name, {"attempts": 0, "successes": 0, "validation_failures": 0, "execution_failures": 0})
++        row["attempts"] += 1
++
++    def record_reader_tool_result(self, tool_name: str, outcome: str) -> None:
++        row = self.reader_tool_outcomes.setdefault(tool_name, {"attempts": 0, "successes": 0, "validation_failures": 0, "execution_failures": 0})
++        row[outcome] += 1
++
+     def _increment_tool_call(self, role: str, tool_name: str) -> None:
+         self.number_of_tool_calls += 1
+         if role:
+@@ -764,6 +778,7 @@ class RunTelemetry:
+                 "output_points": 0.0,
+                 "economic_points": 0.0,
+                 "cost_complete": True,
++                "estimated_cost_complete": True,
+             },
+         )
+         row["model"] = model
+@@ -806,7 +821,18 @@ class RunTelemetry:
+             row["estimated_cost_usd"] = (
+                 float(row.get("estimated_cost_usd", 0.0)) + estimated_cost_usd
+             )
++        elif requests > 0 or input_tokens > 0 or output_tokens > 0:
++            row["estimated_cost_complete"] = False
+         self.cost_source_counts[cost_source] = self.cost_source_counts.get(cost_source, 0) + 1
++        if role == "reader" and (requests > 0 or input_tokens > 0 or output_tokens > 0):
++            self.reader_economic_events.append({
++                "elapsed_seconds": round(time.monotonic() - self._benchmark_started_at, 3),
++                "phase": "checkpoint" if phase == "terminal" else "operational",
++                "provider_usd": provider_cost_usd,
++                "estimated_usd": estimated_cost_usd,
++                "economic_points": float(economic_usage.total_points) if economic_usage is not None else None,
++                "requests": requests,
++            })
+         if economic_usage is not None:
+             uncached_points = float(economic_usage.uncached_input_points)
+             cached_points = float(economic_usage.cached_input_points)
+@@ -897,11 +923,12 @@ class RunTelemetry:
+         self.reader_requests_granted += requests_granted
+ 
+     def record_reader_self_checkpoint(self, event: dict[str, Any]) -> None:
+-        decision = str(event.get("proposed_decision") or "fallback")
+         self.reader_self_checkpoints += 1
+-        self.reader_self_checkpoint_decisions[decision] = (
+-            self.reader_self_checkpoint_decisions.get(decision, 0) + 1
+-        )
++        decision = event.get("proposed_decision")
++        if decision is not None:
++            self.reader_self_checkpoint_decisions[decision] = (
++                self.reader_self_checkpoint_decisions.get(decision, 0) + 1
++            )
+         self.reader_self_checkpoint_events.append(event)
+ 
+     def record_exploration_results(
+@@ -969,6 +996,7 @@ class RunTelemetry:
+             "_tool_enabled_by_role",
+             "_dispatcher_accounting_roles",
+             "_dispatcher_tool_call_ids",
++            "_benchmark_started_at",
+         ):
+             values.pop(private_field, None)
+         # Tool output is reported separately because it is already included in
+@@ -979,6 +1007,13 @@ class RunTelemetry:
+                 0, self.total_model_input_tokens - self.cached_model_input_tokens
+             )
+         values["total_tokens"] = total_tokens
++        values["reader_input_distribution"] = {}
++        for phase, samples in values["reader_request_inputs"].items():
++            ordered = sorted(samples)
++            values["reader_input_distribution"][phase] = {
++                "p95": ordered[max(0, (95 * len(ordered) + 99) // 100 - 1)] if ordered else None,
++                "max": ordered[-1] if ordered else None,
++            }
+         if not self.cost_accounting_complete:
+             values["provider_cost_usd"] = None
+         for lead in values.get("lead_usage", {}).values():
+@@ -2564,6 +2599,7 @@ class Deps:
+         self.stage_outputs.append(
+             {
+                 "output_id": output_id,
++                "elapsed_seconds": round(time.monotonic() - self.telemetry._benchmark_started_at, 3),
+                 "role": role,
+                 "output_type": output_type,
+                 "accepted": accepted,
+@@ -2584,6 +2620,7 @@ class Deps:
+         accepted: bool,
+         rejection_reason: str | None = None,
+         lead_id: str | None = None,
++        review_status: str | None = None,
+     ) -> None:
+         if output_id is None:
+             return
+@@ -2594,6 +2631,12 @@ class Deps:
+             row["rejection_reason"] = rejection_reason
+             if lead_id is not None:
+                 row["lead_id"] = lead_id
++            if review_status is not None:
++                row["review_status"] = review_status
++            if accepted and row.get("output_type") == "ReaderLead" and self.telemetry.first_reader_lead_seconds is None:
++                self.telemetry.first_reader_lead_seconds = round(time.monotonic() - self.telemetry._benchmark_started_at, 3)
++            if accepted and row.get("output_type") == "ReaderLead":
++                row["accepted_elapsed_seconds"] = round(time.monotonic() - self.telemetry._benchmark_started_at, 3)
+             self._persist_stage_output_progress()
+             return
+ 
+diff --git a/agent/pentest-agent/src/pentest_agent/ledger.py b/agent/pentest-agent/src/pentest_agent/ledger.py
+index db40985..8b905d4 100644
+--- a/agent/pentest-agent/src/pentest_agent/ledger.py
++++ b/agent/pentest-agent/src/pentest_agent/ledger.py
+@@ -14,6 +14,7 @@ from pentest_agent.models import (
+     LeadStatus,
+     ReaderLead,
+ )
++from pentest_agent.pricing import pricing_manifest
+ 
+ if TYPE_CHECKING:
+     from pentest_agent.deps import Deps
+@@ -841,7 +842,7 @@ class AuditLedger:
+             "category_recon_summary": _compact_category_recon_result(self.deps),
+             "termination_reason": self.deps.termination_reason,
+             "reader_checkpoint_strategy": self.deps.reader_checkpoint_strategy.value,
+-            "telemetry": self.deps.telemetry.snapshot(),
++            "telemetry": {**self.deps.telemetry.snapshot(), "pricing": pricing_manifest()},
+         }
+         if self.deps.capture_stage_outputs:
+             report["structured_outputs"] = list(self.deps.stage_outputs)
+diff --git a/agent/pentest-agent/src/pentest_agent/model_prices.json b/agent/pentest-agent/src/pentest_agent/model_prices.json
+index f9d652c..54a91e0 100644
+--- a/agent/pentest-agent/src/pentest_agent/model_prices.json
++++ b/agent/pentest-agent/src/pentest_agent/model_prices.json
+@@ -1,61 +1,130 @@
+ {
+-  "schema_version": 1,
++  "schema_version": 2,
+   "currency": "USD",
+   "unit_tokens": 1000000,
+-  "verified_at": "2026-08-24",
++  "verified_at": "2026-09-27",
+   "source": "https://openrouter.ai/api/v1/models",
+   "models": {
+     "deepseek/deepseek-v4-flash-0731": {
+-      "uncached_input": 0.08,
++      "uncached_input": 0.021,
+       "cached_input": 0.016,
+-      "output": 0.18
++      "output": 0.32,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Relace",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash-0731/endpoints",
++      "verification_status": "verified"
+     },
+     "deepseek/deepseek-v4.1-flash": {
+-      "uncached_input": 0.15,
+-      "cached_input": 0.003,
+-      "output": 0.6
++      "uncached_input": 0.035,
++      "cached_input": 0.001,
++      "output": 0.29,
++      "cognitive_window_tokens": 256000,
++      "price_provider": "InferenceNet",
++      "context_window_tokens": 1040000,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints",
++      "verification_status": "verified"
+     },
+     "deepseek/deepseek-v4-flash": {
+-      "uncached_input": 0.04886,
+-      "cached_input": 0.009772,
+-      "output": 0.09772
++      "uncached_input": 0.03,
++      "cached_input": 0.016,
++      "output": 1.28,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Relace",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash/endpoints",
++      "verification_status": "verified"
+     },
+     "google/gemini-3.7-flash": {
+       "uncached_input": 0.375,
+       "cached_input": 0.0375,
+-      "output": 1.875
++      "output": 1.875,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Google",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/google/gemini-3.7-flash/endpoints",
++      "verification_status": "verified"
+     },
+     "z-ai/glm-5.3": {
+-      "uncached_input": 1.40,
++      "uncached_input": 1.4,
+       "cached_input": 0.14,
+-      "output": 4.40
++      "output": 4.4,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Mistral",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints",
++      "verification_status": "verified"
+     },
+     "z-ai/glm-5.3-flash": {
+-      "uncached_input": 0.07,
+-      "cached_input": 0.015,
+-      "output": 0.25
++      "uncached_input": 0.045,
++      "cached_input": 0.01,
++      "output": 0.14,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "InferenceNet",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
++      "verification_status": "verified"
+     },
+     "meta/muse-spark-1.3-contributor": {
+-      "uncached_input": 0.10,
++      "uncached_input": 0.1,
+       "cached_input": 0.002,
+-      "output": 0.20
++      "output": 0.2,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Meta",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/meta/muse-spark-1.3-contributor/endpoints",
++      "verification_status": "verified"
+     },
+     "stealth/ox-alpha": {
+-      "uncached_input": 1.40,
++      "uncached_input": 1.4,
+       "cached_input": 0.14,
+-      "output": 4.40,
++      "output": 4.4,
+       "pricing_basis": "simulated:zhipuai/glm-5.3",
+-      "verified_at": null
++      "verified_at": null,
++      "cognitive_window_tokens": 128000,
++      "verification_status": "simulated",
++      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints"
+     },
+     "qwen/qwen3.8-max": {
+-      "uncached_input": 2,
++      "uncached_input": 2.0,
+       "cached_input": 0.25,
+-      "output": 6.0
++      "output": 6.0,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "Alibaba",
++      "context_window_tokens": 1000000,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/qwen/qwen3.8-max/endpoints",
++      "verification_status": "verified"
+     },
+     "x-ai/grok-4.6": {
+-      "uncached_input": 2,
++      "uncached_input": 2.0,
+       "cached_input": 0.5,
+-      "output": 6.0
++      "output": 6.0,
++      "cognitive_window_tokens": 128000,
++      "price_provider": "xAI",
++      "context_window_tokens": 500000,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/x-ai/grok-4.6/endpoints",
++      "verification_status": "verified"
++    },
++    "xiaomi/mimo-v2.6-pro": {
++      "cognitive_window_tokens": 256000,
++      "uncached_input": 0.435,
++      "cached_input": 0.0036,
++      "output": 0.87,
++      "price_provider": "Xiaomi",
++      "context_window_tokens": 1048576,
++      "verified_at": "2026-09-27",
++      "source": "https://openrouter.ai/api/v1/models/xiaomi/mimo-v2.6-pro/endpoints",
++      "verification_status": "verified"
+     }
+-  }
+-}
+\ No newline at end of file
++  },
++  "default_cognitive_window_tokens": 128000
++}
+diff --git a/agent/pentest-agent/src/pentest_agent/pricing.py b/agent/pentest-agent/src/pentest_agent/pricing.py
+index d5d6175..2bcbf51 100644
+--- a/agent/pentest-agent/src/pentest_agent/pricing.py
++++ b/agent/pentest-agent/src/pentest_agent/pricing.py
+@@ -30,10 +30,13 @@ def estimate_cost_usd(
+     input_tokens: int,
+     cached_input_tokens: int,
+     output_tokens: int,
++    provider: str | None = None,
+ ) -> Decimal | None:
+     catalog = _catalog()
+     rates = catalog.get("models", {}).get(model)
+-    if not isinstance(rates, dict):
++    if not isinstance(rates, dict) or rates.get("verification_status") != "verified":
++        return None
++    if rates.get("price_provider") != provider:
+         return None
+     unit = Decimal(str(catalog.get("unit_tokens", 1_000_000)))
+     cached = min(max(0, int(cached_input_tokens)), max(0, int(input_tokens)))
+@@ -58,10 +61,25 @@ def model_economic_weights(model: str) -> tuple[EconomicWeights, str]:
+     cached = uncached * min(cached_rate / uncached_rate, Decimal("0.1"))
+     basis = str(rates.get("pricing_basis", "real"))
+     return EconomicWeights(uncached_input=uncached, cached_input=cached, output=output), (
+-        "simulated" if basis.startswith("simulated:") else "real"
++        "simulated" if basis.startswith("simulated:") else
++        "real" if rates.get("verification_status") == "verified" else "unverified"
+     )
+ 
+ 
++def model_cognitive_window_tokens(model: str) -> int:
++    catalog = _catalog()
++    rates = catalog.get("models", {}).get(model, {})
++    return int(rates.get("cognitive_window_tokens") or catalog.get("default_cognitive_window_tokens", 128_000))
++
++
++def model_context_window_tokens(model: str, provider: str | None = None) -> int | None:
++    rates = _catalog().get("models", {}).get(model, {})
++    if rates.get("price_provider") != provider:
++        return None
++    value = rates.get("context_window_tokens")
++    return int(value) if value else None
++
++
+ def pricing_manifest() -> dict[str, Any]:
+     catalog = _catalog()
+     canonical = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+diff --git a/agent/pentest-agent/src/pentest_agent/runtime_tools.py b/agent/pentest-agent/src/pentest_agent/runtime_tools.py
+index dea59b8..2ebfcec 100644
+--- a/agent/pentest-agent/src/pentest_agent/runtime_tools.py
++++ b/agent/pentest-agent/src/pentest_agent/runtime_tools.py
+@@ -2365,7 +2365,7 @@ def search_source(
+     """Cerca un pattern regex nella codebase target (backend: ripgrep)."""
+     acquired = acquire_search_source(ctx, pattern, glob, context, max_results)
+     if acquired.error:
+-        return acquired.rendered
++        return _tag(ctx, acquired.rendered, acquired.error, tool_name="search_source", metadata={"result_status": "error"})
+     return _tag(
+         ctx,
+         acquired.rendered,
+@@ -2391,11 +2391,11 @@ def list_dir(ctx: RunContext[Deps], rel_path: str = "") -> str:
+     target = _safe(ctx.deps.src, rel_path)
+ 
+     if target is None:
+-        return "Percorso fuori dal perimetro consentito."
++        return "result_status: validation_error\nPercorso fuori dal perimetro consentito."
+ 
+     stop = _throttle(ctx, not os.path.isdir(target), "list_dir")
+     if stop:
+-        return stop
++        return "result_status: error\n" + stop
+ 
+     if not os.path.isdir(target):
+         return f"Non è una cartella: {rel_path}"
+@@ -2512,7 +2512,7 @@ def read_file(
+     """Legge una finestra sorgente e ne rende una preview model-facing."""
+     acquired = acquire_read_file(ctx, rel_path, start_line, max_lines, max_chars, end_line)
+     if acquired.error:
+-        return acquired.error
++        return _tag(ctx, acquired.error, acquired.error, tool_name="read_file", metadata={"result_status": "error"})
+     char_cap = max_chars or settings.file_read_max_chars
+     summary = (
+         f"letto {rel_path} righe {acquired.start_line}-{acquired.requested_end_line}/"
+diff --git a/agent/pentest-agent/src/pentest_agent/tools/compression_manager.py b/agent/pentest-agent/src/pentest_agent/tools/compression_manager.py
+index 310627e..2d198cf 100644
+--- a/agent/pentest-agent/src/pentest_agent/tools/compression_manager.py
++++ b/agent/pentest-agent/src/pentest_agent/tools/compression_manager.py
+@@ -538,6 +538,7 @@ async def _call_dumb_model_once(
+                 input_tokens=int(input_tokens),
+                 cached_input_tokens=economic_usage.cached_input_tokens,
+                 output_tokens=int(output_tokens),
++                provider=settings.openrouter_model_provider_pins.get(model_name),
+             )
+             deps.telemetry.record_compaction_model_usage(
+                 input_tokens,
+diff --git a/agent/pentest-agent/src/pentest_agent/tools/data_flow.py b/agent/pentest-agent/src/pentest_agent/tools/data_flow.py
+index b7e9600..c50c708 100644
+--- a/agent/pentest-agent/src/pentest_agent/tools/data_flow.py
++++ b/agent/pentest-agent/src/pentest_agent/tools/data_flow.py
+@@ -110,6 +110,7 @@ def trace_data_flow(
+             "tool_name": "trace_data_flow",
+             "code_intelligence": "joern",
+             "status": payload.get("status"),
++            "result_status": "error" if payload.get("status") in {"error", "timeout", "backend_unavailable"} else "validation_error" if payload.get("status") in {"ambiguous_locator", "unsupported_language"} else "success",
+             "source_ref_ids": [
+                 cast(dict[str, object], step).get("source_ref_id")
+                 for step in steps
+diff --git a/agent/pentest-agent/src/pentest_agent/tools/graph.py b/agent/pentest-agent/src/pentest_agent/tools/graph.py
+index ed21461..157084c 100644
+--- a/agent/pentest-agent/src/pentest_agent/tools/graph.py
++++ b/agent/pentest-agent/src/pentest_agent/tools/graph.py
+@@ -124,7 +124,7 @@ def _begin(ctx: RunContext[Deps], tool_name: str, fingerprint: tuple[object, ...
+     ctx.deps.throttle_fingerprints[key] = repeats
+     if repeats >= 4:
+         ctx.deps.telemetry.duplicate_tool_calls_blocked += 1
+-        return "Ricerca graph identica ripetuta troppe volte: cambia query o verifica i sorgenti."
++        return "result_status: validation_error\nRicerca graph identica ripetuta troppe volte: cambia query o verifica i sorgenti."
+     return None
+ 
+ 
+@@ -166,12 +166,12 @@ def _managed_json(
+ def _failure(ctx: RunContext[Deps], exc: CodebaseMemoryError, fallback: str) -> str:
+     if isinstance(exc, CodebaseMemorySymbolNotFound):
+         return (
+-            f"Simbolo graph non trovato: {exc}. "
++            f"result_status: error\nSimbolo graph non trovato: {exc}. "
+             "Usa search_code_graph per ottenere il qualified_name esatto; "
+             "per testo SQL o altro testo libero usa search_source."
+         )
+     ctx.deps.telemetry.record_graph_error()
+-    return f"Errore Codebase Memory durante questa query: {exc}. {fallback}"
++    return f"result_status: error\nErrore Codebase Memory durante questa query: {exc}. {fallback}"
+ 
+ 
+ def compact_json(
+@@ -296,15 +296,15 @@ def search_code_graph(
+     name_pattern = name_pattern.strip()
+ 
+     if not name_pattern:
+-        return "name_pattern non può essere vuoto."
++        return "result_status: validation_error\nname_pattern non può essere vuoto."
+ 
+     if len(name_pattern) > 300:
+-        return "name_pattern troppo lungo: massimo 300 caratteri."
++        return "result_status: validation_error\nname_pattern troppo lungo: massimo 300 caratteri."
+ 
+     if label is not None and label not in ALLOWED_GRAPH_LABELS:
+         allowed = ", ".join(sorted(ALLOWED_GRAPH_LABELS))
+ 
+-        return f"Label non consentita: {label}. Valori ammessi: {allowed}."
++        return f"result_status: validation_error\nLabel non consentita: {label}. Valori ammessi: {allowed}."
+ 
+     limit = max(1, min(limit, 50))
+     offset = max(0, offset)
+@@ -357,10 +357,10 @@ def get_graph_code_snippet(
+     qualified_name = qualified_name.strip()
+ 
+     if not qualified_name:
+-        return "qualified_name non può essere vuoto."
++        return "result_status: validation_error\nqualified_name non può essere vuoto."
+ 
+     if len(qualified_name) > 1_000:
+-        return "qualified_name troppo lungo."
++        return "result_status: validation_error\nqualified_name troppo lungo."
+ 
+     try:
+         client, runtime = require_cbm(ctx.deps)
+@@ -404,13 +404,13 @@ def trace_code_path(
+     function_name = function_name.strip()
+ 
+     if not function_name:
+-        return "function_name non può essere vuoto."
++        return "result_status: validation_error\nfunction_name non può essere vuoto."
+ 
+     if len(function_name) > 1_000:
+-        return "function_name troppo lungo."
++        return "result_status: validation_error\nfunction_name troppo lungo."
+ 
+     if direction not in ALLOWED_DIRECTIONS:
+-        return "direction non valida. Usa inbound, outbound oppure both."
++        return "result_status: validation_error\ndirection non valida. Usa inbound, outbound oppure both."
+ 
+     max_depth = max(1, min(max_depth, 5))
+ 
+diff --git a/agent/pentest-agent/src/pentest_agent/triple_agent.py b/agent/pentest-agent/src/pentest_agent/triple_agent.py
+index 60a5a90..255e163 100644
+--- a/agent/pentest-agent/src/pentest_agent/triple_agent.py
++++ b/agent/pentest-agent/src/pentest_agent/triple_agent.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import asyncio
+ import hashlib
+ import html
++import inspect
+ import json
+ import os
+ import re
+@@ -13,6 +14,7 @@ from contextlib import asynccontextmanager
+ from copy import deepcopy
+ from dataclasses import asdict, dataclass, field, is_dataclass, replace
+ from decimal import Decimal
++from functools import wraps
+ from pathlib import Path
+ from typing import Any, Literal, cast
+ from uuid import uuid4
+@@ -53,7 +55,7 @@ from pentest_agent.browser.tools import browser_flow, inspect_browser
+ from pentest_agent.budget import BudgetBroker, EconomicUsage, EconomicWeights
+ from pentest_agent.categories import CATEGORY_REGISTRY, category_id, category_prompt
+ from pentest_agent.config import settings
+-from pentest_agent.context_budget import context_budget_from_settings
++from pentest_agent.context_budget import context_budget_from_settings, reader_context_limits
+ from pentest_agent.def_model import make_model
+ from pentest_agent.deps import Deps
+ from pentest_agent.execution import CommandInputError
+@@ -544,6 +546,25 @@ def validate_reader_lead_quality(deps: Deps, output: ReaderLead) -> ReaderLead:
+     return output
+ 
+ 
++def validate_reader_product(
++    deps: Deps, output: ReaderLead | AreaEnrichmentLead
++) -> ReaderLead | AreaEnrichmentLead:
++    if isinstance(output, ReaderLead):
++        area_ids = {area.area_id for area in deps.authoritative_areas()}
++        output = output.model_copy(update={
++            "owasp_category": output.owasp_category.strip() or (
++                "unclassified" if deps.global_mode else deps.current_category
++            ),
++            "coverage_delta": [
++                value for value in output.coverage_delta if value not in area_ids
++            ],
++        })
++        validate_reader_lead_quality(deps, output)
++    else:
++        deps.ledger.validate_refs(output.source_ref_ids)
++    return output
++
++
+ def normalize_reader_lead_proposal(
+     deps: Deps,
+     output: ReaderLead,
+@@ -940,6 +961,35 @@ def _compact_tool_call(tool_name: str, arguments: object) -> str:
+     return f"{tool_name}({rendered})"
+ 
+ 
++def _reader_tool_outcome(content: object, *, validation_failure: bool = False) -> str:
++    """Use execution metadata, never words inside successfully returned source."""
++    if validation_failure:
++        return "validation_failures"
++    parsed = content
++    if isinstance(content, str):
++        status = next((line.partition(":")[2].strip().casefold() for line in content.splitlines()[:20]
++                       if line.partition(":")[0].strip().casefold() == "result_status"), "")
++        if status == "validation_error":
++            return "validation_failures"
++        if status == "error":
++            return "execution_failures"
++        if status in {"ok", "success"}:
++            return "successes"
++        if content.lstrip().startswith("{"):
++            try:
++                parsed = json.loads(content)
++            except json.JSONDecodeError:
++                pass
++    if isinstance(parsed, dict) and (
++        parsed.get("ok") is False or parsed.get("timed_out") is True
++        or parsed.get("fatal") is True or parsed.get("is_error") is True
++        or parsed.get("status") in ("error", "unavailable", "backend_unavailable", "timeout", "query_failed")
++        or isinstance(parsed.get("error"), str) and bool(parsed["error"])
++    ):
++        return "execution_failures"
++    return "successes"
++
++
+ def _compact_tool_result(content: object) -> str:
+     """Extract a bounded one-line result summary for logs and UI events."""
+     rendered = str(content)
+@@ -1227,21 +1277,7 @@ class ReaderTrancheRecorder:
+         )
+         # Managed tools carry an authoritative execution status.  Text such as
+         # ``if error`` inside successfully read source must not poison telemetry.
+-        is_error = metadata_status == "error" or (
+-            not metadata_status
+-            and any(
+-                marker in lowered
+-                for marker in (
+-                    "errore",
+-                    "error",
+-                    "non trovato",
+-                    "inesistente",
+-                    "timeout",
+-                    "stop:",
+-                    "fuori dal perimetro",
+-                )
+-            )
+-        )
++        is_error = metadata_status == "error"
+         novel = digest not in self.seen_result_hashes and not is_empty and not is_error
+         self.seen_result_hashes.add(digest)
+         self.novel_results += int(novel)
+@@ -1340,8 +1376,10 @@ CategoryRecon. Dopo il Confirmer riprendi per default dalla stessa active_area_i
+ sink fratelli. Non inserire area_id della CategoryRecon in coverage_delta: quel campo
+ descrive soltanto superfici granulari.
+ Quando ritieni che l'active_area_id non abbia altri controlli discriminanti, restituisci
+-ReaderReviewRequested. Non decidere la chiusura e non produrre un riassunto: checkpoint,
+-chiusura dell'area e completamento appartengono a Reviewer e orchestratore. Se REVIEWER
++ReaderReviewRequested. Nel turno operativo non usare ReaderCheckpoint: chiusura dell'area
++e completamento appartengono alla review e all'orchestratore. Quando l'orchestratore
++chiede esplicitamente un checkpoint, non usare tool investigativi: ReaderCheckpoint
++puo' autorizzare una sola prossima lettura o proporre la chiusura. Se REVIEWER
+ GUIDANCE richiede una decisione, non chiamare tool: emetti una lead gia' sostenuta dalla
+ history, AreaEnrichmentLead oppure ReaderReviewRequested.
+ AreaEnrichmentLead non e' una finding: quando hai una pista concreta emetti ReaderLead.
+@@ -1492,12 +1530,15 @@ Proponila anche per una domanda indipendente ancora irrisolta nella stessa compo
+ nominale, quando devi rinviarla: descrivi osservazione concreta, domanda, locator
+ portabili e prossima verifica. Continua poi l'incarico corrente. Una nota nel
+ checkpoint non equivale a una proposta acquisita.
+-Quando non restano letture discriminanti nell'incarico restituisci ReaderReviewRequested:
+-il Reviewer conserva controlli osservati e percorsi residui e l'orchestratore coordina
++Nel turno operativo, quando non restano letture discriminanti nell'incarico restituisci ReaderReviewRequested:
++Il checkpoint conserva controlli osservati e percorsi residui e l'orchestratore coordina
+ la prossima area. Non dichiarare sicura una componente perche' un percorso e' protetto.
+ Non usare conteggi di letture come criterio di chiusura. Non inserire ID area in coverage_delta.
+-Se REVIEWER GUIDANCE richiede una decisione senza tool, restituisci una lead sostenuta,
+-AreaEnrichmentLead oppure ReaderReviewRequested. Non produrre un report finale.
++Al boundary self-checkpoint non eseguire tool: restituisci ReaderCheckpoint con decision,
++reason e memoria narrativa, oppure ReaderLead o AreaEnrichmentLead se hai gia' evidenze
++sufficienti. ReaderCheckpoint e' ammesso solo quando richiesto dall'orchestratore.
++Se REVIEWER GUIDANCE richiede una decisione senza tool, segui quella direttiva.
++Non produrre un report finale.
+ """
+ 
+ 
+@@ -1585,18 +1626,17 @@ path, righe, titolo o source_ref come regola decisiva. Restituisci subito l'outp
+ strutturato."""
+ 
+ READER_CHECKPOINT_PROMPT = """Valuta esclusivamente l'evidenza gia' presente nella
+-conversazione Reader. Non usare tool e non iniziare nuove letture. Scegli continue se
+-resta una prossima azione concreta: emettere subito una ReaderLead plausibile gia'
+-sostenuta, acquisire con AreaEnrichmentLead una domanda indipendente osservata ma
+-rinviata, oppure compiere una lettura statica discriminante. Indica una sola azione
+-in next_step; l'emissione avviene nel successivo turno operativo, non nel checkpoint.
+-Scegli area_closed soltanto quando non restano output da acquisire ne' letture
+-discriminanti nell'intero incarico, e ometti next_step. Una lead acquisita non chiude
+-gli altri percorsi. In checkpoint_summary conserva evidenza positiva e negativa,
+-rami esclusi, rami aperti e conclusioni realmente osservate. Il ledger e gli output
+-acquisiti sono autorevoli: non dichiarare emessa una lead dalla sola narrativa, non
+-trasformare nomi o supposizioni in controlli verificati e non scegliere la prossima area.
+-Usa category_notes soltanto per una revisione completa della memoria condivisa."""
++conversazione Reader. Non usare tool e non iniziare nuove letture. Se una pista
++plausibile e' pronta, restituisci direttamente ReaderLead. Se devi rinviare una
++domanda indipendente gia' osservata, restituisci AreaEnrichmentLead. Altrimenti
++restituisci ReaderCheckpoint: continue per una prossima lettura discriminante,
++area_closed soltanto se non restano prodotti da acquisire ne' letture discriminanti.
++Un prodotto termina questa risposta, ma non chiude l'area o l'incarico. Per
++ReaderCheckpoint indica una sola azione in next_step quando scegli continue; in
++checkpoint_summary conserva evidenza positiva e negativa, rami esclusi e aperti.
++Il ledger e gli output acquisiti sono autorevoli: non dichiarare emessa una lead
++dalla sola narrativa e non scegliere la prossima area. Usa category_notes soltanto
++per una revisione completa della memoria condivisa."""
+ 
+ CONFIRMER_REVIEWER_PROMPT = """Sei il Reviewer stateless di una tranche del Confirmer
+ in un audit white-box autorizzato. Sei un supervisore di convergenza, non un secondo
+@@ -2483,6 +2523,9 @@ class ReaderConversationState:
+     """In-memory append-only conversation for the main Reader."""
+ 
+     messages: list[ModelMessage] = field(default_factory=list[ModelMessage])
++    model_name: str = field(default_factory=lambda: settings.reader_model)
++    checkpoint_mode: bool = False
++    system_prompt: str | None = None
+     epoch: int = 1
+     conversation_id: str = field(default_factory=lambda: f"reader-{uuid4()}")
+     session_id: str = field(default_factory=lambda: f"lailaps-reader-{uuid4()}")
+@@ -2525,24 +2568,28 @@ class ReaderConversationState:
+                 raise ReaderTrancheBoundary
+ 
+         history_tokens = estimate_tokens(messages)
+-        budget = context_budget_from_settings(settings, role="reader")
+-        ctx.deps.context_usage_pct = budget.history_usage_ratio(history_tokens)
++        limits = reader_context_limits(
++            settings, self.model_name,
++            settings.openrouter_model_provider_pins.get(self.model_name),
++        )
++        soft = int(limits["soft_limit_tokens"])
++        hard = int(limits["hard_limit_tokens"])
++        ctx.deps.context_usage_pct = history_tokens / max(1, int(limits["effective_window_tokens"]))
+         if (
+             not self.completion_budget_guaranteed
+-            and history_tokens >= settings.reader_cognitive_soft_limit_tokens
++            and history_tokens >= soft
+         ):
+             self.messages = _merge_conversation_messages(self.messages, messages)
+             self.boundary_history_tokens = history_tokens
+             self.pending_review_reason = (
+                 "cognitive_hard_limit"
+-                if history_tokens >= settings.reader_cognitive_hard_limit_tokens
++                if history_tokens >= hard
+                 else "cognitive_soft_limit"
+             )
+             typer.secho(
+                 f"\n[checkpoint:reader] review richiesta | epoch {self.epoch} | "
+                 f"history {history_tokens} tok "
+-                f"(soft {settings.reader_cognitive_soft_limit_tokens}, "
+-                f"hard {settings.reader_cognitive_hard_limit_tokens})",
++                f"(soft {soft}, hard {hard})",
+                 fg="yellow",
+             )
+             raise ReaderTrancheBoundary
+@@ -3010,15 +3057,15 @@ def read_source_ref(ctx: RunContext[Deps], source_ref_id: str) -> str:
+             if finding.get("origin_area_id") == ctx.deps.category_state.active_area_id:
+                 authorized.update(ctx.deps.source_ref_ids_for_lead(lead_id))
+     if source_ref_id not in authorized:
+-        return f"Source reference non inclusa nell'handoff attivo: {source_ref_id}."
++        return f"result_status: error\nSource reference non inclusa nell'handoff attivo: {source_ref_id}."
+     ref = ctx.deps.source_refs.get(source_ref_id)
+     if ref is None:
+-        return f"Source reference inesistente: {source_ref_id}."
++        return f"result_status: error\nSource reference inesistente: {source_ref_id}."
+     try:
+         ctx.deps.ledger.validate_refs([source_ref_id])
+     except LedgerError as exc:
+-        return f"Source reference non valida: {exc}"
+-    return f"{source_ref_id} {ref['file']}:{ref['start_line']}-{ref['end_line']}\n{ref['snippet']}"
++        return f"result_status: error\nSource reference non valida: {exc}"
++    return f"result_status: success\n{source_ref_id} {ref['file']}:{ref['start_line']}-{ref['end_line']}\n{ref['snippet']}"
+ 
+ 
+ def list_source_refs(ctx: RunContext[Deps], cursor: int = 0, count: int = 20) -> str:
+@@ -3414,12 +3461,36 @@ def reader_tools(deps: Deps | None = None) -> list[Any]:
+     return tools
+ 
+ 
+-def _model_tool(tool: Any, *, prepare: Any) -> Tool[Deps]:
++def _model_tool(
++    tool: Any, *, prepare: Any, conversation: ReaderConversationState | None = None
++) -> Tool[Deps]:
+     """Expose the compact read_file contract while retaining its legacy API."""
+ 
++    function = read_file_window if tool is read_file else tool
++    if conversation is not None:
++        operational_function = function
++
++        @wraps(operational_function)
++        async def guarded(*args: Any, **kwargs: Any) -> Any:
++            if conversation.checkpoint_mode:
++                raise ModelRetry("Il checkpoint non esegue tool investigativi; restituisci un output strutturato.")
++            try:
++                if inspect.iscoroutinefunction(operational_function):
++                    return await operational_function(*args, **kwargs)
++                return await asyncio.to_thread(operational_function, *args, **kwargs)
++            except ModelRetry:
++                raise
++            except Exception:
++                ctx = kwargs.get("ctx") or (args[0] if args else None)
++                if ctx is not None and ctx.deps.active_role == "reader":
++                    name = "read_file" if tool is read_file else tool.__name__
++                    ctx.deps.telemetry.record_reader_tool_result(name, "execution_failures")
++                raise
++
++        function = guarded
+     if tool is read_file:
+-        return Tool(read_file_window, name="read_file", prepare=prepare)
+-    return Tool(tool, prepare=prepare)
++        return Tool(function, name="read_file", prepare=prepare, sequential=conversation is not None)
++    return Tool(function, prepare=prepare, sequential=conversation is not None)
+ 
+ 
+ def confirmer_tools(deps: Deps | None = None) -> list[Any]:
+@@ -3452,11 +3523,6 @@ async def _prepare_reader_tool(
+     ctx: RunContext[Deps],
+     tool_def: Any,
+ ) -> Any | None:
+-    requests_used = conversation.tranche_requests_completed + int(
+-        getattr(ctx.usage, "requests", 0) or 0
+-    )
+-    if requests_used >= conversation.tranche_request_limit:
+-        return None
+     name = str(getattr(tool_def, "name", ""))
+     commands = ctx.deps.commands
+     if name == "run_workspace_command" and (
+@@ -3556,18 +3622,24 @@ def make_reader(
+     ReaderLead
+     | LeadEnrichment
+     | AreaEnrichmentLead
+-    | ReaderReviewRequested,
++    | ReaderReviewRequested
++    | ReaderCheckpoint,
+ ]:
+     if conversation is None:
+-        conversation = ReaderConversationState()
++        conversation = ReaderConversationState(model_name=model_name)
++    else:
++        conversation.model_name = model_name
+     tools = [
+         _model_tool(
+             tool,
+             prepare=lambda ctx, tool_def: _prepare_reader_tool(conversation, ctx, tool_def),
++            conversation=conversation,
+         )
+         for tool in reader_tools(deps)
+     ]
+ 
++    if conversation.system_prompt is None:
++        conversation.system_prompt = _role_system_prompt(READER_PROMPT, deps, role="reader") if deps else READER_PROMPT
+     reader = Agent(
+         make_model(settings, model_name),
+         deps_type=Deps,
+@@ -3576,10 +3648,9 @@ def make_reader(
+             | LeadEnrichment
+             | AreaEnrichmentLead
+             | ReaderReviewRequested
++            | ReaderCheckpoint
+         ),
+-        system_prompt=(
+-            _role_system_prompt(READER_PROMPT, deps, role="reader") if deps else READER_PROMPT
+-        ),
++        system_prompt=conversation.system_prompt,
+         tools=tools,
+         capabilities=[
+             structured_output_capability(),
+@@ -3599,26 +3670,18 @@ def make_reader(
+             | LeadEnrichment
+             | AreaEnrichmentLead
+             | ReaderReviewRequested
++            | ReaderCheckpoint
+         ),
+     ):
++        if conversation.checkpoint_mode and not isinstance(
++            output, (ReaderCheckpoint, ReaderLead, AreaEnrichmentLead)
++        ):
++            raise ModelRetry("Nel checkpoint sono ammessi solo ReaderCheckpoint, ReaderLead o AreaEnrichmentLead.")
++        if not conversation.checkpoint_mode and isinstance(output, ReaderCheckpoint):
++            raise ModelRetry("ReaderCheckpoint e' ammesso solo al boundary del checkpoint.")
+         if isinstance(output, ReaderLead):
+-            area_ids = {area.area_id for area in ctx.deps.authoritative_areas()}
+-            output = output.model_copy(
+-                update={
+-                    "owasp_category": (
+-                        output.owasp_category.strip() or (
+-                            "unclassified"
+-                            if ctx.deps.global_mode
+-                            else ctx.deps.current_category
+-                        )
+-                    ),
+-                    "coverage_delta": [
+-                        value for value in output.coverage_delta if value not in area_ids
+-                    ],
+-                }
+-            )
+             try:
+-                validate_reader_lead_quality(ctx.deps, output)
++                output = validate_reader_product(ctx.deps, output)
+             except ValueError as exc:
+                 raise ModelRetry(
+                     str(exc)
+@@ -3626,7 +3689,13 @@ def make_reader(
+                     "non usare valori di riempimento e non ripetere le letture."
+                 ) from exc
+ 
+-        if isinstance(output, (LeadEnrichment, AreaEnrichmentLead)):
++        if isinstance(output, AreaEnrichmentLead):
++            try:
++                output = validate_reader_product(ctx.deps, output)
++            except LedgerError as exc:
++                raise ModelRetry(str(exc)) from exc
++
++        if isinstance(output, LeadEnrichment):
+             try:
+                 ctx.deps.ledger.validate_refs(output.source_ref_ids)
+             except LedgerError as exc:
+@@ -3790,20 +3859,9 @@ def make_exploration_reviewer(
+ 
+ def make_reader_checkpoint(
+     model_name: str, deps: Deps, conversation: ReaderConversationState
+-) -> Agent[Deps, ReaderCheckpoint]:
+-    """Use the Reader system prompt and history, but expose no operational tools."""
+-
+-    return Agent(
+-        make_model(settings, model_name),
+-        deps_type=Deps,
+-        output_type=ReaderCheckpoint,
+-        system_prompt=_role_system_prompt(READER_PROMPT, deps, role="reader"),
+-        capabilities=[
+-            structured_output_capability(),
+-            ProcessHistory(conversation.process_history),
+-        ],
+-        retries={"output": settings.terminal_output_retry_reserve},
+-    )
++) -> Agent[Deps, Any]:
++    """Keep the operational Reader's exact output and tool schema at the checkpoint."""
++    return make_reader(model_name, deps, conversation)
+ 
+ 
+ def make_lead_novelty_reviewer(model_name: str, deps: Deps) -> Agent[Deps, LeadNoveltyReview]:
+@@ -4496,7 +4554,10 @@ class TripleAgentOrchestrator:
+         self.stop_after_confirmer = stop_after_confirmer
+         self.allow_judge_static_enrichment = allow_judge_static_enrichment
+         self.external_enrichment_queue = external_enrichment_queue
+-        self.reader_conversation = ReaderConversationState()
++        self.reader_conversation = ReaderConversationState(model_name=reader_model)
++        self.deps.telemetry.reader_context = reader_context_limits(
++            settings, reader_model, settings.openrouter_model_provider_pins.get(reader_model)
++        )
+         self.confirmer_conversations: dict[str, RoleConversationState] = {}
+         self.worker_conversations: dict[str, RoleConversationState] = {}
+         self.dynamic_judge_requeues: dict[str, int] = {}
+@@ -4587,6 +4648,7 @@ class TripleAgentOrchestrator:
+         self.confirmer_decisive_question_state: dict[str, tuple[str, set[str]]] = {}
+         self.worker_granted_requests: dict[str, int] = {}
+         self.reader_granted_request_limit = 0
++        self._pending_reader_checkpoint_product: ReaderLead | AreaEnrichmentLead | None = None
+         self.tranche_count = 0
+         self._active_reader_recorder: ReaderTrancheRecorder | None = None
+         self._active_category_recon_recorder: ReaderTrancheRecorder | None = None
+@@ -4692,7 +4754,7 @@ class TripleAgentOrchestrator:
+     def _reader_state(self) -> ReaderConversationState:
+         state = getattr(self, "reader_conversation", None)
+         if state is None:
+-            state = ReaderConversationState()
++            state = ReaderConversationState(model_name=self.reader_model)
+             self.reader_conversation = state
+         return state
+ 
+@@ -4836,7 +4898,10 @@ class TripleAgentOrchestrator:
+         )
+         before = state.boundary_history_tokens or estimate_tokens(state.messages)
+         after = (len(checkpoint) + 3) // 4
+-        self.deps.telemetry.record_compaction("reader", before, after)
++        self.deps.telemetry.record_compaction(
++            "reader", before, after,
++            mode=state.pending_review_reason or "area_transition",
++        )
+         state.last_checkpoint = self._reader_checkpoint_data()
+         state.begin_next_epoch(checkpoint)
+         emit_event(
+@@ -5427,6 +5492,10 @@ class TripleAgentOrchestrator:
+         previous_input_tokens = 0
+         previous_cached_tokens = 0
+         previous_output_tokens = 0
++        reader_operational_tools = (
++            {tool.__name__ for tool in reader_tools(self.deps)} if role == "reader" else set()
++        )
++        reader_tool_call_names: dict[str, str] = {}
+         base_prompts = {
+             "reader": READER_PROMPT,
+             "reviewer": EXPLORATION_REVIEWER_PROMPT,
+@@ -5723,6 +5792,11 @@ class TripleAgentOrchestrator:
+                         )
+ 
+                     req, inp, out, cached = _usage(run.usage)
++                    if role == "reader":
++                        phase = "checkpoint" if terminal else "operational"
++                        self.deps.telemetry.reader_request_inputs[phase].append(
++                            max(0, inp - previous_input_tokens)
++                        )
+                     self._print_budget(
+                         role,
+                         requests_used=req,
+@@ -5831,6 +5905,10 @@ class TripleAgentOrchestrator:
+                                 else None
+                             )
+                             if isinstance(event, FunctionToolCallEvent):
++                                if role == "reader" and event.part.tool_name in reader_operational_tools:
++                                    self.deps.telemetry.record_reader_tool_attempt(event.part.tool_name)
++                                    if event.part.tool_call_id:
++                                        reader_tool_call_names[event.part.tool_call_id] = event.part.tool_name
+                                 self.deps.telemetry.record_dispatched_tool_call(
+                                     role,
+                                     event.part.tool_name,
+@@ -5886,6 +5964,11 @@ class TripleAgentOrchestrator:
+                             elif isinstance(event, FunctionToolResultEvent):
+                                 content = getattr(event.part, "content", event.part)
+                                 text = str(content)
++                                call_id = getattr(event.part, "tool_call_id", None)
++                                tool_name = reader_tool_call_names.pop(call_id or "", "")
++                                if role == "reader" and tool_name:
++                                    outcome = _reader_tool_outcome(content, validation_failure=isinstance(event.part, RetryPromptPart))
++                                    self.deps.telemetry.record_reader_tool_result(tool_name, outcome)
+                                 result_summary = _compact_tool_result(content)
+                                 recorder = (
+                                     self._active_reader_recorder
+@@ -6221,7 +6304,11 @@ class TripleAgentOrchestrator:
+         _repair_conversation_history_for_retry(conversation)
+         try:
+             review, _ = await self._review_tranche()
++            if self._pending_reader_checkpoint_product is not None:
++                raise ReaderTrancheBoundary
+             checkpoint = review.area_checkpoint
++        except ReaderTrancheBoundary:
++            raise
+         except Exception as checkpoint_exc:
+             fallback_error = f"{type(checkpoint_exc).__name__}: {checkpoint_exc}"
+ 
+@@ -6427,7 +6514,7 @@ class TripleAgentOrchestrator:
+                     role == "reader"
+                     and retry == 2
+                     and isinstance(conversation, ReaderConversationState)
+-                    and role_agent.output_type is not ReaderCheckpoint
++                    and not terminal
+                 ):
+                     await self._compact_reader_before_second_retry(role_agent, conversation, exc)
+                     retry_prompt = self._reader_prompt()
+@@ -6478,7 +6565,26 @@ class TripleAgentOrchestrator:
+             terminal=terminal,
+             budget_scope_id=budget_scope_id,
+         )
+-        prompt_admitted = prompt_with_header_tokens <= settings.max_prompt_input_tokens
++        request_budget = context_budget_from_settings(
++            settings, role=role, terminal=terminal, global_mode=self.deps.global_mode,
++        )
++        physical_input_cap = (
++            request_budget.effective_context_window
++            - request_budget.response_reserve_tokens
++            - request_budget.safety_reserve_tokens
++        )
++        if role == "reader":
++            reader_limits = reader_context_limits(
++                settings, self.reader_model,
++                settings.openrouter_model_provider_pins.get(self.reader_model),
++            )
++            physical_input_cap = min(
++                physical_input_cap,
++                int(int(reader_limits["physical_context_tokens"]) * settings.effective_context_percent)
++                - request_budget.response_reserve_tokens - request_budget.safety_reserve_tokens,
++            )
++        admitted_input_cap = min(settings.max_prompt_input_tokens, physical_input_cap)
++        prompt_admitted = prompt_with_header_tokens <= admitted_input_cap
+         if not prompt_admitted:
+             self.deps.telemetry.record_budget_boundary(
+                 role,
+@@ -6491,7 +6597,7 @@ class TripleAgentOrchestrator:
+             raise PromptInputGuardExceeded(
+                 f"Prompt+history {role} oltre il guardrail input: "
+                 f"{prompt_with_header_tokens} > "
+-                f"{settings.max_prompt_input_tokens} token stimati"
++                f"{admitted_input_cap} token stimati"
+             )
+         if not budget_admitted:
+             self.deps.telemetry.record_budget_boundary(
+@@ -6556,11 +6662,16 @@ class TripleAgentOrchestrator:
+             )
+             model_name = self._role_models().get(role, self.worker_model)
+             model_weights, pricing_basis = model_economic_weights(model_name)
++            observed_providers = providers_since(cost_checkpoint)
++            estimate_provider = requested_provider or (
++                next(iter(observed_providers)) if len(observed_providers) == 1 else None
++            )
+             estimated_cost = estimate_cost_usd(
+                 model_name,
+                 input_tokens=inp,
+                 cached_input_tokens=cached,
+                 output_tokens=out,
++                provider=estimate_provider,
+             )
+             compaction_estimated_cost = max(
+                 0.0, self.deps.telemetry.estimated_cost_usd - estimated_cost_before
+@@ -6854,7 +6965,9 @@ class TripleAgentOrchestrator:
+ 
+     async def _checkpoint_reader(
+         self, snapshot: dict[str, Any]
+-    ) -> tuple[ExplorationReview, ReaderCheckpoint | None, bool]:
++    ) -> tuple[
++        ExplorationReview, ReaderCheckpoint | ReaderLead | AreaEnrichmentLead | None, bool
++    ]:
+         """Append one tool-free checkpoint to the active Reader conversation."""
+ 
+         conversation = self._reader_state()
+@@ -6862,15 +6975,17 @@ class TripleAgentOrchestrator:
+         previous_completion_guarantee = conversation.completion_budget_guaranteed
+         checkpoint_request_limit = 1 + settings.terminal_output_retry_reserve
+         before = dict(self.deps.telemetry.role_usage.get("reader", {}))
+-        raw_checkpoint: ReaderCheckpoint | None = None
++        before_sources = dict(self.deps.telemetry.cost_source_counts)
++        raw_checkpoint: ReaderCheckpoint | ReaderLead | AreaEnrichmentLead | None = None
+         fallback = False
+         conversation.tranche_request_limit = (
+             conversation.tranche_requests_completed + checkpoint_request_limit
+         )
+         conversation.completion_budget_guaranteed = True
++        conversation.checkpoint_mode = True
+         try:
+             raw_checkpoint = cast(
+-                ReaderCheckpoint,
++                ReaderCheckpoint | ReaderLead | AreaEnrichmentLead,
+                 await self._run_role(
+                     "reader",
+                     make_reader_checkpoint(self.reader_model, self.deps, conversation),
+@@ -6880,11 +6995,18 @@ class TripleAgentOrchestrator:
+                     conversation=conversation,
+                 ),
+             )
+-            if not isinstance(raw_checkpoint, ReaderCheckpoint):
+-                raise ValueError("Il Reader non ha restituito ReaderCheckpoint.")
+-            review = self._normalize_review(
+-                self._review_from_reader_checkpoint(raw_checkpoint, snapshot), snapshot
+-            )
++            if isinstance(raw_checkpoint, ReaderCheckpoint):
++                review = self._normalize_review(
++                    self._review_from_reader_checkpoint(raw_checkpoint, snapshot), snapshot
++                )
++            elif isinstance(raw_checkpoint, (ReaderLead, AreaEnrichmentLead)):
++                review = ExplorationReview(
++                    decision="continue_current",
++                    reason="Prodotto Reader emesso dal checkpoint.",
++                    area_checkpoint=self._fallback_area_checkpoint(snapshot),
++                )
++            else:
++                raise ValueError("Il Reader non ha restituito un output checkpoint valido.")
+         except (
+             UsageLimitExceeded,
+             UnexpectedModelBehavior,
+@@ -6906,24 +7028,30 @@ class TripleAgentOrchestrator:
+         finally:
+             conversation.tranche_request_limit = previous_request_limit
+             conversation.completion_budget_guaranteed = previous_completion_guarantee
++            conversation.checkpoint_mode = False
+ 
+         after = self.deps.telemetry.role_usage.get("reader", {})
+         metric_names = (
+             "requests", "input_tokens", "cached_tokens", "uncached_tokens",
+-            "output_tokens", "economic_points",
++            "output_tokens", "economic_points", "cost_usd", "estimated_cost_usd",
+         )
+         event = {
+             "checkpoint_index": self.deps.telemetry.reader_self_checkpoints + 1,
+             "boundary_reason": snapshot.get("boundary", {}).get("reason"),
+             "reader_epoch": conversation.epoch,
+             "session_id": conversation.session_id,
++            "output_type": type(raw_checkpoint).__name__ if raw_checkpoint is not None else None,
+             "proposed_decision": (
+-                raw_checkpoint.decision if raw_checkpoint is not None else "fallback"
++                raw_checkpoint.decision if isinstance(raw_checkpoint, ReaderCheckpoint)
++                else "fallback" if fallback else None
++            ),
++            "applied_decision": (
++                review.decision if isinstance(raw_checkpoint, ReaderCheckpoint) or fallback
++                else None
+             ),
+-            "applied_decision": review.decision,
+             "normalization_reason": (
+                 review.reason
+-                if raw_checkpoint is not None
++                if isinstance(raw_checkpoint, ReaderCheckpoint)
+                 and (
+                     (raw_checkpoint.decision == "continue" and review.decision != "continue_current")
+                     or (raw_checkpoint.decision == "area_closed" and review.decision != "close_area")
+@@ -6935,6 +7063,10 @@ class TripleAgentOrchestrator:
+                 name: float(after.get(name, 0) or 0) - float(before.get(name, 0) or 0)
+                 for name in metric_names
+             },
++            "cost_complete": (
++                self.deps.telemetry.cost_source_counts.get("openrouter_usage", 0)
++                > before_sources.get("openrouter_usage", 0)
++            ),
+         }
+         self.deps.telemetry.record_reader_self_checkpoint(event)
+         emit_event(
+@@ -7185,6 +7317,20 @@ class TripleAgentOrchestrator:
+                 ),
+                 reader_instruction="Crea la nuova lead.",
+             )
++        if self.stop_after_reader and self.external_enrichment_queue and (
++            self.deps.reader_checkpoint_strategy == ReaderCheckpointStrategy.READER_CHECKPOINT
++        ):
++            return LeadNoveltyReview(
++                verdict="unresolved",
++                reason="Benchmark Reader: novelty e deduplica valutate offline.",
++                reader_instruction="Conserva la proposta come lead autonoma.",
++            )
++        if not self.budget.can_start_request("reviewer", terminal=True):
++            return LeadNoveltyReview(
++                verdict="unresolved",
++                reason="Novita' non valutata: budget insufficiente per la review.",
++                reader_instruction="Conserva la proposta come lead autonoma senza nuove letture.",
++            )
+ 
+         snapshot = self._exploration_snapshot()
+         snapshot["schema_version"] = 2
+@@ -7307,7 +7453,10 @@ class TripleAgentOrchestrator:
+                 },
+             )
+             return review, snapshot
+-        raw_review: ExplorationReviewDecision | ExplorationReview | ReaderCheckpoint | None = None
++        raw_review: (
++            ExplorationReviewDecision | ExplorationReview | ReaderCheckpoint
++            | ReaderLead | AreaEnrichmentLead | None
++        ) = None
+         use_self_checkpoint = (
+             not isinstance(proposal, AreaEnrichmentLead)
+             and self.deps.reader_checkpoint_strategy
+@@ -7316,6 +7465,19 @@ class TripleAgentOrchestrator:
+         if use_self_checkpoint:
+             review, raw_review, fallback = await self._checkpoint_reader(snapshot)
+             self._last_review_was_self_checkpoint = True
++            if isinstance(raw_review, (ReaderLead, AreaEnrichmentLead)):
++                self._pending_reader_checkpoint_product = raw_review
++                self.reader_granted_request_limit = 0
++                self._persist_exploration(
++                    "review",
++                    {
++                        "review_index": self.review_count,
++                        "reader_epoch": self._reader_state().epoch,
++                        "output_type": type(raw_review).__name__,
++                        "checkpoint_product": True,
++                    },
++                )
++                return review, snapshot
+             expected_decision = (
+                 "continue_current"
+                 if getattr(raw_review, "decision", None) == "continue"
+@@ -7653,11 +7815,18 @@ class TripleAgentOrchestrator:
+                     "next_focus": instruction,
+                 },
+             )
++        limits = reader_context_limits(
++            settings, self.reader_model,
++            settings.openrouter_model_provider_pins.get(self.reader_model),
++        )
++        # A periodic review already supplied semantic memory. Include the next
++        # prompt and one bounded tool step before deciding whether to compact.
++        projected_history = estimate_tokens(state.messages) + settings.tool_output_step_max_tokens
+         if pressure_reason in {
+             "cognitive_soft_limit",
+             "cognitive_hard_limit",
+             "technical_retry_checkpoint",
+-        }:
++        } or projected_history >= int(limits["soft_limit_tokens"]):
+             self._transition_reader_epoch(review.area_checkpoint, instruction=instruction)
+         else:
+             state.pending_review_reason = ""
+@@ -7694,6 +7863,8 @@ class TripleAgentOrchestrator:
+         if self.area_reader_requests_since_review >= settings.reader_review_request_interval:
+             self._reader_state().pending_review_reason = "area_review_interval_after_lead"
+             review, _ = await self._review_tranche()
++            if self._pending_reader_checkpoint_product is not None:
++                return False, 0
+             return self._apply_reader_review(review)
+ 
+         remaining = max(
+@@ -7737,24 +7908,30 @@ class TripleAgentOrchestrator:
+             )
+             self._begin_reader_tranche(current_reader_limit)
+             while True:
++                output = self._pending_reader_checkpoint_product
++                checkpoint_product = output is not None
++                self._pending_reader_checkpoint_product = None
+                 project_briefing = getattr(self, "project_briefing", None)
+                 if project_briefing is None:
+                     project_briefing = build_project_briefing(self.deps.src)
+                     self.project_briefing = project_briefing
+                 typer.secho(f"\n[reader] checkpoint | {self.checkpoint()}", fg="bright_black")
+                 try:
+-                    output = await self._run_role(
+-                        "reader",
+-                        self.reader,
+-                        self._reader_prompt(),
+-                        requests=(
+-                            self._reader_state().remaining_investigative_requests()
+-                            + 1
+-                            + settings.terminal_output_retry_reserve
+-                        ),
+-                        conversation=self._reader_state(),
+-                    )
++                    if output is None:
++                        output = await self._run_role(
++                            "reader",
++                            self.reader,
++                            self._reader_prompt(),
++                            requests=(
++                                self._reader_state().remaining_investigative_requests()
++                                + 1
++                                + settings.terminal_output_retry_reserve
++                            ),
++                            conversation=self._reader_state(),
++                        )
+                 except ReaderTrancheBoundary:
++                    if self._pending_reader_checkpoint_product is not None:
++                        continue
+                     if self.budget.category_remaining_points() <= 0:
+                         self.deps.ledger.terminate(
+                             reason="economic_budget_exhausted",
+@@ -7762,6 +7939,8 @@ class TripleAgentOrchestrator:
+                         )
+                         break
+                     review, _ = await self._review_tranche()
++                    if self._pending_reader_checkpoint_product is not None:
++                        continue
+                     complete, current_reader_limit = self._apply_reader_review(review)
+                     if complete:
+                         break
+@@ -7813,17 +7992,22 @@ class TripleAgentOrchestrator:
+                         else []
+                     )
+                     try:
++                        validate_reader_lead_quality(self.deps, output)
+                         output = normalize_reader_lead_proposal(
+                             self.deps,
+                             output,
+                             tranche_source_ref_ids=tranche_source_ref_ids,
+                         )
+-                    except LedgerError as exc:
++                    except (LedgerError, ValueError) as exc:
+                         rejected_output_id = self.deps.record_stage_output(
+                             role="reader",
+                             output_type=type(output).__name__,
+                             payload=output.model_dump(mode="json"),
+                         )
++                        if checkpoint_product and self.deps.telemetry.reader_self_checkpoint_events:
++                            self.deps.telemetry.reader_self_checkpoint_events[-1][
++                                "output_id"
++                            ] = rejected_output_id
+                         self.deps.update_stage_output(
+                             rejected_output_id,
+                             accepted=False,
+@@ -7844,6 +8028,11 @@ class TripleAgentOrchestrator:
+                             f"Lead non acquisita: {exc} Leggi una source pertinente e "
+                             "poi restituisci la stessa ipotesi concreta senza inventare ID."
+                         )
++                        if self.budget.category_remaining_points() <= 0:
++                            self.deps.ledger.terminate(
++                                reason="economic_budget_exhausted", complete=False
++                            )
++                            break
+                         self._begin_reader_tranche(settings.reader_extension_request_limit)
+                         continue
+                 reader_output_id = self.deps.record_stage_output(
+@@ -7851,7 +8040,43 @@ class TripleAgentOrchestrator:
+                     output_type=type(output).__name__,
+                     payload=output.model_dump(mode="json"),
+                 )
++                if checkpoint_product and self.deps.telemetry.reader_self_checkpoint_events:
++                    self.deps.telemetry.reader_self_checkpoint_events[-1][
++                        "output_id"
++                    ] = reader_output_id
+                 if isinstance(output, AreaEnrichmentLead):
++                    try:
++                        self.deps.ledger.validate_refs(output.source_ref_ids)
++                    except LedgerError as exc:
++                        self.deps.update_stage_output(
++                            reader_output_id, accepted=False, rejection_reason=str(exc)
++                        )
++                        self._reader_state().pending_continuation_instruction = str(exc)
++                        if self.budget.category_remaining_points() <= 0:
++                            self.deps.ledger.terminate(
++                                reason="economic_budget_exhausted", complete=False
++                            )
++                            break
++                        self._begin_reader_tranche(settings.reader_extension_request_limit)
++                        continue
++                    if (
++                        self.stop_after_reader
++                        and self.external_enrichment_queue
++                        and self.deps.reader_checkpoint_strategy
++                        == ReaderCheckpointStrategy.READER_CHECKPOINT
++                    ) or not self.budget.can_start_request("reviewer", terminal=True):
++                        self.deps.update_stage_output(
++                            reader_output_id,
++                            accepted=False,
++                            review_status="pending_review",
++                        )
++                        if self.budget.category_remaining_points() <= 0:
++                            self.deps.ledger.terminate(
++                                reason="economic_budget_exhausted", complete=False
++                            )
++                            break
++                        self._begin_reader_tranche(settings.reader_extension_request_limit)
++                        continue
+                     self._print_handoff("reader -> exploration reviewer", output)
+                     review, _ = await self._review_tranche(output)
+                     if review.decision == "approve_area_enrichment":
+@@ -7901,6 +8126,8 @@ class TripleAgentOrchestrator:
+                     self.deps.update_stage_output(reader_output_id, accepted=True)
+                     self._print_handoff("reader -> exploration reviewer", output)
+                     review, _ = await self._review_tranche(output)
++                    if self._pending_reader_checkpoint_product is not None:
++                        continue
+                     complete, current_reader_limit = self._apply_reader_review(review)
+                     if complete:
+                         break
+@@ -7960,6 +8187,8 @@ class TripleAgentOrchestrator:
+                     complete, current_reader_limit = await self._resume_reader_after_lead(
+                         output.lead_id
+                     )
++                    if self._pending_reader_checkpoint_product is not None:
++                        continue
+                     if complete:
+                         break
+                     self._begin_reader_tranche(current_reader_limit)
+@@ -8021,6 +8250,15 @@ class TripleAgentOrchestrator:
+                     accepted=True,
+                     lead_id=lead_id,
+                 )
++                if self.budget.category_remaining_points() <= 0:
++                    self.deps.ledger.mark_unfunded(
++                        lead_id,
++                        reason="Budget esaurito dopo l'acquisizione della lead.",
++                    )
++                    self.deps.ledger.terminate(
++                        reason="economic_budget_exhausted", complete=False
++                    )
++                    break
+                 if self.stop_after_reader:
+                     self.deps.ledger.mark_unfunded(
+                         lead_id,
+@@ -8028,6 +8266,8 @@ class TripleAgentOrchestrator:
+                         funding_status="not_selected",
+                     )
+                     complete, current_reader_limit = await self._resume_reader_after_lead(lead_id)
++                    if self._pending_reader_checkpoint_product is not None:
++                        continue
+                     if complete:
+                         break
+                     self._begin_reader_tranche(current_reader_limit)
+@@ -8040,6 +8280,8 @@ class TripleAgentOrchestrator:
+                     )
+                     break
+                 complete, current_reader_limit = await self._resume_reader_after_lead(lead_id)
++                if self._pending_reader_checkpoint_product is not None:
++                    continue
+                 if complete:
+                     break
+                 self._begin_reader_tranche(current_reader_limit)
+@@ -8258,6 +8500,7 @@ class TripleAgentOrchestrator:
+             },
+             "recon_profile": {
+                 "global_mode": self.deps.global_mode,
++                "assignments": self.deps.recon_reader_test,
+                 "investigative_request_limit": (
+                     settings.global_recon_request_limit
+                     if self.deps.global_mode
+@@ -8281,7 +8524,12 @@ class TripleAgentOrchestrator:
+             "telemetry": self.deps.telemetry.snapshot(),
+             "termination_reason": "category_recon_handoff_complete",
+             "command_failed": self.deps.category_recon is None
+-            or self.deps.category_recon.status != "ready",
++            or self.deps.category_recon.status != "ready"
++            or (self.deps.recon_reader_test and not any(
++                output.get("role") == "recon" and output.get("output_type") == "ReconPlan"
++                and output.get("accepted") is True
++                for output in self.deps.stage_outputs
++            )),
+         }
+         if self.deps.capture_stage_outputs:
+             report["structured_outputs"] = list(self.deps.stage_outputs)
+diff --git a/agent/pentest-agent/tests/test_benchmark_v0_metrics.py b/agent/pentest-agent/tests/test_benchmark_v0_metrics.py
+index 4decb77..df6617d 100644
+--- a/agent/pentest-agent/tests/test_benchmark_v0_metrics.py
++++ b/agent/pentest-agent/tests/test_benchmark_v0_metrics.py
+@@ -24,9 +24,10 @@ def test_static_price_separates_cached_input() -> None:
+         input_tokens=1_000_000,
+         cached_input_tokens=850_000,
+         output_tokens=100_000,
++        provider="Relace",
+     )
+ 
+-    assert cost == Decimal("0.0436")
++    assert cost == Decimal("0.04875")
+     assert (
+         estimate_cost_usd(
+             "unknown/model",
+@@ -44,11 +45,19 @@ def test_static_price_includes_gemini_flash_cache_read_rate() -> None:
+         input_tokens=1_000_000,
+         cached_input_tokens=800_000,
+         output_tokens=100_000,
++        provider="Google",
+     )
+ 
+     assert cost == Decimal("0.2925")
+ 
+ 
++def test_provider_specific_price_is_not_attributed_to_other_routes() -> None:
++    kwargs = dict(input_tokens=1_000_000, cached_input_tokens=500_000, output_tokens=100_000)
++    assert estimate_cost_usd("deepseek/deepseek-v4.1-flash", provider="InferenceNet", **kwargs) == Decimal("0.047")
++    assert estimate_cost_usd("deepseek/deepseek-v4.1-flash", provider="DeepSeek", **kwargs) is None
++    assert estimate_cost_usd("deepseek/deepseek-v4.1-flash", **kwargs) is None
++
++
+ def test_lead_usage_includes_reader_handoff_and_operational_roles() -> None:
+     telemetry = RunTelemetry()
+     telemetry.begin_role_scope("reader", None)
+diff --git a/agent/pentest-agent/tests/test_context_budgeting.py b/agent/pentest-agent/tests/test_context_budgeting.py
+index 94da8f3..5013daa 100644
+--- a/agent/pentest-agent/tests/test_context_budgeting.py
++++ b/agent/pentest-agent/tests/test_context_budgeting.py
+@@ -8,7 +8,7 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
+ 
+ from pentest_agent.artifacts import ArtifactStore
+ from pentest_agent.config import CONTEXT_PROFILES, Settings
+-from pentest_agent.context_budget import ContextBudget, context_budget_from_settings
++from pentest_agent.context_budget import ContextBudget, context_budget_from_settings, reader_context_limits
+ from pentest_agent.deps import Deps
+ from pentest_agent.runtime_tools import http_call
+ from pentest_agent.tools import compression_manager
+@@ -83,6 +83,25 @@ def test_profiles_apply_all_derived_defaults_and_allow_override() -> None:
+     assert overridden.recent_history_keep_tokens == 4_000
+ 
+ 
++def test_reader_cognitive_window_default_override_and_physical_clamp() -> None:
++    configured = Settings(
++        operational_max_context_window=1_048_576,
++        max_prompt_input_tokens=900_000,
++    )
++    normal = reader_context_limits(configured, "google/gemini-3.7-flash", "Google")
++    mimo = reader_context_limits(configured, "xiaomi/mimo-v2.6-pro", "Xiaomi")
++    assert (normal["effective_window_tokens"], normal["soft_limit_tokens"], normal["hard_limit_tokens"]) == (128_000, 96_000, 115_200)
++    assert (mimo["effective_window_tokens"], mimo["soft_limit_tokens"], mimo["hard_limit_tokens"]) == (256_000, 192_000, 230_400)
++    assert mimo["clamp_reason"] is None
++
++    clamped = reader_context_limits(
++        Settings(operational_max_context_window=180_000, max_prompt_input_tokens=170_000),
++        "xiaomi/mimo-v2.6-pro", "Xiaomi",
++    )
++    assert clamped["effective_window_tokens"] < 256_000
++    assert clamped["clamp_reason"] in {"physical_context", "prompt_input_cap"}
++
++
+ def test_split_recent_history_uses_tokens_not_message_count() -> None:
+     messages = [_message(400, "a"), _message(400, "b"), _message(400, "c")]
+ 
+diff --git a/agent/pentest-agent/tests/test_economic_budget.py b/agent/pentest-agent/tests/test_economic_budget.py
+index 5236e66..26f0da0 100644
+--- a/agent/pentest-agent/tests/test_economic_budget.py
++++ b/agent/pentest-agent/tests/test_economic_budget.py
+@@ -49,11 +49,11 @@ def test_pricing_manifest_freezes_exact_rates_and_catalog_checksum() -> None:
+     manifest = pricing_manifest()
+ 
+     assert len(manifest["catalog_checksum"]) == 64
+-    assert manifest["models"]["google/gemini-3.7-flash"] == {
+-        "uncached_input": 0.375,
+-        "cached_input": 0.0375,
+-        "output": 1.875,
+-    }
++    rates = manifest["models"]["google/gemini-3.7-flash"]
++    assert (rates["uncached_input"], rates["cached_input"], rates["output"]) == (
++        0.375, 0.0375, 1.875,
++    )
++    assert rates["price_provider"] == "Google"
+ 
+ 
+ def test_role_usage_marks_incomplete_cost_accounting_explicitly() -> None:
+diff --git a/agent/pentest-agent/tests/test_recon_reader_assignments.py b/agent/pentest-agent/tests/test_recon_reader_assignments.py
+index 122ad53..f6f08bb 100644
+--- a/agent/pentest-agent/tests/test_recon_reader_assignments.py
++++ b/agent/pentest-agent/tests/test_recon_reader_assignments.py
+@@ -1,6 +1,7 @@
+ """Offline checks for functional Recon and its handoff; no provider requests."""
+ 
+ import json
++from decimal import Decimal
+ from pathlib import Path
+ from types import SimpleNamespace
+ 
+@@ -104,11 +105,174 @@ def test_reader_checkpoint_contract_is_flat_and_enforces_next_step(deps):
+         )
+     assert deps.reader_checkpoint_strategy == ReaderCheckpointStrategy.REVIEWER
+     checkpoint_agent = make_reader_checkpoint("reader", deps, run_state := triple_agent.ReaderConversationState())
+-    assert checkpoint_agent.output_type is ReaderCheckpoint
+-    assert checkpoint_agent._function_toolset.tools == {}
++    assert checkpoint_agent.output_type == make_reader("reader", deps, run_state).output_type
++    assert checkpoint_agent._function_toolset.tools
+     assert run_state.messages == []
+ 
+ 
++@pytest.mark.asyncio
++@pytest.mark.parametrize("product_kind", ["lead", "enrichment"])
++@pytest.mark.parametrize("entry", ["review_requested", "tranche_boundary"])
++async def test_checkpoint_product_survives_exhausted_budget(
++    deps, monkeypatch, product_kind, entry
++):
++    deps.reader_checkpoint_strategy = ReaderCheckpointStrategy.READER_CHECKPOINT
++    run = orchestrator(deps)
++    run.deps.closure_recall_sweep_completed = True
++    calls = []
++    monkeypatch.setattr(triple_agent, "build_surface_context", lambda _: {"sensor_status": {}})
++
++    async def fake_role(role, agent, _prompt, **_kwargs):
++        calls.append((role, agent.output_type))
++        if role == "category_recon":
++            return plan().model_copy(update={"assignments": plan().assignments[:1]})
++        assert role == "reader"
++        if not run.reader_conversation.checkpoint_mode:
++            read_file(SimpleNamespace(deps=deps), "render.py", 1, 2)
++            if entry == "tranche_boundary":
++                raise triple_agent.ReaderTrancheBoundary
++            return ReaderReviewRequested(reason="The observed question is ready for serialization.")
++        run.budget.total_limit = Decimal(0)
++        if product_kind == "lead":
++            return ReaderLead(
++                title="Rendering context injection",
++                hypothesis="A request value can reach an unsafe rendering context.",
++                suspicious_operation="render(value)",
++                initial_evidence="render.py reads request.args['name'] and calls render(value).",
++                primary_file="render.py", primary_line=2,
++                unknowns=["Does render escape this context?"],
++            )
++        return triple_agent.AreaEnrichmentLead(
++            title="Independent rendering path", family="rendering",
++            rationale="The observed rendering path may require separate coverage.",
++            source_ref_ids=list(deps.source_refs),
++            seed_checks=["Inspect the rendering dispatch."],
++            next_check="Inspect the rendering dispatch.",
++        )
++
++    monkeypatch.setattr(run, "_run_role", fake_role)
++    if product_kind == "lead":
++        monkeypatch.setattr(run, "_adjudicated_lead_ids", lambda: {"prior-lead"})
++    report = await run.run()
++    product_type = "ReaderLead" if product_kind == "lead" else "AreaEnrichmentLead"
++    products = [row for row in report["structured_outputs"] if row["output_type"] == product_type]
++    assert len(products) == 1
++    assert len([call for call in calls if call[0] == "reader"]) == 2
++    assert deps.telemetry.reader_self_checkpoint_events[0]["output_type"] == product_type
++    assert deps.telemetry.reader_self_checkpoint_events[0]["applied_decision"] is None
++    assert deps.telemetry.reader_self_checkpoint_events[0]["output_id"] == products[0]["output_id"]
++    assert deps.telemetry.reader_self_checkpoint_decisions == {}
++    if product_kind == "lead":
++        assert products[0]["accepted"] is True
++        assert products[0]["lead_id"] in deps.findings
++        assert "budget insufficiente" in deps.findings[products[0]["lead_id"]]["novelty_review"]["reason"]
++    else:
++        assert products[0]["accepted"] is False
++        assert products[0]["review_status"] == "pending_review"
++        assert products[0]["rejection_reason"] is None
++
++
++@pytest.mark.asyncio
++async def test_checkpoint_lead_continues_same_area_without_serialization_turn(deps, monkeypatch):
++    deps.reader_checkpoint_strategy = ReaderCheckpointStrategy.READER_CHECKPOINT
++    deps.closure_recall_sweep_completed = True
++    run = orchestrator(deps)
++    checkpoint_count = 0
++    calls = []
++    monkeypatch.setattr(triple_agent, "build_surface_context", lambda _: {"sensor_status": {}})
++
++    async def fake_role(role, agent, _prompt, **_kwargs):
++        nonlocal checkpoint_count
++        if role == "category_recon":
++            return plan().model_copy(update={"assignments": plan().assignments[:1]})
++        assert role == "reader"
++        calls.append(agent.output_type)
++        if not run.reader_conversation.checkpoint_mode:
++            read_file(SimpleNamespace(deps=deps), "render.py", 1, 2)
++            return ReaderReviewRequested(reason="Review observed rendering path.")
++        checkpoint_count += 1
++        if checkpoint_count == 1:
++            return ReaderLead(
++                title="Rendering context injection",
++                hypothesis="A request value can reach an unsafe rendering context.",
++                suspicious_operation="render(value)",
++                initial_evidence="render.py reads request.args['name'] and calls render(value).",
++                primary_file="render.py", primary_line=2,
++                unknowns=["Does render escape this context?"],
++            )
++        return ReaderCheckpoint(
++            decision="area_closed", reason="No discriminating branches remain.",
++            checkpoint_summary="The observed rendering path was emitted and reviewed.",
++        )
++
++    monkeypatch.setattr(run, "_run_role", fake_role)
++    report = await run.run()
++    assert report["termination_reason"] == "discovery_complete"
++    assert len(calls) == 4
++    assert checkpoint_count == 2
++    assert len([row for row in report["structured_outputs"] if row["output_type"] == "ReaderLead"]) == 1
++    assert deps.telemetry.reader_self_checkpoint_events[0]["output_type"] == "ReaderLead"
++    assert deps.telemetry.reader_self_checkpoint_events[1]["output_type"] == "ReaderCheckpoint"
++
++
++@pytest.mark.asyncio
++async def test_post_lead_checkpoint_product_is_processed_once(deps, monkeypatch):
++    deps.reader_checkpoint_strategy = ReaderCheckpointStrategy.READER_CHECKPOINT
++    deps.closure_recall_sweep_completed = True
++    run = orchestrator(deps)
++    operational_count = 0
++    checkpoint_count = 0
++    monkeypatch.setattr(triple_agent, "build_surface_context", lambda _: {"sensor_status": {}})
++
++    async def fake_role(role, agent, _prompt, **_kwargs):
++        nonlocal operational_count, checkpoint_count
++        if role == "category_recon":
++            return plan().model_copy(update={"assignments": plan().assignments[:1]})
++        assert role == "reader"
++        if not run.reader_conversation.checkpoint_mode:
++            operational_count += 1
++            if operational_count == 1:
++                read_file(SimpleNamespace(deps=deps), "render.py", 1, 2)
++                run.area_reader_requests_since_review = triple_agent.settings.reader_review_request_interval
++                return ReaderLead(
++                    title="Initial rendering path",
++                    hypothesis="Request input reaches a potentially unsafe render call.",
++                    suspicious_operation="render(value)",
++                    initial_evidence="render.py passes the request parameter into render(value).",
++                    primary_file="render.py", primary_line=2,
++                    unknowns=["Is this rendering context escaped?"],
++                )
++            return ReaderReviewRequested(reason="Both observed paths have been emitted.")
++        checkpoint_count += 1
++        if checkpoint_count == 1:
++            return ReaderLead(
++                title="Sibling rendering path",
++                hypothesis="A distinct rendering context may expose request input.",
++                suspicious_operation="render(sibling_value)",
++                initial_evidence="The earlier render.py observation supports a sibling context question.",
++                primary_file="render.py", primary_line=2,
++                unknowns=["Does the sibling context apply escaping?"],
++            )
++        return ReaderCheckpoint(
++            decision="area_closed", reason="No branch remains.",
++            checkpoint_summary="Both rendering questions were emitted.",
++        )
++
++    async def novelty(_):
++        return LeadNoveltyReview(
++            verdict="distinct_sink", reason="Distinct operation.", reader_instruction="Continue."
++        )
++
++    monkeypatch.setattr(run, "_run_role", fake_role)
++    monkeypatch.setattr(run, "_review_reader_lead_novelty", novelty)
++    report = await run.run()
++    assert report["termination_reason"] == "discovery_complete"
++    assert len([row for row in report["structured_outputs"]
++                if row["output_type"] == "ReaderLead" and row["accepted"]]) == 2
++    assert operational_count == 2
++    assert checkpoint_count == 2
++
++
+ @pytest.mark.asyncio
+ async def test_reader_checkpoint_replaces_ordinary_review_but_not_enrichment(deps, monkeypatch):
+     deps.category_recon = CategoryRecon.model_validate(normalize_recon_plan(plan()).model_dump())
+@@ -119,7 +283,7 @@ async def test_reader_checkpoint_replaces_ordinary_review_but_not_enrichment(dep
+ 
+     async def fake_role(role, agent, _prompt, **_kwargs):
+         roles.append(role)
+-        if agent.output_type is ReaderCheckpoint:
++        if role == "reader" and run.reader_conversation.checkpoint_mode:
+             return ReaderCheckpoint(
+                 decision="continue", reason="One discriminating comparison remains.",
+                 next_step="Compare the sibling rendering helper.",
+@@ -183,7 +347,7 @@ async def test_reader_checkpoint_area_closed_reuses_existing_lifecycle(deps, mon
+ 
+     async def close(role, agent, _prompt, **_kwargs):
+         assert role == "reader"
+-        assert agent.output_type is ReaderCheckpoint
++        assert run.reader_conversation.checkpoint_mode
+         return ReaderCheckpoint(
+             decision="area_closed", reason="No discriminating branch remains.",
+             checkpoint_summary="Assigned paths and sibling operations were checked.",
+@@ -212,6 +376,40 @@ def test_plan_normalizes_ids_without_losing_unlocated_work(deps):
+     assert make_category_recon_reader("recon", deps).output_type is ReconPlan
+ 
+ 
++@pytest.mark.asyncio
++async def test_recon_only_preserves_functional_assignments_and_rejects_fallback(deps, monkeypatch):
++    monkeypatch.setattr(triple_agent, "build_surface_context", lambda _: {})
++    run = orchestrator(deps)
++
++    async def recon_plan(role, *_args, **_kwargs):
++        assert role == "category_recon"
++        return plan()
++
++    monkeypatch.setattr(run, "_run_role", recon_plan)
++    report = await run.run_recon_only()
++    assert report["command_failed"] is False
++    assert report["recon_profile"]["assignments"] is True
++    assert [area["area_id"] for area in report["category_recon"]["areas"]] == [
++        "area-assignment-1", "area-assignment-2",
++    ]
++    assert any(row["output_type"] == "ReconPlan" for row in report["structured_outputs"])
++
++    failed_deps = Deps(
++        http=deps.http, src=deps.src, global_mode=True, recon_reader_test=True,
++        current_category="global", capture_stage_outputs=True,
++    )
++    failed_run = orchestrator(failed_deps)
++
++    async def fail(*_args, **_kwargs):
++        raise RuntimeError("offline provider failure")
++
++    monkeypatch.setattr(failed_run, "_run_role", fail)
++    failed_report = await failed_run.run_recon_only()
++    assert failed_report["command_failed"] is True
++    assert not any(row["output_type"] == "ReconPlan"
++                   for row in failed_report["structured_outputs"])
++
++
+ def test_initial_context_defers_semgrep_hotspots_and_keeps_source_tools(deps):
+     deps.surface_context = {
+         "sensor_status": {"semgrep": {"status": "failed_open", "reason": "partial scan"}},
+@@ -438,6 +636,34 @@ def test_joint_cli_requires_global_before_bootstrap(monkeypatch):
+     assert "richiede --global" in result.output
+ 
+ 
++def test_assignments_cli_runs_only_recon(deps, monkeypatch):
++    received = {}
++    bootstrap = SimpleNamespace(
++        client=None, runtime=None,
++        result=SimpleNamespace(status="disabled", duration_ms=0, event_payload=lambda: {}),
++        close=lambda: None,
++    )
++
++    class FakeOrchestrator:
++        def __init__(self, runtime_deps, **kwargs):
++            received["assignments"] = runtime_deps.recon_reader_test
++            received["stop_after_reader"] = kwargs["stop_after_reader"]
++
++        async def run_recon_only(self):
++            return {"command_failed": False}
++
++        async def run(self):
++            pytest.fail("Reader must not start")
++
++    monkeypatch.setattr(cli, "initialize_codebase_memory", lambda **_: bootstrap)
++    monkeypatch.setattr(cli, "TripleAgentOrchestrator", FakeOrchestrator)
++    result = CliRunner().invoke(cli.app, [
++        "recon", "--global", "--assignments", "--source-root", deps.src,
++    ])
++    assert result.exit_code == 0, result.output
++    assert received == {"assignments": True, "stop_after_reader": True}
++
++
+ @pytest.mark.parametrize("termination", ["discovery_complete", "recon_unavailable"])
+ def test_joint_cli_runs_the_combined_path_and_persists_failure(deps, monkeypatch, termination):
+     received = {}
+@@ -495,3 +721,144 @@ def test_joint_cli_rejects_unknown_checkpoint_strategy_before_bootstrap(monkeypa
+     ])
+     assert result.exit_code == 2
+     assert "unknown" in result.output
++
++
++@pytest.mark.asyncio
++async def test_reader_serialized_prefix_and_large_tool_batch_are_stable(deps, monkeypatch):
++    from dataclasses import asdict
++    from functools import wraps
++    import threading
++    import time
++
++    active = peak = completed = 0
++    lock = threading.Lock()
++    original = triple_agent.read_file_window
++
++    @wraps(original)
++    def bounded(*args, **kwargs):
++        nonlocal active, peak, completed
++        with lock:
++            active += 1
++            peak = max(peak, active)
++        try:
++            time.sleep(0.001)
++            return original(*args, **kwargs)
++        finally:
++            with lock:
++                active -= 1
++                completed += 1
++
++    monkeypatch.setattr(triple_agent, "read_file_window", bounded)
++    state = triple_agent.ReaderConversationState(model_name="reader")
++    payloads = []
++
++    def respond(messages, info):
++        payloads.append(([asdict(t) for t in info.function_tools], [asdict(t) for t in info.output_tools], list(messages)))
++        if len(payloads) == 1:
++            return ModelResponse(parts=[ToolCallPart("read_file", {"path": "render.py", "start": 1, "count": 2}, tool_call_id=f"read-{i}") for i in range(128)])
++        output = (ReaderCheckpoint(decision="continue", reason="One branch remains.", next_step="Read the sibling helper.", checkpoint_summary="Rendering input was observed.")
++                  if state.checkpoint_mode else ReaderReviewRequested(reason="Rendering input was observed."))
++        tool = next(t for t in info.output_tools if type(output).__name__ in t.name)
++        return ModelResponse(parts=[ToolCallPart(tool.name, output.model_dump(mode="json"))])
++
++    monkeypatch.setattr(triple_agent, "make_model", lambda *_: FunctionModel(respond))
++    reader = make_reader("reader", deps, state)
++    result = await reader.run("Explore rendering.", deps=deps)
++    assert completed == 128
++    assert peak == 1
++    state.checkpoint_mode = True
++    # Changing the dossier must not rewrite the frozen system prompt.
++    deps.prior_context = "New observations belong in the appended checkpoint request."
++    checkpoint = make_reader_checkpoint("reader", deps, state)
++    checkpoint_result = await checkpoint.run("Checkpoint the observed work.", deps=deps, message_history=result.all_messages())
++    assert isinstance(checkpoint_result.output, ReaderCheckpoint)
++    assert payloads[0][:2] == payloads[-1][:2]
++    prior_parts = [part for message in result.all_messages() for part in message.parts]
++    checkpoint_parts = [part for message in payloads[-1][2] for part in message.parts]
++    assert checkpoint_parts[:len(prior_parts)] == prior_parts
++    assert completed == 128
++
++
++@pytest.mark.parametrize("content,validation,expected", [
++    ("if error: return timeout", False, "successes"),
++    ("", False, "successes"),
++    ("result_status: ok\n\nerror timeout", False, "successes"),
++    ("result_status: error\n\nfailed", False, "execution_failures"),
++    ({"ok": False, "exit_code": 1}, False, "execution_failures"),
++    ({"timed_out": True}, False, "execution_failures"),
++    ("bad argument", True, "validation_failures"),
++])
++def test_reader_tool_outcomes_use_authoritative_status(content, validation, expected):
++    assert triple_agent._reader_tool_outcome(content, validation_failure=validation) == expected
++
++
++@pytest.mark.asyncio
++async def test_self_checkpoint_benchmark_acquires_products_without_reviewer_or_dispatch(deps, monkeypatch):
++    deps.reader_checkpoint_strategy = ReaderCheckpointStrategy.READER_CHECKPOINT
++    deps.closure_recall_sweep_completed = True
++    run = TripleAgentOrchestrator(deps, recon_model="recon", reader_model="reader",
++        reviewer_model="reviewer", confirmer_model="confirmer", worker_model="worker",
++        needs_handoff=False, stop_after_reader=True, external_enrichment_queue=True)
++    products = 0
++    roles = []
++    monkeypatch.setattr(triple_agent, "build_surface_context", lambda _: {"sensor_status": {}})
++
++    async def fake_role(role, agent, prompt, **kwargs):
++        nonlocal products
++        roles.append(role)
++        if role == "category_recon":
++            return plan().model_copy(update={"assignments": plan().assignments[:1]})
++        assert role == "reader"
++        if run.reader_conversation.checkpoint_mode:
++            return ReaderCheckpoint(decision="area_closed", reason="Assigned paths checked.", checkpoint_summary="Two questions and an enrichment were acquired.")
++        products += 1
++        read_file(SimpleNamespace(deps=deps), "permissions.py" if products == 2 else "render.py", 1, 2)
++        if products <= 2:
++            return ReaderLead(title=f"Rendering question {products}", hypothesis="Request input may reach an unsafe rendering context.",
++                suspicious_operation="render(value)" if products == 1 else "delete(request.args['id'])",
++                initial_evidence="render.py passes request input to render." if products == 1 else "permissions.py deletes the requested object.",
++                primary_file="render.py" if products == 1 else "permissions.py",
++                primary_line=2 if products == 1 else 1, unknowns=["Does the context escape input?"])
++        if products == 3:
++            return triple_agent.AreaEnrichmentLead(title="Sibling renderer", family="rendering",
++                rationale="An independent renderer needs separate coverage.", source_ref_ids=list(deps.source_refs),
++                seed_checks=["Inspect sibling dispatch."], next_check="Inspect sibling dispatch.")
++        return ReaderReviewRequested(reason="Assigned paths checked.")
++
++    monkeypatch.setattr(run, "_run_role", fake_role)
++    report = await run.run()
++    assert "reviewer" not in roles
++    assert len(report["suspected"]) == 2
++    enrichments = [row for row in report["structured_outputs"] if row["output_type"] == "AreaEnrichmentLead"]
++    assert len(enrichments) == 1
++    assert enrichments[0]["review_status"] == "pending_review"
++    assert deps.telemetry.exploration_enrichment_reviews == 0
++    assert len(deps.category_recon.areas) == 1
++
++
++def test_reader_file_errors_and_empty_results_have_execution_status(deps):
++    ctx = SimpleNamespace(deps=deps)
++    missing = read_file(ctx, "missing.php")
++    assert triple_agent._reader_tool_outcome(missing) == "execution_failures"
++    (Path(deps.src) / "empty.php").write_text("")
++    empty = read_file(ctx, "empty.php")
++    assert triple_agent._reader_tool_outcome(empty) == "successes"
++    (Path(deps.src) / "error.php").write_text("if error: return timeout")
++    source = read_file(ctx, "error.php")
++    assert triple_agent._reader_tool_outcome(source) == "successes"
++
++
++@pytest.mark.asyncio
++async def test_reader_tool_exception_is_one_execution_failure(deps):
++    def failing(ctx):
++        raise RuntimeError("offline executor failure")
++
++    deps.active_role = "reader"
++    state = triple_agent.ReaderConversationState()
++    tool = triple_agent._model_tool(failing, prepare=None, conversation=state)
++    deps.telemetry.record_reader_tool_attempt("failing")
++    with pytest.raises(RuntimeError, match="executor failure"):
++        await tool.function(SimpleNamespace(deps=deps))
++    assert deps.telemetry.reader_tool_outcomes["failing"] == {
++        "attempts": 1, "successes": 0, "validation_failures": 0, "execution_failures": 1,
++    }
+diff --git a/agent/pentest-agent/tests/test_triple_agent.py b/agent/pentest-agent/tests/test_triple_agent.py
+index 178b823..b1fee77 100644
+--- a/agent/pentest-agent/tests/test_triple_agent.py
++++ b/agent/pentest-agent/tests/test_triple_agent.py
+@@ -32,6 +32,7 @@ from pydantic_ai.usage import RunUsage
+ from pentest_agent.artifacts import ArtifactStore
+ from pentest_agent.budget import EconomicUsage
+ from pentest_agent.config import settings
++from pentest_agent.context_budget import reader_context_limits
+ from pentest_agent.deps import Deps, HttpResponseSnapshot
+ from pentest_agent.ledger import LedgerError
+ from pentest_agent.models import (
+@@ -117,6 +118,7 @@ from pentest_agent.triple_agent import (
+     make_dynamic_judge,
+     make_exploration_reviewer,
+     make_reader,
++    make_reader_checkpoint,
+     make_worker,
+     normalize_reader_lead_proposal,
+     inspect_persisted_evidence,
+@@ -1167,7 +1169,7 @@ def test_reader_prompt_defines_lead_threshold_and_delegates_incomplete_yield(
+     assert "due letture mirate consecutive" in normalized
+     assert "confine della tranche viene gestito direttamente dall'orchestratore" in normalized
+     assert "ReaderReviewRequested" in normalized
+-    assert "completamento appartengono a Reviewer e orchestratore" in normalized
++    assert "ReaderCheckpoint" in normalized
+     assert "non chiude mai l'area" in normalized
+     assert "Scegli il percorso statico minimo" in normalized
+     assert "verifiche circoscritte" in normalized
+@@ -1638,7 +1640,8 @@ async def test_reader_tranche_routes_directly_to_reviewer(tmp_path: Path) -> Non
+     assert state.messages[1].parts[0] is useful
+     assert state.conversation_id == conversation_id
+     assert state.session_id == session_id
+-    assert _prepare_reader_tool(state, ctx, object()) is None  # type: ignore[arg-type]
++    tool_def = SimpleNamespace(name="read_file", parameters_json_schema={})
++    assert await _prepare_reader_tool(state, ctx, tool_def) is tool_def  # type: ignore[arg-type]
+ 
+ 
+ @pytest.mark.asyncio
+@@ -1887,11 +1890,14 @@ async def test_reader_cognitive_limit_yields_to_reviewer(tmp_path: Path) -> None
+     deps, _ = _deps(tmp_path)
+     state = ReaderConversationState()
+     state.begin_tranche(100)
++    soft = reader_context_limits(
++        settings, state.model_name, settings.openrouter_model_provider_pins.get(state.model_name)
++    )["soft_limit_tokens"]
+     messages = [
+         ModelRequest(
+             parts=[
+                 UserPromptPart(
+-                    content="x" * (settings.reader_cognitive_soft_limit_tokens * 4)
++                    content="x" * (int(soft) * 4)
+                 )
+             ]
+         )
+@@ -1906,10 +1912,22 @@ async def test_reader_cognitive_limit_yields_to_reviewer(tmp_path: Path) -> None
+         await state.process_history(ctx, messages)  # type: ignore[arg-type]
+ 
+     assert state.pending_review_reason == "cognitive_soft_limit"
+-    assert state.boundary_history_tokens >= settings.reader_cognitive_soft_limit_tokens
++    assert state.boundary_history_tokens >= soft
+     assert state.messages
+ 
+ 
++@pytest.mark.asyncio
++async def test_reader_checkpoint_keeps_tool_and_output_contract_but_blocks_execution() -> None:
++    state = ReaderConversationState(model_name="reader")
++    operational = make_reader("reader", None, state)
++    checkpoint = make_reader_checkpoint("reader", None, state)  # type: ignore[arg-type]
++    assert operational.output_type == checkpoint.output_type
++    assert list(operational._function_toolset.tools) == list(checkpoint._function_toolset.tools)
++    state.checkpoint_mode = True
++    with pytest.raises(ModelRetry, match="non esegue tool"):
++        await checkpoint._function_toolset.tools["read_file"].function()  # type: ignore[call-arg]
++
++
+ def test_periodic_reviewer_checkpoint_preserves_reader_epoch(tmp_path: Path) -> None:
+     deps, _ = _deps(tmp_path)
+     deps.category_recon = _recon("API authorization")
+@@ -1945,6 +1963,40 @@ def test_periodic_reviewer_checkpoint_preserves_reader_epoch(tmp_path: Path) ->
+     assert len(orchestrator.reader_conversation.messages) == 1
+ 
+ 
++@pytest.mark.asyncio
++async def test_periodic_reader_checkpoint_compacts_before_equivalent_pressure_review(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(settings, "operational_max_context_window", 80_000)
++    monkeypatch.setattr(settings, "max_prompt_input_tokens", 80_000)
++    deps, _ = _deps(tmp_path)
++    deps.category_recon = _recon("API authorization")
++    run = TripleAgentOrchestrator(
++        deps, reader_model="reader", confirmer_model="confirmer",
++        worker_model="worker", needs_handoff=False,
++    )
++    deps.sync_category_state()
++    state = run.reader_conversation
++    soft = int(reader_context_limits(settings, "reader")["soft_limit_tokens"])
++    state.messages = [ModelRequest(parts=[UserPromptPart(content="x" * (4 * (soft - settings.tool_output_step_max_tokens + 100)))])]
++    state.pending_review_reason = "reader_review_interval"
++    run._last_review_was_self_checkpoint = True
++    review = ExplorationReview(
++        decision="continue_current", reason="Continue the open branch.",
++        area_checkpoint=AreaCheckpoint(area_id="area-01", next_action="Read the gate."),
++    )
++
++    complete, _ = run._apply_reader_review(review)
++
++    assert complete is False
++    assert state.epoch == 2
++    assert deps.telemetry.compactions_by_role["reader"] == 1
++    assert state.pending_review_reason == ""
++    ctx = SimpleNamespace(usage=SimpleNamespace(requests=0), deps=deps)
++    await state.process_history(ctx, [ModelRequest(parts=[UserPromptPart(content="resume")])])  # type: ignore[arg-type]
++    assert state.pending_review_reason == ""
++
++
+ def test_tranche_recorder_builds_bounded_deterministic_delta(tmp_path: Path) -> None:
+     deps, _ = _deps(tmp_path)
+     recorder = ReaderTrancheRecorder.start(deps, set(), set())
+@@ -4378,7 +4430,7 @@ def test_worker_assignment_keeps_large_source_refs_on_demand(tmp_path: Path) ->
+     lead_id = deps.ledger.create_lead(_lead(initial_ref), reader_model="reader")
+     deps.ledger.mark_refining(lead_id, confirmer_model="confirmer")
+     source_file = tmp_path / "large-evidence.php"
+-    snippets = [f"LARGE_SOURCE_SENTINEL_{index}_" + "x" * 10_000 for index in range(55)]
++    snippets = [f"LARGE_SOURCE_SENTINEL_{index}_" + "x" * (settings.max_prompt_input_tokens // 10) for index in range(55)]
+     source_file.write_text("\n".join(snippets) + "\n", encoding="utf-8")
+     ref_ids = [initial_ref]
+     for index, snippet in enumerate(snippets):
+@@ -5741,7 +5793,7 @@ async def test_every_role_recovers_from_a_full_turn_model_retry(tmp_path: Path,
+ 
+ @pytest.mark.asyncio
+ async def test_reader_second_full_turn_retry_uses_reviewer_checkpoint(
+-    tmp_path: Path,
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     deps, _ = _deps(tmp_path)
+     orchestrator = TripleAgentOrchestrator(
+@@ -5782,6 +5834,7 @@ async def test_reader_second_full_turn_retry_uses_reviewer_checkpoint(
+         return expected
+ 
+     orchestrator._run_role_once = fail_twice_then_checkpoint  # type: ignore[method-assign]
++    monkeypatch.setattr("pentest_agent.triple_agent.make_exploration_reviewer", lambda *_: object())
+ 
+     result = await orchestrator._run_role(
+         "reader",
+@@ -5799,6 +5852,45 @@ async def test_reader_second_full_turn_retry_uses_reviewer_checkpoint(
+     assert deps.telemetry.model_turn_retries_recovered["reader"] == 1
+ 
+ 
++@pytest.mark.asyncio
++async def test_reader_retry_stops_when_checkpoint_emits_product(tmp_path: Path) -> None:
++    deps, _ = _deps(tmp_path)
++    orchestrator = TripleAgentOrchestrator(
++        deps, reader_model="reader", confirmer_model="confirmer",
++        worker_model="worker", needs_handoff=False,
++    )
++    calls = 0
++
++    async def fail_reader(*_args: object, **_kwargs: object) -> object:
++        nonlocal calls
++        calls += 1
++        raise UnexpectedModelBehavior("invalid structured Reader output")
++
++    async def checkpoint_product() -> tuple[ExplorationReview, dict[str, object]]:
++        orchestrator._pending_reader_checkpoint_product = ReaderLead(
++            title="Observed rendering path",
++            hypothesis="A request value reaches an unsafe renderer.",
++            suspicious_operation="render(value)",
++            initial_evidence="Observed request input passed into the renderer.",
++            primary_file="render.py", primary_line=2,
++            unknowns=["Is this rendering context escaped?"],
++        )
++        return ExplorationReview(
++            decision="continue_current", reason="Product emitted.",
++            area_checkpoint=AreaCheckpoint(next_action="Continue."),
++        ), {}
++
++    orchestrator._run_role_once = fail_reader  # type: ignore[method-assign]
++    orchestrator._review_tranche = checkpoint_product  # type: ignore[method-assign]
++    with pytest.raises(ReaderTrancheBoundary):
++        await orchestrator._run_role(
++            "reader", object(), "initial assignment", requests=4,
++            conversation=orchestrator.reader_conversation,
++        )
++    assert calls == 2
++    assert isinstance(orchestrator._pending_reader_checkpoint_product, ReaderLead)
++
++
+ @pytest.mark.asyncio
+ async def test_model_retry_repairs_dangling_structured_output_tool_call(
+     tmp_path: Path,
+diff --git a/app/Console/Commands/BenchmarkReaderGlobal.php b/app/Console/Commands/BenchmarkReaderGlobal.php
+index 8407509..2407fc4 100644
+--- a/app/Console/Commands/BenchmarkReaderGlobal.php
++++ b/app/Console/Commands/BenchmarkReaderGlobal.php
+@@ -39,6 +39,9 @@ final class BenchmarkReaderGlobal extends Command
+         {--follow-slot=1 : Transcript completo dello slot, 0 per nessuno}
+         {--reader-model= : Modello Reader}
+         {--reviewer-model= : Modello Reviewer}
++        {--reader-provider= : Provider OpenRouter da fissare per il Reader}
++        {--operational-context-window=1048576 : Cap fisico del contesto operativo}
++        {--max-prompt-input-tokens=900000 : Guardrail dell input completo}
+         {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+         {--reuse-sandbox= : Audit ID di una sandbox pronta}
+         {--timeout=7200 : Timeout per assignment in secondi}
+@@ -62,14 +65,16 @@ public function handle(
+         $followSlot = (int) $this->option('follow-slot');
+         $points = (float) $this->option('assignment-points');
+         $timeout = (int) $this->option('timeout');
++        $operationalContextWindow = (int) $this->option('operational-context-window');
++        $maxPromptInputTokens = (int) $this->option('max-prompt-input-tokens');
+         if ($concurrency < 1 || $concurrency > 4) {
+             throw new InvalidArgumentException('--concurrency deve essere compreso fra 1 e 4.');
+         }
+         if ($followSlot < 0 || $followSlot > $concurrency) {
+             throw new InvalidArgumentException('--follow-slot deve essere 0 oppure uno slot attivo.');
+         }
+-        if ($points <= 0 || $timeout <= 0) {
+-            throw new InvalidArgumentException('Assignment points e timeout devono essere positivi.');
++        if ($points <= 0 || $timeout <= 0 || $operationalContextWindow <= 0 || $maxPromptInputTokens <= 0) {
++            throw new InvalidArgumentException('Assignment points, timeout e cap di contesto devono essere positivi.');
+         }
+         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
+         if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+@@ -103,7 +108,17 @@ public function handle(
+             throw new InvalidArgumentException('La selezione delle aree e vuota.');
+         }
+         $deferEnrichments = (bool) $this->option('defer-enrichments');
+-        $runtimeFingerprint = hash_file('sha256', base_path('agent/pentest-agent/src/pentest_agent/triple_agent.py'));
++        $runtimeFiles = [];
++        foreach (File::allFiles(base_path('agent/pentest-agent/src/pentest_agent')) as $file) {
++            if (in_array($file->getExtension(), ['py', 'json'], true)) {
++                $runtimeFiles['agent/pentest-agent/src/pentest_agent/'.str_replace('\\', '/', $file->getRelativePathname())] = hash_file('sha256', $file->getPathname());
++            }
++        }
++        foreach (['agent/pentest-agent/uv.lock', 'agent/pentest-agent/pyproject.toml', 'app/Console/Commands/BenchmarkReaderGlobal.php', 'app/Services/Pentest/BenchmarkStageProcessRunner.php'] as $path) {
++            $runtimeFiles[$path] = hash_file('sha256', base_path($path));
++        }
++        ksort($runtimeFiles);
++        $runtimeFingerprint = hash('sha256', json_encode($runtimeFiles, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+         $models = [
+             'reader' => $this->option('reader-model'),
+             'reviewer' => $this->option('reviewer-model'),
+@@ -207,7 +222,12 @@ public function handle(
+                         '--assignment-points', (string) $points,
+                         '--workspace-host-root', $agentSource,
+                         '--reader-checkpoint-strategy', $readerCheckpointStrategy,
++                        '--operational-context-window', (string) $operationalContextWindow,
++                        '--max-prompt-input-tokens', (string) $maxPromptInputTokens,
+                     ];
++                    if ($this->option('reader-provider')) {
++                        array_push($args, '--reader-provider', (string) $this->option('reader-provider'));
++                    }
+                     if ($sandbox !== null) {
+                         array_push(
+                             $args, '--target-audit-id', $sandbox->auditId,
+@@ -324,6 +344,7 @@ public function handle(
+                             $normalized, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
+                         ));
+                         $accepted = ($enrichment['accepted'] ?? false) === true;
++                        $pendingReview = ($enrichment['review_status'] ?? null) === 'pending_review';
+                         $record = [
+                             'source_area_id' => $child['area']['area_id'],
+                             'source_run_id' => $child['run_id'],
+@@ -332,7 +353,7 @@ public function handle(
+                             'accepted' => $accepted,
+                             'rejection_reason' => $enrichment['rejection_reason'] ?? null,
+                             'payload_hash' => $hash,
+-                            'status' => $accepted ? 'pending' : 'rejected',
++                            'status' => $accepted ? 'pending' : ($pendingReview ? 'pending_review' : 'rejected'),
+                         ];
+                         if (! $accepted) {
+                             $enrichmentProposals[] = $record;
+@@ -414,6 +435,8 @@ public function handle(
+                             }
+                         }
+                     }
++                    $scorecard = $this->assignmentScorecard($report, $leads, $enrichments, $status, $duration);
++                    $report['benchmark_scorecard'] = $scorecard;
+                     $runArtifact = $registry->record([
+                         'project_key' => $target, 'category' => 'global',
+                         'source_commit' => $snapshot, 'parent_artifact_id' => $recon->id,
+@@ -432,6 +455,7 @@ public function handle(
+                             'economic_points' => $economic,
+                             'finished_at' => $child['finished_at'],
+                             'duration_seconds' => $duration,
++                            'scorecard' => $scorecard,
+                         ],
+                         'technical_error' => $technicalFailure->summary($report, $exit),
+                     ]);
+@@ -462,6 +486,7 @@ public function handle(
+                         'reader_checkpoint_strategy' => $readerCheckpointStrategy,
+                         'finished_at' => $child['finished_at'], 'duration_seconds' => $duration,
+                         'diagnostics_by_manifest' => $diagnostics,
++                        'scorecard' => $scorecard,
+                     ]);
+                     $children[] = [
+                         'area_id' => $child['area']['area_id'], 'origin' => $child['origin'],
+@@ -471,6 +496,11 @@ public function handle(
+                         'role_usage' => (array) data_get($report, 'telemetry.role_usage', []),
+                         'economic_points' => $economic, 'finished_at' => $child['finished_at'],
+                         'duration_seconds' => $duration,
++                        'started_offset_seconds' => round($child['started'] - $started, 3),
++                        'scorecard' => $scorecard,
++                        'reader_context' => data_get($report, 'telemetry.reader_context'),
++                        'reader_configuration' => $report['reader_benchmark'] ?? null,
++                        'pricing' => data_get($report, 'telemetry.pricing'),
+                         'outcome' => $storage->outcomePath($child['directory'], $child['run_id']),
+                     ];
+                     $rows[] = [
+@@ -518,6 +548,12 @@ public function handle(
+                 }
+             }
+             $enrichmentCounts = array_count_values(array_column($enrichmentProposals, 'status'));
++            $parentScorecard = $this->aggregateScorecards($children);
++            $parentScorecard['time']['parent_wall_seconds'] = round(microtime(true) - $started, 3);
++            $parentScorecard['production']['enrichment_dispatches'] = count(array_filter(
++                $enrichmentProposals,
++                fn (array $row): bool => ($row['status'] ?? null) === 'queued',
++            ));
+             $status = $technicalFailureSeen
+                 ? 'technical_failure'
+                 : (($allClosed && ! $limitReached) ? 'complete' : 'incomplete');
+@@ -530,13 +566,22 @@ public function handle(
+                 'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
+                 'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
+                 'defer_enrichments' => $deferEnrichments,
++                'reader_provider' => $this->option('reader-provider') ?: null,
++                'operational_context_window' => $operationalContextWindow,
++                'max_prompt_input_tokens' => $maxPromptInputTokens,
++                'pricing' => $children[0]['pricing'] ?? null,
++                'scorecard' => $parentScorecard,
+                 'category_recon' => $recon->payload,
+                 'assignments' => $children,
+                 'suspected' => $aggregateLeads,
+                 'enrichment_proposals' => $enrichmentProposals,
+                 'coverage' => [
+                     'complete' => $globalScope && $status === 'complete'
+-                        && ! collect($enrichmentProposals)->contains('status', 'deferred'),
++                        && ! collect($enrichmentProposals)->contains(
++                            fn (array $proposal): bool => in_array(
++                                $proposal['status'], ['deferred', 'pending_review'], true,
++                            ),
++                        ),
+                     'selected_areas_complete' => $status === 'complete',
+                     'scope' => $globalScope ? 'global' : 'selected_areas',
+                     'area_limit' => self::MAX_AREAS,
+@@ -570,6 +615,11 @@ public function handle(
+                 'status' => $status, 'concurrency' => $concurrency,
+                 'assignment_points' => $points,
+                 'reader_checkpoint_strategy' => $readerCheckpointStrategy,
++                'reader_provider' => $this->option('reader-provider') ?: null,
++                'operational_context_window' => $operationalContextWindow,
++                'max_prompt_input_tokens' => $maxPromptInputTokens,
++                'pricing' => $children[0]['pricing'] ?? null,
++                'scorecard' => $parentScorecard,
+                 'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
+                 'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
+                 'defer_enrichments' => $deferEnrichments,
+@@ -618,6 +668,263 @@ public function handle(
+         }
+     }
+ 
++    /** @param array<int, array<string, mixed>> $leads @param array<int, array<string, mixed>> $enrichments */
++    private function assignmentScorecard(array $report, array $leads, array $enrichments, string $status, float $duration): array
++    {
++        $telemetry = (array) ($report['telemetry'] ?? []);
++        $reader = (array) data_get($telemetry, 'role_usage.reader', []);
++        $reviewer = (array) data_get($telemetry, 'role_usage.reviewer', []);
++        $checkpoints = (array) ($telemetry['reader_self_checkpoint_events'] ?? []);
++        $checkpointUsage = [];
++        $checkpointOutputs = [];
++        $checkpointCostComplete = true;
++        $reasons = [];
++        foreach ($checkpoints as $event) {
++            $event = (array) $event;
++            foreach ((array) ($event['usage'] ?? []) as $name => $value) {
++                $checkpointUsage[$name] = ($checkpointUsage[$name] ?? 0) + (float) $value;
++            }
++            if ((float) data_get($event, 'usage.requests', 0) > 0 && ($event['cost_complete'] ?? false) !== true) {
++                $checkpointCostComplete = false;
++            }
++            if (! empty($event['output_id'])) {
++                $checkpointOutputs[(string) $event['output_id']] = true;
++            }
++            $reason = (string) ($event['boundary_reason'] ?? 'unknown');
++            $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
++        }
++        $checkpointLeads = count(array_filter($leads, fn (array $lead): bool => isset($checkpointOutputs[(string) ($lead['output_id'] ?? '')])));
++        $tokens = [];
++        foreach (['input_tokens', 'cached_tokens', 'uncached_tokens', 'output_tokens'] as $name) {
++            $checkpoint = (int) round($checkpointUsage[$name] ?? 0);
++            $tokens[$name] = [
++                'operational' => max(0, (int) ($reader[$name] ?? 0) - $checkpoint),
++                'checkpoint' => $checkpoint,
++                'total' => (int) ($reader[$name] ?? 0),
++            ];
++        }
++        $toolRows = [];
++        $attempts = $known = $failures = 0;
++        foreach ((array) ($telemetry['reader_tool_outcomes'] ?? []) as $name => $row) {
++            $row = (array) $row;
++            $a = (int) ($row['attempts'] ?? 0);
++            $successes = (int) ($row['successes'] ?? 0);
++            $validation = (int) ($row['validation_failures'] ?? 0);
++            $execution = (int) ($row['execution_failures'] ?? 0);
++            $k = $successes + $validation + $execution;
++            $f = $validation + $execution;
++            $toolRows[$name] = [
++                'attempts' => $a, 'known_outcomes' => $k, 'successes' => $successes,
++                'validation_failures' => $validation, 'execution_failures' => $execution,
++                'pending' => max(0, $a - $k), 'error_rate' => $k ? $f / $k : null,
++            ];
++            $attempts += $a;
++            $known += $k;
++            $failures += $f;
++        }
++        $costComplete = array_key_exists('cost_complete', $reader) && ($reader['cost_complete'] === true);
++        $readerUsd = $costComplete ? (float) ($reader['cost_usd'] ?? 0) : null;
++        $checkpointUsd = $costComplete && $checkpointCostComplete ? (float) ($checkpointUsage['cost_usd'] ?? 0) : null;
++        $estimatedUsd = array_key_exists('estimated_cost_usd', $reader) ? (float) $reader['estimated_cost_usd'] : null;
++        $input = (int) ($reader['input_tokens'] ?? 0);
++        $cached = (int) ($reader['cached_tokens'] ?? 0);
++        $compactions = array_values(array_filter((array) ($telemetry['compaction_events'] ?? []),
++            fn (array $event): bool => ($event['role'] ?? null) === 'reader'));
++
++        return [
++            'production' => [
++                'leads' => count($leads), 'ordinary_leads' => count($leads) - $checkpointLeads,
++                'checkpoint_leads' => $checkpointLeads, 'enrichment_proposals' => count($enrichments),
++                'reviewer_requests' => (int) ($reviewer['requests'] ?? 0),
++                'enrichment_dispatches' => 0,
++            ],
++            'economy' => [
++                'reader_provider_usd' => $readerUsd,
++                'reader_cost_complete' => $costComplete,
++                'checkpoint_provider_usd' => $checkpointUsd,
++                'checkpoint_share' => $readerUsd !== null && $readerUsd > 0 && $checkpointUsd !== null ? $checkpointUsd / $readerUsd : null,
++                'reader_estimated_usd' => $estimatedUsd,
++                'reader_estimate_complete' => ($reader['estimated_cost_complete'] ?? false) === true,
++                'usage_events' => (array) ($telemetry['reader_economic_events'] ?? []),
++                'lead_events' => array_map(
++                    fn (array $output): array => [
++                        'output_id' => $output['output_id'], 'lead_id' => $output['lead_id'],
++                        'elapsed_seconds' => $output['accepted_elapsed_seconds'] ?? $output['elapsed_seconds'] ?? null,
++                        'phase' => isset($checkpointOutputs[(string) $output['output_id']]) ? 'checkpoint' : 'operational',
++                    ],
++                    array_values(array_filter((array) ($report['structured_outputs'] ?? []),
++                        fn (array $output): bool => ($output['output_type'] ?? null) === 'ReaderLead' && ($output['accepted'] ?? false) === true)),
++                ),
++                'provider_usd_per_lead' => $readerUsd !== null && count($leads) ? $readerUsd / count($leads) : null,
++                'reader_ep' => (float) ($reader['economic_points'] ?? 0),
++                'reviewer_ep' => (float) ($reviewer['economic_points'] ?? 0),
++                'cost_source_counts' => (array) ($telemetry['cost_source_counts'] ?? []),
++            ],
++            'tokens' => [
++                'by_phase' => $tokens,
++                'cache_hit_weighted' => $input ? $cached / $input : null,
++            ],
++            'tools' => [
++                'by_name' => $toolRows, 'attempts' => $attempts, 'known_outcomes' => $known,
++                'successes' => $known - $failures, 'failures' => $failures,
++                'pending' => max(0, $attempts - $known),
++                'error_rate' => $known ? $failures / $known : null,
++                'outcome_coverage' => $attempts ? $known / $attempts : null,
++            ],
++            'reliability' => [
++                'status' => $status, 'termination_reason' => $report['termination_reason'] ?? null,
++                'provider_errors' => (int) data_get($telemetry, 'upstream_errors_by_role.reader', 0),
++                'transport_failures' => count(array_filter((array) ($telemetry['model_request_transport_failures'] ?? []),
++                    fn (array $event): bool => ($event['role'] ?? null) === 'reader')),
++                'retries' => (int) data_get($telemetry, 'model_turn_retries_attempted.reader', 0),
++            ],
++            'time' => [
++                'assignment_seconds' => $duration,
++                'first_lead_seconds' => $telemetry['first_reader_lead_seconds'] ?? null,
++                'leads_per_hour' => $duration > 0 ? count($leads) * 3600 / $duration : null,
++            ],
++            'context' => [
++                'window' => (array) ($telemetry['reader_context'] ?? []),
++                'checkpoints' => count($checkpoints), 'checkpoint_reasons' => $reasons,
++                'compactions' => count($compactions), 'compaction_events' => $compactions,
++                'input_samples' => (array) ($telemetry['reader_request_inputs'] ?? []),
++                'input_distribution' => (array) ($telemetry['reader_input_distribution'] ?? []),
++            ],
++            'offline_evaluation' => [
++                'status' => 'pending', 'useful_root_causes' => null, 'semantic_cve_matches' => null,
++                'plausible_out_of_catalog' => null, 'duplicates_or_unsupported' => null,
++                'usd_per_useful_root_cause' => null,
++            ],
++        ];
++    }
++
++    /** @param array<int, array<string, mixed>> $children */
++    private function aggregateScorecards(array $children): array
++    {
++        $cards = array_column($children, 'scorecard');
++        $sum = fn (string $path): float => array_sum(array_map(
++            fn (array $card): float => (float) data_get($card, $path, 0), $cards,
++        ));
++        $leads = (int) $sum('production.leads');
++        $readerCostsComplete = $cards !== [] && collect($cards)->every(
++            fn (array $card): bool => data_get($card, 'economy.reader_cost_complete') === true,
++        );
++        $readerUsd = $readerCostsComplete ? $sum('economy.reader_provider_usd') : null;
++        $estimatedComplete = $cards !== [] && collect($cards)->every(
++            fn (array $card): bool => data_get($card, 'economy.reader_estimated_usd') !== null,
++        );
++        $checkpointUsd = $readerCostsComplete && collect($cards)->every(
++            fn (array $card): bool => data_get($card, 'economy.checkpoint_provider_usd') !== null,
++        ) ? $sum('economy.checkpoint_provider_usd') : null;
++        $toolRows = [];
++        $samples = ['operational' => [], 'checkpoint' => []];
++        $reasons = [];
++        $costSources = [];
++        $tokens = [];
++        foreach (['input_tokens', 'cached_tokens', 'uncached_tokens', 'output_tokens'] as $name) {
++            foreach (['operational', 'checkpoint', 'total'] as $phase) {
++                $tokens[$name][$phase] = (int) $sum("tokens.by_phase.{$name}.{$phase}");
++            }
++        }
++        foreach ($cards as $card) {
++            foreach ((array) data_get($card, 'tools.by_name', []) as $name => $row) {
++                foreach (['attempts', 'known_outcomes', 'successes', 'validation_failures', 'execution_failures', 'pending'] as $metric) {
++                    $toolRows[$name][$metric] = ($toolRows[$name][$metric] ?? 0) + (int) ($row[$metric] ?? 0);
++                }
++            }
++            foreach ($samples as $phase => $_) {
++                array_push($samples[$phase], ...(array) data_get($card, "context.input_samples.{$phase}", []));
++            }
++            foreach ((array) data_get($card, 'context.checkpoint_reasons', []) as $reason => $count) {
++                $reasons[$reason] = ($reasons[$reason] ?? 0) + (int) $count;
++            }
++            foreach ((array) data_get($card, 'economy.cost_source_counts', []) as $source => $count) {
++                $costSources[$source] = ($costSources[$source] ?? 0) + (int) $count;
++            }
++        }
++        foreach ($toolRows as &$row) {
++            $row['error_rate'] = $row['known_outcomes']
++                ? ($row['validation_failures'] + $row['execution_failures']) / $row['known_outcomes'] : null;
++        }
++        unset($row);
++        $distribution = [];
++        foreach ($samples as $phase => $values) {
++            sort($values);
++            $distribution[$phase] = [
++                'p95' => $values ? $values[max(0, (int) ceil(count($values) * 0.95) - 1)] : null,
++                'max' => $values ? end($values) : null,
++            ];
++        }
++        $attempts = (int) $sum('tools.attempts');
++        $known = (int) $sum('tools.known_outcomes');
++        $failures = (int) $sum('tools.failures');
++        $input = $tokens['input_tokens']['total'];
++
++        return [
++            'production' => [
++                'leads' => $leads,
++                'ordinary_leads' => (int) $sum('production.ordinary_leads'),
++                'checkpoint_leads' => (int) $sum('production.checkpoint_leads'),
++                'enrichment_proposals' => (int) $sum('production.enrichment_proposals'),
++                'reviewer_requests' => (int) $sum('production.reviewer_requests'),
++                'enrichment_dispatches' => 0,
++            ],
++            'economy' => [
++                'reader_provider_usd' => $readerUsd, 'reader_cost_complete' => $readerCostsComplete,
++                'checkpoint_provider_usd' => $checkpointUsd,
++                'checkpoint_share' => $readerUsd !== null && $readerUsd > 0 && $checkpointUsd !== null ? $checkpointUsd / $readerUsd : null,
++                'reader_estimated_usd' => $estimatedComplete ? $sum('economy.reader_estimated_usd') : null,
++                'reader_estimate_complete' => $cards !== [] && collect($cards)->every(
++                    fn (array $card): bool => data_get($card, 'economy.reader_estimate_complete') === true,
++                ),
++                'provider_usd_per_lead' => $readerUsd !== null && $leads ? $readerUsd / $leads : null,
++                'reader_ep' => $sum('economy.reader_ep'), 'reviewer_ep' => $sum('economy.reviewer_ep'),
++                'cost_source_counts' => $costSources,
++            ],
++            'tokens' => [
++                'by_phase' => $tokens,
++                'cache_hit_weighted' => $input ? $tokens['cached_tokens']['total'] / $input : null,
++            ],
++            'tools' => [
++                'by_name' => $toolRows, 'attempts' => $attempts, 'known_outcomes' => $known,
++                'successes' => (int) $sum('tools.successes'), 'failures' => $failures,
++                'pending' => $attempts - $known,
++                'error_rate' => $known ? $failures / $known : null,
++                'outcome_coverage' => $attempts ? $known / $attempts : null,
++            ],
++            'reliability' => [
++                'complete' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'complete')),
++                'incomplete' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'incomplete')),
++                'failed' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'technical_failure')),
++                'provider_errors' => (int) $sum('reliability.provider_errors'),
++                'transport_failures' => (int) $sum('reliability.transport_failures'),
++                'retries' => (int) $sum('reliability.retries'),
++            ],
++            'time' => [
++                'assignment_total_seconds' => $sum('time.assignment_seconds'),
++                'first_lead_seconds' => collect($children)->map(
++                    fn (array $child): ?float => data_get($child, 'scorecard.time.first_lead_seconds') !== null
++                        ? (float) ($child['started_offset_seconds'] ?? 0) + (float) data_get($child, 'scorecard.time.first_lead_seconds')
++                        : null,
++                )->filter(fn (?float $value): bool => $value !== null)->min(),
++                'leads_per_assignment_hour' => $sum('time.assignment_seconds') > 0
++                    ? $leads * 3600 / $sum('time.assignment_seconds') : null,
++            ],
++            'context' => [
++                'windows_by_assignment' => array_column($children, 'reader_context', 'area_id'),
++                'checkpoints' => (int) $sum('context.checkpoints'),
++                'checkpoint_reasons' => $reasons,
++                'compactions' => (int) $sum('context.compactions'),
++                'input_distribution' => $distribution,
++            ],
++            'offline_evaluation' => [
++                'status' => 'pending', 'useful_root_causes' => null, 'semantic_cve_matches' => null,
++                'plausible_out_of_catalog' => null, 'duplicates_or_unsupported' => null,
++                'usd_per_useful_root_cause' => null,
++            ],
++        ];
++    }
++
+     /** @param array<int, object> $manifests */
+     private function sharedSnapshot(array $manifests, string $target): string
+     {
+@@ -639,8 +946,8 @@ private function validateRecon(BenchmarkStageArtifact $recon, string $target, st
+             || $recon->source_commit !== $snapshot || $recon->role !== 'recon'
+             || $recon->output_type !== 'CategoryRecon' || $recon->status !== 'valid'
+             || ! $recon->accepted || data_get($recon->payload, 'status') !== 'ready'
+-            || count((array) data_get($recon->payload, 'areas', [])) !== 16) {
+-            throw new InvalidArgumentException('Recon globale incompatibile: richiesto target/snapshot ready con 16 aree.');
++            || (array) data_get($recon->payload, 'areas', []) === []) {
++            throw new InvalidArgumentException('Recon globale incompatibile: richiesto target/snapshot ready con almeno un area.');
+         }
+     }
+ 
+diff --git a/app/Console/Commands/BenchmarkRecon.php b/app/Console/Commands/BenchmarkRecon.php
+index ba54b3c..a70b1b2 100644
+--- a/app/Console/Commands/BenchmarkRecon.php
++++ b/app/Console/Commands/BenchmarkRecon.php
+@@ -10,6 +10,11 @@
+ use App\Services\Pentest\BenchmarkStageArtifactRegistry;
+ use App\Services\Pentest\BenchmarkStageProcessRunner;
+ use App\Services\Pentest\BenchmarkTechnicalFailure;
++use App\Services\Sandbox\Audit\AuditProfile;
++use App\Services\Sandbox\Audit\SandboxPreparationService;
++use App\Services\Sandbox\DTO\SandboxDTO;
++use App\Services\Sandbox\DTO\SandboxSpecDTO;
++use App\Services\Sandbox\SandboxService;
+ use Illuminate\Console\Command;
+ use Illuminate\Support\Collection;
+ use Illuminate\Support\Facades\File;
+@@ -22,15 +27,17 @@ final class BenchmarkRecon extends Command
+         {target-id : ID del target benchmark}
+         {--path= : Path sorgente; default targets/<target-id>}
+         {--global : Esegue una sola Recon trasversale su tutti i manifest del target}
++        {--assignments : Con --global produce incarichi funzionali per benchmark:reader-global}
+         {--category= : Benchmark category o OWASP id; incompatibile con --global}
+         {--recon-model= : Modello usato da Recon}
+         {--reader-model= : Alias deprecato di --recon-model}
+         {--reviewer-model= : Modello Reviewer configurato nel processo}
++        {--reuse-sandbox= : Audit ID di una sandbox Lailaps pronta da collegare}
+         {--repetitions= : Ripetizioni; default 3 global, 1 categoriale, massimo 20}
+         {--timeout=1200 : Timeout della singola Recon in secondi}
+         {--tool-output : Mostra gli output compatti dei tool}';
+ 
+-    protected $description = 'Esegue e valuta soltanto Recon, senza Reader o runtime dinamico';
++    protected $description = 'Esegue e valuta soltanto Recon, senza Reader';
+ 
+     public function handle(
+         BenchmarkCatalog $catalog,
+@@ -40,12 +47,18 @@ public function handle(
+         BenchmarkStageProcessRunner $runner,
+         BenchmarkTechnicalFailure $technicalFailure,
+         RunStorage $storage,
++        SandboxService $sandboxes,
++        SandboxPreparationService $preparation,
+     ): int {
+         $targetId = (string) $this->argument('target-id');
+         $global = (bool) $this->option('global');
++        $assignments = (bool) $this->option('assignments');
+         if ($global && trim((string) $this->option('category')) !== '') {
+             throw new InvalidArgumentException('--global e --category sono incompatibili.');
+         }
++        if ($assignments && ! $global) {
++            throw new InvalidArgumentException('--assignments richiede --global.');
++        }
+         if ($this->option('recon-model') && $this->option('reader-model')) {
+             throw new InvalidArgumentException('Usa soltanto --recon-model; --reader-model e un alias deprecato.');
+         }
+@@ -109,6 +122,24 @@ public function handle(
+                         : $manifests[0]->data['category'],
+                 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+ 
++                $sandbox = null;
++                if ($this->option('reuse-sandbox')) {
++                    $profile = AuditProfile::fromProject($source);
++                    $sandbox = $sandboxes->reuse(
++                        (string) $this->option('reuse-sandbox'),
++                        new SandboxSpecDTO(
++                            auditId: $runId,
++                            projectPath: $agentSource,
++                            webService: $profile->service,
++                            basePath: $profile->basePath,
++                            healthPath: $profile->healthPath,
++                            benchmarkTargetId: $targetId,
++                            sourceSnapshot: $commit,
++                        ),
++                    );
++                    $preparation->verifyReadiness($sandbox, $profile);
++                }
++
+                 $started = microtime(true);
+                 $safeToDelete = false;
+                 try {
+@@ -122,6 +153,7 @@ public function handle(
+                         $storage,
+                         $global,
+                         $reconModel ? (string) $reconModel : null,
++                        $sandbox,
+                         $timeout,
+                     );
+                     $safeToDelete = true;
+@@ -144,6 +176,8 @@ public function handle(
+                 $result['exit_code'] = $exit;
+                 $result['repetition'] = $repetition;
+                 $result['source_snapshot'] = $commit;
++                $result['target_runtime'] = $sandbox === null ? 'workspace_only' : 'reused_sandbox';
++                $result['target_audit_id'] = $sandbox?->auditId;
+                 $result['timing'] = [
+                     'wall_duration_seconds' => $wallDuration,
+                     'bootstrap_duration_ms' => data_get($report, 'telemetry.cbm_index_duration_ms'),
+@@ -154,8 +188,15 @@ public function handle(
+                 ];
+                 $results[] = $result;
+                 $technical = $technicalFailure->failed($report, $exit);
++                $hasAssignmentPlan = collect((array) ($report['structured_outputs'] ?? []))
++                    ->contains(fn (mixed $output): bool => is_array($output)
++                        && ($output['role'] ?? null) === 'recon'
++                        && ($output['output_type'] ?? null) === 'ReconPlan'
++                        && ($output['accepted'] ?? false) === true);
+                 $payload = is_array($report['category_recon'] ?? null)
+                     ? $report['category_recon'] : null;
++                $accepted = ! $technical && data_get($report, 'category_recon.status') === 'ready'
++                    && (! $assignments || $hasAssignmentPlan);
+                 $values = [
+                     'project_key' => $targetId,
+                     'category' => $artifactCategory,
+@@ -167,7 +208,7 @@ public function handle(
+                     'model' => data_get($report, 'model.requested_model'),
+                     'reasoning_effort' => data_get($report, 'model.reasoning_effort'),
+                     'status' => $technical ? 'technical_failure' : 'valid',
+-                    'accepted' => ! $technical && data_get($report, 'category_recon.status') === 'ready',
++                    'accepted' => $accepted,
+                     'payload' => $payload,
+                     'usage' => (array) data_get($report, 'telemetry.role_usage.category_recon', []),
+                     'metrics' => [
+@@ -182,6 +223,8 @@ public function handle(
+                     ],
+                     'configuration_signature' => hash('sha256', json_encode([
+                         'global' => $global,
++                        'assignments' => $assignments,
++                        'target_runtime' => $sandbox === null ? 'workspace_only' : 'reused_sandbox',
+                         'model' => data_get($report, 'model.requested_model'),
+                         'reasoning_effort' => data_get($report, 'model.reasoning_effort'),
+                         'profile' => $report['recon_profile'] ?? null,
+@@ -209,7 +252,7 @@ public function handle(
+                 ));
+                 $this->info('Log Recon: '.$storage->logPath($directory, $runId));
+                 $this->info('Outcome Recon: '.$storage->outcomePath($directory, $runId));
+-                $failed = $failed || $technical;
++                $failed = $failed || $technical || ($assignments && ! $accepted);
+             } finally {
+                 if ($safeToDelete && is_dir($workDirectory)) {
+                     File::deleteDirectory($workDirectory);
+@@ -287,16 +330,27 @@ private function runReconAgent(
+         RunStorage $storage,
+         bool $global,
+         ?string $reconModel,
++        ?SandboxDTO $sandbox,
+         int $timeout,
+     ): int {
+         $containerized = $runner->containerized();
+         $args = [
+             'recon', '--source-root', $containerized ? '/workspace' : $source,
+             '--audit-id', $runId,
++            '--workspace-host-root', $source,
+             '--benchmark-context', $containerized ? '/benchmark-context.json' : $context,
+         ];
++        if ($sandbox !== null) {
++            array_push($args,
++                '--target-audit-id', $sandbox->auditId,
++                '--target-container-id', $sandbox->containerId,
++            );
++        }
+         if ($global) {
+             $args[] = '--global';
++            if ($this->option('assignments')) {
++                $args[] = '--assignments';
++            }
+         } else {
+             array_push($args, '--category', $manifest->auditCategory());
+         }
+@@ -345,7 +399,7 @@ private function consoleTranscript(string $buffer): string
+ 
+     private function absolutePath(string $path): string
+     {
+-        $candidate = preg_match('#^(?:[A-Za-z]:[\\/]|/)#', $path) ? $path : base_path($path);
++        $candidate = preg_match('#^(?:[A-Za-z]:[/\\\\]|/)#', $path) ? $path : base_path($path);
+         $resolved = realpath($candidate);
+ 
+         return $resolved === false ? '' : str_replace('\\', '/', $resolved);
+diff --git a/app/Console/Commands/BenchmarkReconImport.php b/app/Console/Commands/BenchmarkReconImport.php
+index 4d24aa3..d0ac3a1 100644
+--- a/app/Console/Commands/BenchmarkReconImport.php
++++ b/app/Console/Commands/BenchmarkReconImport.php
+@@ -44,8 +44,9 @@ public function handle(
+             );
+         }
+         $payload = $outputs[0]['payload'];
+-        if (($payload['status'] ?? null) !== 'ready' || count((array) ($payload['areas'] ?? [])) !== 16) {
+-            throw new InvalidArgumentException('La Golden Recon richiesta deve essere ready con esattamente 16 aree.');
++        $areaCount = count((array) ($payload['areas'] ?? []));
++        if (($payload['status'] ?? null) !== 'ready' || $areaCount < 1) {
++            throw new InvalidArgumentException('La Golden Recon richiesta deve essere ready con almeno un area.');
+         }
+ 
+         $manifests = $catalog->forTarget($target);
+@@ -91,7 +92,7 @@ public function handle(
+             'accepted' => true,
+             'payload' => $payload,
+             'usage' => (array) data_get($report, 'telemetry.role_usage.category_recon', []),
+-            'metrics' => ['imported_from' => $path, 'area_count' => 16],
++            'metrics' => ['imported_from' => $path, 'area_count' => $areaCount],
+             'evaluator_version' => 'golden-import-v1',
+         ]);
+         $parent = $tree['parent'];
+@@ -100,7 +101,7 @@ public function handle(
+         }
+ 
+         $this->info("Recon importata: {$parent->id}");
+-        $this->line('16 aree');
++        $this->line($areaCount.' aree');
+         if ($this->option('golden')) {
+             $this->info('Golden Recon global promossa.');
+         }
+diff --git a/tests/Feature/Pentest/BenchmarkReaderGlobalCommandTest.php b/tests/Feature/Pentest/BenchmarkReaderGlobalCommandTest.php
+index 62efc71..2239065 100644
+--- a/tests/Feature/Pentest/BenchmarkReaderGlobalCommandTest.php
++++ b/tests/Feature/Pentest/BenchmarkReaderGlobalCommandTest.php
+@@ -1,6 +1,7 @@
+ <?php
+ 
+ use App\Models\BenchmarkStageArtifact;
++use App\Console\Commands\BenchmarkReaderGlobal;
+ use App\Services\Pentest\BenchmarkCatalog;
+ use App\Services\Pentest\BenchmarkStageArtifactRegistry;
+ use Illuminate\Foundation\Testing\RefreshDatabase;
+@@ -8,6 +9,65 @@
+ 
+ uses(RefreshDatabase::class);
+ 
++it('aggregates scorecard ratios from sums and preserves missing costs and pending quality', function (): void {
++    $command = new BenchmarkReaderGlobal;
++    $assignment = new ReflectionMethod($command, 'assignmentScorecard');
++    $aggregate = new ReflectionMethod($command, 'aggregateScorecards');
++    $first = $assignment->invoke($command, [
++        'termination_reason' => 'discovery_complete',
++        'telemetry' => [
++            'role_usage' => ['reader' => [
++                'requests' => 4, 'input_tokens' => 1000, 'cached_tokens' => 700,
++                'uncached_tokens' => 300, 'output_tokens' => 100,
++                'economic_points' => 40, 'cost_complete' => true,
++                'cost_usd' => 10, 'estimated_cost_usd' => 9,
++            ]],
++            'reader_self_checkpoint_events' => [[
++                'output_id' => 'checkpoint-lead', 'boundary_reason' => 'reader_review_interval',
++                'usage' => ['requests' => 1, 'input_tokens' => 200, 'cached_tokens' => 100,
++                    'uncached_tokens' => 100, 'output_tokens' => 20, 'cost_usd' => 2],
++                'cost_complete' => true,
++            ]],
++            'reader_tool_outcomes' => ['read_file' => [
++                'attempts' => 3, 'successes' => 1, 'validation_failures' => 1,
++                'execution_failures' => 0,
++            ]],
++            'reader_request_inputs' => ['operational' => [100, 200], 'checkpoint' => [250]],
++            'model_turn_retries_attempted' => ['reader' => 1],
++        ],
++    ], [['output_id' => 'checkpoint-lead'], ['output_id' => 'ordinary-lead']], [], 'complete', 60.0);
++    $second = $assignment->invoke($command, [
++        'termination_reason' => 'economic_budget_exhausted',
++        'telemetry' => [
++            'role_usage' => ['reader' => [
++                'requests' => 1, 'input_tokens' => 100, 'cached_tokens' => 0,
++                'uncached_tokens' => 100, 'output_tokens' => 10,
++                'economic_points' => 20, 'cost_complete' => false,
++            ]],
++            'reader_tool_outcomes' => ['read_file' => [
++                'attempts' => 2, 'successes' => 2, 'validation_failures' => 0,
++                'execution_failures' => 0,
++            ]],
++            'reader_request_inputs' => ['operational' => [300], 'checkpoint' => []],
++        ],
++    ], [], [], 'incomplete', 30.0);
++    $parent = $aggregate->invoke($command, [
++        ['area_id' => 'a', 'status' => 'complete', 'scorecard' => $first, 'reader_context' => []],
++        ['area_id' => 'b', 'status' => 'incomplete', 'scorecard' => $second, 'reader_context' => []],
++    ]);
++
++    expect($first['production']['checkpoint_leads'])->toBe(1)
++        ->and($first['economy']['checkpoint_share'])->toBe(0.2)
++        ->and($second['economy']['provider_usd_per_lead'])->toBeNull()
++        ->and($parent['economy']['reader_provider_usd'])->toBeNull()
++        ->and($parent['economy']['provider_usd_per_lead'])->toBeNull()
++        ->and($parent['tokens']['cache_hit_weighted'])->toBe(700 / 1100)
++        ->and($parent['tools']['error_rate'])->toBe(0.25)
++        ->and($parent['tools']['outcome_coverage'])->toBe(0.8)
++        ->and($parent['reliability']['retries'])->toBe(1)
++        ->and($parent['offline_evaluation']['useful_root_causes'])->toBeNull();
++});
++
+ function readerGoldenReconArea(int $index): array
+ {
+     return [
+@@ -51,7 +111,7 @@ function readerGoldenReconArea(int $index): array
+     ftruncate($stream, 0); rewind($stream); fwrite($stream, json_encode($state)); fflush($stream);
+     flock($stream, LOCK_UN); fclose($stream);
+ };
+-$update('start'); usleep($areaId === 'area-golden-1' ? 1000000 : 40000); $update('end');
++$update('start'); usleep($areaId === 'area-golden-1' ? 1000000 : 500000); $update('end');
+ $outputs = [[
+     'output_id' => 'lead-'.$areaId, 'role' => 'reader', 'output_type' => 'ReaderLead',
+     'accepted' => true, 'lead_id' => 'lead-1',
+@@ -69,6 +129,19 @@ function readerGoldenReconArea(int $index): array
+         ],
+     ];
+ }
++if ($areaId === 'area-golden-1') {
++    $outputs[] = [
++        'output_id' => 'pending-review-'.$areaId, 'role' => 'reader',
++        'output_type' => 'AreaEnrichmentLead', 'accepted' => false,
++        'review_status' => 'pending_review', 'rejection_reason' => null,
++        'payload' => [
++            'title' => 'Unreviewed plugin question', 'family' => 'plugins',
++            'rationale' => 'Observed separately but budget prevented review.',
++            'paths' => ['src/plugins'], 'qualified_names' => [], 'seed_checks' => [],
++            'next_check' => 'Review plugin dispatch',
++        ],
++    ];
++}
+ $report = [
+     'publication_state' => 'final', 'termination_reason' => 'discovery_complete',
+     'coverage' => ['complete' => true], 'confirmed' => [], 'suspected' => [],
+@@ -141,6 +214,9 @@ function readerGoldenReconArea(int $index): array
+             ->and(collect(data_get($parentOutcome, 'report.suspected'))->pluck('lead_id')->unique())
+             ->toHaveCount(17)
+             ->and(data_get($parentOutcome, 'benchmark.results_by_manifest'))->toHaveCount(1);
++        expect(collect(data_get($parentOutcome, 'report.enrichment_proposals'))
++            ->where('status', 'pending_review'))->toHaveCount(1)
++            ->and(data_get($parentOutcome, 'report.coverage.complete'))->toBeFalse();
+         expect(data_get($parentOutcome, 'benchmark.reader_checkpoint_strategy'))
+             ->toBe('reader_checkpoint');
+         $childReports = $outcomeFiles->map(fn ($file) => json_decode(
+@@ -182,6 +258,24 @@ function readerGoldenReconArea(int $index): array
+             ->and(data_get($screeningOutcome, 'report.enrichment_proposals'))->toHaveCount(3)
+             ->and(collect(data_get($screeningOutcome, 'report.enrichment_proposals'))->where('status', 'deferred'))
+             ->toHaveCount(1);
++
++        $shortRecon = $registry->recordReconTree([
++            'project_key' => 'fixture', 'category' => 'global', 'source_commit' => 'snapshot-v1',
++            'run_id' => 'short-recon', 'repetition' => 1, 'status' => 'valid', 'accepted' => true,
++            'payload' => [
++                'status' => 'ready', 'checkpoint_summary' => 'Shared briefing',
++                'areas' => [readerGoldenReconArea(1), readerGoldenReconArea(2)],
++            ],
++        ]);
++        $registry->selectGoldenRecon(collect([$shortRecon['parent']]));
++        $this->artisan('benchmark:reader-global', [
++            'target-id' => 'fixture', '--path' => $root.'/source',
++            '--recon-artifact' => $shortRecon['parent']->id,
++            '--area' => ['area-golden-2'], '--defer-enrichments' => true,
++            '--concurrency' => 1, '--follow-slot' => 0, '--timeout' => 20,
++        ])->assertSuccessful();
++        expect(BenchmarkStageArtifact::query()->where('output_type', 'ReaderGlobalRun')
++            ->where('parent_artifact_id', $shortRecon['parent']->id)->count())->toBe(1);
+     } finally {
+         app()->forgetInstance(BenchmarkCatalog::class);
+         app()->useStoragePath($previousStorage);
+diff --git a/tests/Feature/Pentest/BenchmarkReconImportCommandTest.php b/tests/Feature/Pentest/BenchmarkReconImportCommandTest.php
+index 1e74cc0..91c7e5b 100644
+--- a/tests/Feature/Pentest/BenchmarkReconImportCommandTest.php
++++ b/tests/Feature/Pentest/BenchmarkReconImportCommandTest.php
+@@ -18,7 +18,7 @@ function importGoldenReconArea(int $index): array
+     ];
+ }
+ 
+-it('imports one accepted 16-area recon tree and promotes it to global golden', function (): void {
++it('imports one accepted recon tree and promotes it to global golden', function (): void {
+     $root = sys_get_temp_dir().'/lailaps-recon-import-'.bin2hex(random_bytes(6));
+     File::ensureDirectoryExists($root.'/catalog/fixture');
+     File::put($root.'/catalog/fixture/manifest.json', json_encode([
+@@ -37,7 +37,7 @@ function importGoldenReconArea(int $index): array
+             'payload' => [
+                 'schema_version' => 4, 'kind' => 'category_recon', 'status' => 'ready',
+                 'checkpoint_summary' => 'Golden briefing', 'unknowns' => ['Coverage notes'],
+-                'areas' => array_map(importGoldenReconArea(...), range(1, 16)),
++                'areas' => array_map(importGoldenReconArea(...), range(1, 2)),
+             ],
+         ]]],
+         'benchmark' => ['target_id' => 'fixture', 'source_snapshot' => 'snapshot-v1'],
+@@ -47,13 +47,13 @@ function importGoldenReconArea(int $index): array
+         app()->instance(BenchmarkCatalog::class, new BenchmarkCatalog($root.'/catalog'));
+         $this->artisan('benchmark:recon:import', [
+             'target-id' => 'fixture', 'outcome' => $outcome, '--golden' => true,
+-        ])->expectsOutputToContain('16 aree')->assertSuccessful();
++        ])->expectsOutputToContain('2 aree')->assertSuccessful();
+ 
+         $parent = BenchmarkStageArtifact::query()->where('output_type', 'CategoryRecon')->sole();
+         expect($parent->category)->toBe('global')
+             ->and($parent->is_golden)->toBeTrue()
+             ->and($parent->source_commit)->toBe('snapshot-v1')
+-            ->and($parent->childArtifacts()->where('output_type', 'ReconArea')->count())->toBe(16);
++            ->and($parent->childArtifacts()->where('output_type', 'ReconArea')->count())->toBe(2);
+     } finally {
+         app()->forgetInstance(BenchmarkCatalog::class);
+         File::deleteDirectory($root);
+diff --git a/tests/Unit/Pentest/BenchmarkReconCommandTest.php b/tests/Unit/Pentest/BenchmarkReconCommandTest.php
+index b76418b..35c0889 100644
+--- a/tests/Unit/Pentest/BenchmarkReconCommandTest.php
++++ b/tests/Unit/Pentest/BenchmarkReconCommandTest.php
+@@ -1,17 +1,131 @@
+ <?php
+ 
+ use App\Console\Commands\BenchmarkRecon;
++use App\Models\BenchmarkStageArtifact;
++use App\Services\Pentest\BenchmarkCatalog;
++use App\Services\Sandbox\DTO\SandboxDTO;
++use App\Services\Sandbox\Enums\SandboxStatus;
++use App\Services\Sandbox\SandboxService;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Facades\File;
+ use Tests\TestCase;
+ 
+-uses(TestCase::class);
++uses(TestCase::class, RefreshDatabase::class);
+ 
+ it('exposes the global recon benchmark profile options', function (): void {
+     $definition = app(BenchmarkRecon::class)->getDefinition();
+ 
+     expect($definition->hasOption('global'))->toBeTrue()
++        ->and($definition->hasOption('assignments'))->toBeTrue()
+         ->and($definition->hasOption('category'))->toBeTrue()
+         ->and($definition->hasOption('recon-model'))->toBeTrue()
+         ->and($definition->hasOption('reader-model'))->toBeTrue()
++        ->and($definition->hasOption('reuse-sandbox'))->toBeTrue()
+         ->and($definition->getOption('repetitions')->getDefault())->toBeNull()
+         ->and($definition->getOption('timeout')->getDefault())->toBe('1200');
+ });
++
++it('freezes a functional Recon with a variable number of assignments', function (): void {
++    $root = sys_get_temp_dir().'/lailaps-recon-assignments-'.bin2hex(random_bytes(6));
++    $previousStorage = app()->storagePath();
++    File::ensureDirectoryExists($root.'/catalog/fixture');
++    File::ensureDirectoryExists($root.'/source');
++    File::put($root.'/source/app.php', '<?php echo "fixture";');
++    File::put($root.'/catalog/fixture/manifest.json', json_encode([
++        'schema' => 'lailaps.benchmark', 'version' => 1,
++        'benchmark_id' => 'fixture-case', 'target_id' => 'fixture',
++        'category' => ['id' => 'A01', 'name' => 'Access'],
++        'source' => ['snapshot' => 'snapshot-v1'],
++        'cases' => [['id' => 'CASE-1', 'expected_vulnerable' => true,
++            'anchors' => [['file' => 'app.php', 'start_line' => 1, 'end_line' => 1]]]],
++    ], JSON_THROW_ON_ERROR));
++    File::put($root.'/fake-agent.php', <<<'PHP'
++<?php
++$args = $argv;
++$report = [
++    'category_recon' => [
++        'status' => 'ready', 'checkpoint_summary' => 'Shared briefing',
++        'areas' => [
++            ['area_id' => 'area-assignment-1', 'title' => 'First', 'paths' => ['app.php'],
++                'next_check' => 'Inspect first behavior'],
++            ['area_id' => 'area-assignment-2', 'title' => 'Second', 'paths' => [],
++                'next_check' => 'Inspect second behavior'],
++        ],
++    ],
++    'structured_outputs' => getenv('OMIT_PLAN') ? [] : [[
++        'role' => 'recon', 'output_type' => 'ReconPlan', 'accepted' => true,
++        'payload' => ['briefing' => 'Shared briefing', 'assignments' => []],
++    ]],
++    'recon_profile' => ['global_mode' => true, 'assignments' => true],
++];
++file_put_contents(getenv('LAILAPS_OUTCOME_FILE'), json_encode(['report' => $report]));
++file_put_contents(getenv('ARGS_FILE'), json_encode($args));
++PHP);
++
++    try {
++        app()->useStoragePath($root.'/storage');
++        app()->instance(BenchmarkCatalog::class, new BenchmarkCatalog($root.'/catalog'));
++        config(['pentest.agent' => [
++            'runtime' => 'local', 'command' => [PHP_BINARY, $root.'/fake-agent.php'],
++            'path' => base_path(), 'env' => ['ARGS_FILE' => $root.'/args.json'], 'timeout' => 30,
++        ]]);
++        $this->artisan('benchmark:recon', [
++            'target-id' => 'fixture', '--path' => $root.'/source', '--global' => true,
++            '--assignments' => true, '--repetitions' => 1,
++        ])->assertSuccessful();
++
++        $args = json_decode(File::get($root.'/args.json'), true, flags: JSON_THROW_ON_ERROR);
++        expect($args)->toContain('--global', '--assignments', '--workspace-host-root');
++        expect($args)->not->toContain('--target-container-id');
++        $golden = BenchmarkStageArtifact::query()
++            ->where('project_key', 'fixture')->where('output_type', 'CategoryRecon')->sole();
++        expect($golden->is_golden)->toBeTrue()
++            ->and($golden->accepted)->toBeTrue()
++            ->and($golden->source_commit)->toBe('snapshot-v1')
++            ->and($golden->childArtifacts()->where('output_type', 'ReconArea')->count())->toBe(2);
++
++        config(['pentest.agent.env.OMIT_PLAN' => '1']);
++        $this->artisan('benchmark:recon', [
++            'target-id' => 'fixture', '--path' => $root.'/source', '--global' => true,
++            '--assignments' => true, '--repetitions' => 1,
++        ])->assertFailed();
++        expect($golden->refresh()->is_golden)->toBeTrue()
++            ->and(BenchmarkStageArtifact::query()->where('project_key', 'fixture')
++                ->where('output_type', 'CategoryRecon')->where('accepted', false)->count())->toBe(1);
++
++        config(['pentest.agent.env.OMIT_PLAN' => '']);
++        $sandbox = new SandboxDTO(
++            auditId: 'warm-target-audit', driver: 'compose', projectName: 'warm-target',
++            containerId: 'target-container-id', containerName: 'target-web',
++            serviceName: 'web', networkName: 'target-network',
++            url: 'http://127.0.0.1:49152', hostPort: 49152,
++            expiresAt: now()->addHour(), status: SandboxStatus::RUNNING,
++        );
++        $service = Mockery::mock(SandboxService::class);
++        $service->shouldReceive('reuse')->once()->withArgs(
++            fn (string $auditId, $spec): bool => $auditId === 'warm-target-audit'
++                && $spec->benchmarkTargetId === 'fixture'
++                && $spec->sourceSnapshot === 'snapshot-v1'
++                && str_contains($spec->projectPath, '/lailaps-recon/')
++        )->andReturn($sandbox);
++        app()->instance(SandboxService::class, $service);
++        $this->artisan('benchmark:recon', [
++            'target-id' => 'fixture', '--path' => $root.'/source', '--global' => true,
++            '--assignments' => true, '--repetitions' => 1,
++            '--reuse-sandbox' => 'warm-target-audit',
++        ])->assertSuccessful();
++        $args = json_decode(File::get($root.'/args.json'), true, flags: JSON_THROW_ON_ERROR);
++        expect($args)->toContain('--workspace-host-root', '--target-audit-id',
++            'warm-target-audit', '--target-container-id', 'target-container-id');
++        $reused = BenchmarkStageArtifact::query()->where('project_key', 'fixture')
++            ->where('output_type', 'CategoryRecon')->where('accepted', true)
++            ->orderByDesc('id')->firstOrFail();
++        expect(data_get($reused->metrics, 'target_runtime'))->toBe('reused_sandbox')
++            ->and(data_get($reused->metrics, 'target_audit_id'))->toBe('warm-target-audit');
++    } finally {
++        app()->forgetInstance(BenchmarkCatalog::class);
++        app()->forgetInstance(SandboxService::class);
++        app()->useStoragePath($previousStorage);
++        File::deleteDirectory($root);
++    }
++});

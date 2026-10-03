@@ -9,8 +9,8 @@ CLI e UI condividono un unico contratto filesystem sotto
 categoria e timestamp filesystem-safe, per esempio `yeswiki-injection-20260822-173900`;
 in caso di collisione riceve un suffisso numerico. Viene stampato all'inizio e alla fine.
 
-La directory viene riservata prima della preparazione del target e contiene esattamente due
-file con lo stesso prefisso del `run_id`:
+La directory viene riservata prima della preparazione del target e contiene due file
+autorevoli con lo stesso prefisso del `run_id`:
 
 - `{run_id}-logs.php`: header PHP con `run_id` e transcript byte-per-byte della console,
   inclusi gli eventi `LAILAPS_EVENT` usati dal feed live;
@@ -19,8 +19,9 @@ file con lo stesso prefisso del `run_id`:
   timezone `Europe/Rome`; report parziale/finale, telemetria ed environment state confluiscono nel
   campo `report`; l'evaluator aggiorna `benchmark` nello stesso file.
 
-L'outcome viene sostituito atomicamente durante i checkpoint. Non esistono directory child,
-snapshot, JSONL, raw response, manifest o file di telemetria persistenti. I body HTTP e gli
+L'outcome viene sostituito atomicamente durante i checkpoint. Nel percorso ordinario non esistono directory child,
+snapshot, JSONL, raw response, manifest o file di telemetria persistenti. Le fasi opzionali di
+normalizzazione/eval conservano artifact derivati separati, descritti sotto. I body HTTP e gli
 output completi dei tool restano bounded in memoria per la durata del processo. Il database
 conserva lifecycle, metadati e proiezioni benchmark, ma non duplica il transcript in una
 tabella eventi.
@@ -229,7 +230,7 @@ processi: appena un assignment termina, il coordinatore avvia il successivo disp
 Sorgente e target sono condivisi in sola lettura, mentre outcome, transcript, history, cache
 CBM e stato agente restano per-assignment.
 
-Reader ed Exploration Reviewer consumano per ogni assignment un unico envelope economico
+Reader ed eventuale Exploration Reviewer consumano per ogni assignment un unico envelope economico
 con cap configurabile (500.000 punti di default); i limiti dei due ruoli non partizionano il
 cap e Confirmer/Worker/Judge non vengono avviati. Le lead restano locali durante la ricerca e
 sono qualificate con l'area soltanto nell'aggregato parent. La deduplica cross-area non blocca
@@ -261,6 +262,23 @@ residua. Senza questi flag rimane il fan-out ordinario.
 Tutte le aree chiuse producono `complete`; budget o limite aree producono un outcome valido
 `incomplete`; gli errori infrastrutturali sono `technical_failure` per l'area e non fermano
 le altre aree.
+
+Nel confronto con `--reader-checkpoint-strategy=reader_checkpoint`, i boundary
+ordinari sono self-checkpoint dello stesso Reader. Il benchmark non avvia Reviewer
+online per novelty o enrichment: le lead ulteriori restano acquisite con novelty
+`unresolved`, le proposte di enrichment restano `pending_review`, e la valutazione
+di deduplica e qualita' e' offline. `--defer-enrichments` mantiene a zero il dispatch
+di aree derivate. Le scorecard child e parent distinguono produzione ordinaria e
+checkpoint, costo provider completo o mancante, stima, EP, token/cache, tool con
+esito noto o pendente, retry, tempo e pressione di contesto; la qualita' offline
+resta `pending` finche' non valutata. Il parent calcola rapporti da somme e conserva
+separati il tempo totale degli assignment e il proprio wall-clock concorrente.
+`benchmark:reader-global` propaga il pin `--reader-provider` e i cap
+`--operational-context-window`/`--max-prompt-input-tokens` a ogni figlio; il
+catalogo prezzi con fonte e data e la finestra richiesta/effettiva vengono
+congelati negli outcome. Le tariffe statiche entrano nelle stime USD soltanto
+quando il provider osservato o fissato coincide con quello verificato nel catalogo.
+Gli EP restano un limite operativo distinto dal costo reale del provider.
 
 L'aggregato globale aggiunge una diagnostica post-run per case, costruita esclusivamente dopo
 la conclusione e mai inviata agli agenti: `matched_lead`, `anchor_read_without_lead`,
@@ -325,6 +343,11 @@ un altro Reader o il target riutilizzato.
    Anche qui `--dataset` abilita la selezione frozen canonica, mentre la sua assenza seleziona
    dal DB i `CandidateHandoff` `valid` prodotti dal Confirmer per progetto e categoria;
    `--artifact` ha precedenza su entrambe le modalita'.
+   `--parent-run-id=<ID artifact o run_id>` restringe ogni modalita' agli handoff derivati
+   da una stessa `ReaderRun` o `DeduperRun`: run -> ReaderLead -> CandidateHandoff, tramite
+   `parent_artifact_id`. La selezione DB ordinaria include tutte le lead e ripetizioni
+   Confirmer di quella run. Un ID di lead o una run di un altro progetto viene rifiutato.
+   Una singola invocazione esegue tutti gli handoff selezionati in episodi isolati.
 
 La selezione Golden serve a misurare performance condizionale e non sostituisce il benchmark
 end-to-end. Una Golden viene congelata per progetto, categoria e commit: non viene riselezionata
@@ -902,16 +925,24 @@ un altro handle, usare `anonymous` oppure azzerare il solo stato HTTP locale con
 
 ## Benchmark dedicato Recon
 
-`benchmark:recon` e' un percorso sorgente-only distinto da `benchmark:run`: materializza la
+`benchmark:recon` e' un percorso Recon-only distinto da `benchmark:run`: materializza la
 stessa vista sanitizzata, inizializza Codebase Memory e Surface Context, esegue il reale
 handoff Recon e termina prima di creare il Reader. Con `--global` unisce i casi distinti di
 tutti i manifest dello stesso target e snapshot; duplicati incompatibili rendono invalida la
-fixture. Non prepara sandbox, non esegue
-health check, readiness o fixture probe e non richiede un URL. La ground truth resta fuori
+fixture. Di default usa soltanto il sorgente; con `--reuse-sandbox` ricollega una sandbox
+Lailaps gia' pronta dello stesso target e snapshot, verifica la readiness e rende disponibili
+i comandi nel target, come `benchmark:recon-reader`. Non prepara una nuova sandbox ne' esegue
+fixture probe. La ground truth resta fuori
 dal processo agente e viene letta dall'evaluator Laravel soltanto dopo l'handoff. L'outcome
 persiste Recon, Area Ledger iniziale, Surface Context, tool telemetry, costo e punteggi per
 caso. L'evaluator separa exact locator, guidance semantica e sola famiglia pertinente e
 riporta strict/guided/weak recall, score normalizzato, recall@1/3/5, aree, locator e unknown.
+Con `--global --assignments` la sola Recon usa il contratto funzionale `ReconPlan` gia'
+usato da `benchmark:recon-reader`: l'orchestratore assegna gli ID, normalizza il briefing
+e gli incarichi in `CategoryRecon` e termina senza avviare Reader. In questa modalita'
+solo un piano acquisito puo' essere promosso a Golden Recon. `benchmark:reader-global` accetta una Golden Recon
+ready dello stesso target e snapshot con almeno un incarico, senza imporre il numero di
+aree della fixture YesWiki; ogni figlio riceve un solo incarico e il briefing comune.
 Le ripetizioni del comando producono run e outcome distinti. Il profilo globale iniziale
 concede 32 richieste investigative, 640.000 punti, 24.000 token di output e fino a 48 aree;
 la Recon categoriale conserva i limiti precedenti. La Global Recon dispone di lettura file,
@@ -1127,9 +1158,9 @@ conserva la lead suspected (`reviewer_stop` nel percorso statico, `judge_stopped
 percorso dinamico). La terminalizzazione tool-free mantiene una riserva di retry di output
 piu' generosa per assorbire problemi di serializzazione strutturata. Il limite della
 singola risposta e' 6.500 token per Reader e ruoli generici, 5.000 per Reviewer, 12.000 per Recon e
-14.000 per il Confirmer. Il guardrail predefinito dell'input e' 96.000 token stimati,
+14.000 per il Confirmer. Il guardrail predefinito dell'input e' 230.000 token stimati,
 includendo history, nuovo prompt, prompt persistente e schemi: resta distinto dalla
-finestra operativa da 128k e permette la review della history Reader disponibile. Un
+finestra operativa da 256k e permette la review della history Reader disponibile. Un
 rifiuto locale `PromptInputGuardExceeded` e' deterministico e non viene reinviato identico
 nella retry ladder. La capacita' utile della history viene calcolata per ruolo e fase
 sottraendo il limite reale della risposta, oltre al prompt persistente e al margine di
@@ -1199,6 +1230,56 @@ Restano validi soltanto limiti token non economici: capacità della context corr
 
 ## History, cache e compression
 
+### Vincolo obbligatorio: le fasi dello stesso agente preservano il prefisso
+
+Discovery, self-checkpoint, produzione del summary di compaction e serializzazione
+terminale sono fasi dello **stesso agente**, salvo un cambio di agente esplicito.
+Una transizione di fase non autorizza a sostituire il contratto inviato al provider.
+Devono restare identici modello, system prompt, provider session ID, definizioni e
+ordine dell'intero toolset, inclusi gli schemi degli output strutturati. La history
+gia' inviata deve mantenere contenuto, ordine e rappresentazione: le istruzioni della
+nuova fase si aggiungono in coda, senza riscrivere il prefisso o ricostruire la
+conversazione come un nuovo prompt. Riutilizzare soltanto l'oggetto conversation o
+il `session_id` non soddisfa questo requisito.
+
+Cambia **quale azione/output e' abilitato**, non quali definizioni sono presenti
+nella richiesta. Il catalogo stabile comprende fin dall'inizio i contratti delle
+diverse fasi. Nel checkpoint le chiamate operative (letture, ricerche, probe) sono
+bloccate: il modello deve produrre un output terminale ammesso, anche il solo
+`ReaderCheckpoint` che autorizza a continuare la discovery. I tool di output
+strutturato non sono tool investigativi. "Tool-free" indica questa restrizione
+operativa, **non la rimozione dei tool o la sostituzione dello schema**.
+
+La restrizione va applicata con un meccanismo di selezione degli output compatibile
+con il provider e con un controllo nell'harness prima di eseguire qualsiasi tool
+operativo. Il solo prompt non basta. Un filtro SDK che elimina o riordina le
+definizioni prima dell'invio viola il vincolo, anche se chiamato `tool_choice` o
+`prepare_tools`. La verifica riguarda la richiesta realmente serializzata, non
+soltanto la configurazione dell'Agent.
+
+Per la compaction distinguere la **richiesta che produce la memoria**, che deve
+ancora leggere la history integra con il prefisso stabile, dall'**applicazione
+della memoria**: sostituire i vecchi messaggi con il summary cambia necessariamente
+la history della nuova epoch e puo' perdere la cache di quella parte. Questo e'
+un costo esplicito della riduzione del contesto; non giustifica invalidare prima
+anche la richiesta di compaction. Non comprimere, filtrare o ripacchettare la
+history solo per entrare in checkpoint. I recovery che devono scartare messaggi
+corrotti sono eccezioni tecniche esplicite, da registrare, non transizioni ordinarie.
+
+La stabilita' del prefisso rende possibile il cache hit, non lo garantisce: routing,
+scadenza e politiche del backend restano esterni. Le verifiche devono confrontare
+toolset/schema e prefisso dei messaggi prima/dopo il cambio di fase e misurare
+input cached/uncached per fase. Un contatore di sessione invariato non prova il riuso.
+
+**Stato di conformita' (27 settembre 2026):** il Reader operativo e il suo
+self-checkpoint costruiscono lo stesso catalogo ordinato di tool e output, con lo
+stesso system prompt e session ID. La fase checkpoint blocca nell'harness le
+chiamate investigative pur mantenendo le definizioni nel payload. I tool Reader
+sono eseguiti sequenzialmente tramite la barriera nativa Pydantic AI: anche batch
+grandi non moltiplicano le esecuzioni sincrone e i relativi thread. La compaction
+inizia una nuova epoch solo dopo la decisione semantica. I percorsi di summary
+Confirmer/Worker con prompt dedicato restano distinti e vanno verificati a parte.
+
 Reader mantiene una conversazione append-only dentro l'area attiva attraverso review
 periodiche, approfondimenti e ritorni downstream; Confirmer per lead e Worker per candidate.
 Recon e Handoff la mantengono per il rispettivo episodio. L'uscita
@@ -1237,10 +1318,16 @@ porzione scoped del log HTTP quando c'e' una decisione Worker da adjudicare, non
 boundary operativo. La prima lead di una categoria non richiede confronto di novita' perche'
 non esiste ancora un antecedente adjudicated.
 
-Per il Reader la finestra tecnica e quella cognitiva sono distinte: soft limit assoluta
-40.000 token e hard limit 48.000 token, calibrabili per ruolo e non espresse come percentuale
-della context provider. Alla soglia l'Exploration Reviewer produce il checkpoint; il Reader
-non riassume mai la propria history degradata. Per Confirmer e Worker la compression dipende
+Per il Reader la finestra tecnica e quella cognitiva sono distinte. `model_prices.json`
+contiene prezzi, provider di riferimento, capacita' fisica e `cognitive_window_tokens`:
+default 128.000, override 256.000 per MiMo-V2.6-Pro e DeepSeek V4.1 Flash. La finestra
+effettiva della history e' il minimo tra finestra cognitiva, capacita' fisica al netto di
+prompt/schema, output e margine, e cap esplicito dell'input completo. Il clamp e il motivo
+sono persistiti. Soft 75% e hard 90% si applicano una sola volta alla finestra effettiva:
+96.000/115.200 per 128k, 192.000/230.400 per 256k non clamped. Il controllo precede
+la richiesta successiva; una review periodica che gia' fornisce memoria sufficiente puo'
+applicare subito la compaction includendo il prossimo step, senza un checkpoint equivalente.
+Per Confirmer e Worker la compression dipende
 dalla pressione reale della context, non dallo score economico o dal semplice completamento di un turno.
 Una history lunga con prefisso cacheabile è economicamente preferibile a una history corta
 ricostruita: la compression è un fallback di qualità e capienza, non un'ottimizzazione del
@@ -1291,19 +1378,32 @@ Laravel `pentest:run`, `benchmark:run`, `benchmark:reader`, `benchmark:reader-gl
 valore; il fan-out globale lo applica indipendentemente a ogni assignment. La scelta vive
 in `Deps`, non in settings globali, ed e' persistita nei report e negli outcome disponibili.
 Nel secondo percorso gli stessi identici boundary ordinari chiedono al modello Reader un
-`ReaderCheckpoint` tool-free sulla sua `ReaderConversationState`, conservando modello,
-sessione, epoch e history append-only. Il contratto model-facing e' piatto: decisione
+turno tool-free sulla sua `ReaderConversationState`, conservando modello, sessione, epoch e
+history append-only. Puo' restituire direttamente `ReaderLead` o `AreaEnrichmentLead` gia'
+sostenuti dalle evidenze, oppure `ReaderCheckpoint`. Il contratto di quest'ultimo e' piatto: decisione
 `continue|area_closed`, motivo, singolo `next_step` obbligatorio solo per `continue`,
 `checkpoint_summary` e `category_notes` opzionali. Area, source reference, superfici lette,
 scheduling e completion restano autorevoli nell'orchestratore, che converte il risultato
 nell'`ExplorationReview` interno e riusa grant, stale guard, chiusura area e transizioni epoch
-esistenti. Il checkpoint non riceve tool e il normale contratto Reader viene ripristinato
-subito dopo. Errori tecnici o structured-output exhaustion producono la continuazione
+esistenti. La factory checkpoint mantiene toolset e output schema operativi;
+il flag di fase nel runtime blocca l'esecuzione dei tool investigativi senza
+rimuoverne le definizioni. Errori tecnici o
+structured-output exhaustion producono la continuazione
 conservativa corrente senza cascata verso il Reviewer.
 
+I prodotti restituiti al checkpoint attraversano la stessa acquisizione degli output Reader
+operativi prima di qualsiasi nuova richiesta. Non chiudono l'area; in caso di budget esaurito
+la lead valida resta acquisita con novelty `unresolved`, mentre una proposta enrichment
+valida resta `pending_review` e non viene accodata finche' manca l'approvazione del Reviewer.
+Nel benchmark globale self-checkpoint tutte le proposte enrichment restano pending
+per la valutazione offline e le lead non richiedono novelty review online.
+Il parent del benchmark distingue questa proposta da quelle respinte e da quelle approvate
+ma differite. Un prodotto non inventa una decisione `continue` o `area_closed`.
+
 I self-checkpoint sono contabilizzati sotto `reader`, non `reviewer`. Telemetria ed artifact
-registrano strategia, boundary originario, epoch/sessione, decisione proposta e applicata,
-normalizzazione/fallback e delta di richieste, input cached/uncached, output ed EP. Restano
+registrano strategia, boundary originario, epoch/sessione, tipo di output e, quando presente,
+decisione proposta e applicata,
+normalizzazione/fallback e delta di richieste, input cached/uncached, output, USD e relativa completezza, ed EP. Restano
 inoltre i contatori concettuali degli exploration boundary; le review enrichment sono
 contate separatamente. L'outcome Laravel conserva la strategia per ogni repetition, senza
 stato globale mutabile fra run.
@@ -1499,7 +1599,7 @@ terminale conserva raw output e lead
 suspected come `terminal_output_exhausted`, mentre gli errori infrastrutturali distinti
 continuano a poter produrre `blocked`.
 
-Il profilo operativo predefinito e' 128k. Dopo prompt/schema, riserva output e safety
+Il profilo operativo predefinito e' 256k. Dopo prompt/schema, riserva output e safety
 margin, il Confirmer comprime all'85% della capacità utile e punta al 35%; il Worker usa
 75% e 25%. La soglia hard resta al 90%. Sotto la soglia del ruolo la history resta
 invariata per favorire cache hit. Confirmer e Worker usano un summarizer LLM con prompt
@@ -1508,3 +1608,351 @@ reference, route/auth/middleware, evidenze, actor/session, request/response ID,
 inspection/query e next experiment; i raw body restano soltanto in memoria durante la run.
 
 L'isolamento del source root e del target URL, i health check, la separazione delle sessioni actor, i controlli sulle transazioni, la paginazione e i limiti di context restano invariati. Questi vincoli proteggono sicurezza e qualità, ma non sostituiscono il budget economico a score.
+
+Il manifest del confronto Reader conserva gli eventi di consumo USD/EP e i tempi di
+acquisizione delle lead per assignment; il parent conserva offset di partenza,
+configurazione Reader effettiva e fingerprint dei sorgenti runtime/lockfile.
+Le curve a pari USD richiedono costi provider completi e deduplica offline;
+non vengono estrapolate oltre la spesa raggiunta. Gli esiti tool usano status
+di esecuzione/validazione: errori in codice letto e risultati vuoti non sono fallimenti.
+
+## Deduper e valutazione semantica degli artifact Reader (P0, contratto v2)
+
+`pentest_agent.deduper` confronta lead fra loro e task/enrichment fra loro, senza
+discovery o conferma. Reader resta `xiaomi/mimo-v2.6-pro`; recupero deduper/evaluator
+usa `z-ai/glm-5.3-flash`, InferenceNet, senza fallback. Il modello restituisce pass,
+block o partial; solo partial produce un nuovo payload piatto dello schema Reader
+esistente, merge oppure residual. ID, provenance, lineage e proiezione sono
+dell'orchestratore. Originali immutabili; nessuna fusione transitiva automatica o
+riscrittura di assignment attivi/conclusi. Integrazioni verso lavoro già assegnato
+restano pending, senza redispatch.
+
+Il pacchetto contiene SEMPRE il payload completo della proposta, schede compatte di
+ogni canonica precedente del gruppo e indice degli artifact recuperabili. Nessun
+filtro per anchor, adattamento delle schede alla dimensione del registro o
+paginazione. Le schede deterministiche riportano ID integrale, tipo e stato;
+titolo 240 caratteri, domanda/ipotesi 320, operazione lead 160, primi due unknowns
+96 ciascuno, primary file lead/primi due path task. Si normalizzano soltanto gli
+spazi; oltre il limite si conservano testa 70% e coda 30%, separate da ellissi.
+Nel contratto 2.2 (schede 1.1) i limiti e le omissioni sono dichiarati una sola
+volta nel prompt, senza metadati `omitted` ripetuti per scheda. Path oltre 512
+caratteri sono omessi, mai troncati. Gli ID delle schede sono direttamente
+recuperabili: `artifact_index` contiene solo gli ID aggiuntivi. La serializzazione
+JSON inviata al modello e quella stimata usano separatori compatti.
+Le schede sono proiezioni, non nuovi prodotti Reader. Le evidenze sono raggruppate
+sotto gli ID degli originali: un recupero fornisce integralmente originali, source
+reference e lineage; transcript esterni restano artifact con ID registrato.
+
+`read_artifacts` permette un unico recupero raggruppato, nessuna lettura libera.
+Block e ogni partial richiedono tutti gli originali citati, inclusa la lineage
+dei derivati. Pass senza overlap plausibile può usare il registro compatto:
+`comparison_basis=compact_index` è una decisione provvisoria, non prova esaustiva
+di unicità. Overlap irrisolvibile resta `inconclusive`. La prima proposta di un
+gruppo vuoto passa senza inferenza, dopo il preflight.
+Il contratto 2.1 del deduper rende `pass` un output con sola decisione e
+`uncertain` facoltativo; `block` contiene decisione e ID correlati qualificati.
+Nessuno dei due espone `reason`. Solo `partial` restituisce il prodotto Reader
+strutturato completo, insieme alla relazione e agli ID correlati.
+
+Il runner condiviso è l'unico proprietario dei tentativi. Default persistiti:
+85.333 token input stimati completi per nuove configurazioni deduper senza cap
+esplicito (prompt, schema, proposta, indice, recupero); evaluator resta a 64.000.
+I cap espliciti congelati restano invariati; massimo configurabile 85.333.
+La versione 2.2 richiede una nuova esecuzione rispetto ai ledger precedenti.
+16.384 max output per risposta deduper (8.192 per evaluator), incluso il
+reasoning, effort `low` tramite il
+mapping runtime `extra_body.reasoning.effort`; due richieste logiche e un solo
+tentativo aggiuntivo condiviso fra retry tecnico e riparazione del contratto,
+massimo tre tentativi HTTP per decisione. Connessione 15s, lettura HTTP 90s,
+deadline tentativo 120s e decisione 300s incluse attese. Nessun retry SDK,
+trasporto o Pydantic. Il preflight si ripete sulla seconda richiesta e sulle
+correzioni, con lo stimatore runtime, margine 50% e overhead 1.500 token.
+Superamento => `context_limit`, nessuna chiamata né ulteriore troncamento.
+Dal contratto 2.3 il deduper limita lo stop alla proposta corrente: overflow
+iniziale diventa failed_technical, overflow nel recupero diventa inconclusive;
+le proposte successive vengono comunque elaborate.
+
+429/408/5xx e trasporto transitorio possono usare l'unico retry. 429 rispetta
+Retry-After (secondi o data); attese oltre 30s o deadline residua sospendono la
+fase, header assente => 5s + jitter massimo 1s. Auth/config/richieste incompatibili
+non vengono ritentate. Output invalido può ricevere errore bounded e richiesta
+di risposta concisa; nessuna correzione deterministica del significato.
+Troncamento/finish_reason error non recuperati restano errori tecnici. Nel
+deduper 2.3 anche fatal della richiesta, artifact non leggibile e fallimenti
+consecutivi restano locali: nessun circuito arresta le altre lead. Il runner
+evaluator mantiene il circuito dopo tre fallimenti consecutivi e la ripresa
+esplicita. Budget esaurito, cancellazione/interruzione e configurazione o
+integrita del corpus congelato non valide restano condizioni globali.
+
+Prima dell'invio si salva un record di tentativo e si riserva input/output a
+cache zero nell'envelope totale del ruolo. Usage completa sostituisce la riserva;
+usage parziale conta una volta e conserva il residuo prudenziale sconosciuto.
+Timeout/cancellazione senza usage conservano l'intera riserva. EP osservati e
+`unknown_reserved_points`, USD stimati osservati e riserve sconosciute restano
+distinti e impegnano insieme il budget; reasoning già incluso nell'output non
+si somma nuovamente. ID decisione/tentativo, durata, classe, HTTP status,
+request ID, provider richiesto/osservato, finish reason e usage disponibili
+sono finalizzati anche su cancellazione, senza prompt dump o credenziali.
+Budget dei ruoli restano quelli configurati del round; nuovi cap non rifinanziano.
+
+Il verdetto è separato da `completed`, `inconclusive`, `failed_technical`, `pending`.
+Un errore non crea un pass: `decision=null`, proposta conservata nella proiezione
+provvisoria. PHP e Python verificano adjudication prima del dispatch, anche
+quando ricostruiscono la coda dalle canoniche. Enrichment non completati restano
+in attesa; gli assignment approvati continuano. Il vecchio novelty Reviewer non
+viene invocato sulle stesse proposte. Reader-only conserva la produzione grezza
+prima del postprocessing; nessun handoff dichiarato deduplicato con fase incompleta.
+
+`reader-normalize` e `reader-evaluate`/wrapper PHP supportano `--resume-failed`:
+si ricostruisce in ordine la proiezione, si riusano gratuitamente successi con
+fingerprint compatibile, si riprovano fallimenti tecnici e pending. Incertezza
+semantica richiede revisione, non retry automatico. Contesto cambiato da un merge
+riparato invalida i risultati successivi dipendenti; eventi e tentativi precedenti,
+costi, impegni e limite originale restano. Prodotti già dispatched non ripartono.
+Prompt, schede, schema e ledger sono versionati. Verdetti v1 non sono cache v2:
+recupero in nuova directory da originali e ordine congelati, con costi storici
+separati ed envelope di recupero esplicito. `--roles-config` passa la configurazione
+completa ed è incompatibile con override individuali dei medesimi ruoli.
+
+`benchmark:reader-evaluate`/`reader-evaluate` lavorano soltanto su outcome/fixture
+mappati o `--collection` congelata. Metrics/report parziali e `phase-status.json`
+sono sempre prodotti per input validi; exit 0 fase completata, 2 artifact validi
+ma fase incompleta/sospesa, 1 input/integrità fatali. `--preflight-only` raccoglie/
+verifica artifact, simula crescita all-pass dell'intero registro e controlla i blob
+sorgente con ZERO inferenza. È una misura di packaging/cap, non qualità semantica.
+Il launcher legge lo stato, non interpreta la scrittura del report come successo
+e non avvia evaluator/replay storico dopo deduplica incompleta. Online exit 2
+mantiene pending e lavoro approvato, distinto dal crash.
+
+Evaluator parte soltanto quando TUTTE le decisioni necessarie della deduplica
+sono `completed`. Valuta ogni ipotesi canonica contro tutti i casi del manifest;
+match molti-a-molti, qualità, incertezza e diagnosi miss restano distinti. Timeout
+persistiti sono tentativi falliti recuperabili, mai giudizi semantici definitivi.
+Gli ID originali Reader citabili sono espliciti; discovery credit richiede
+l'ipotesi Reader tracciata, mai una lettura svolta dal judge.
+
+Il sorgente è il blob Git del commit verificato in root esplicita. Checkout
+CRLF, modifiche o HEAD successivi non alterano quei byte; si verificano root,
+commit, path relativo e tipo blob regolare (non symlink/submodule/directory).
+Path autorizzati sono precalcolati da manifest, tutti i prodotti ed evidenze,
+indipendentemente dall'ordine. URL/directory dichiarate non espandono scope.
+Finestra massima 200 righe inclusive, esposta nello schema; richieste invalide
+possono usare l'unica riparazione, senza ampliamenti automatici. Blob ID, SHA-256
+e commit sono persistiti con provenance evaluator. Cache include config,
+versione, prompt/schema, pacchetto, scope, hash artifact e identità Git.
+
+Report separano lead grezze e lead/100k EP Reader, canoniche provvisorie,
+decisioni per stato/causa, risultati semantici e completezza, EP osservati,
+impegni sconosciuti, USD stimati, richieste/recuperi/retry/riparazioni e latenza.
+Una riga per decisione espone prodotto, esito, tentativi, durata e causa tecnica,
+senza ragionamento interno. Modelli non producono ground truth: revisione di tutti
+block/partial e campione di pass resta necessaria. Nessuna nuova discovery o
+Confirmer per recuperare il benchmark. L'immagine di recupero ha tag separato;
+le run attive e il tag dev non vengono sostituiti.
+
+### Benchmark isolato del deduper da DB (P0, 29 settembre 2026)
+
+`benchmark:deduper <progetto> <reader-run-id>` congela tutte le `ReaderLead`
+strutturate valide della run selezionata, senza filtrare `accepted`, score o label.
+Per `ReaderGlobalRun` risolve soltanto i child dichiarati nei suoi assignment;
+le lead appartengono ai rispettivi `ReaderRun`, non al run_id del parent globale.
+Progetto e commit devono coincidere. Sono esclusi AreaEnrichmentLead, task e
+accordo/promozione delle aree; sono incluse vere ReaderLead prodotte da assignment
+originariamente di enrichment. Nessun Reader, discovery, evaluator, Confirmer o
+dispatch viene avviato dal comando.
+
+Gli originali Reader rimangono immutati. La tabella esistente
+`benchmark_stage_artifacts` contiene `deduper/DeduperRun`,
+`deduper/DeduperDecision` e copie/prodotti `deduper/ReaderLead`. Il parent
+dell'esecuzione è la run Reader; decisioni e prodotti sono figli del DeduperRun.
+Il manifest DB conserva ID qualificati, hash, lineage, ordine di persistenza
+`created_at,id`, configurazione e riferimento al ledger. Gli originali completi
+sono già nel DB: il runner usa una copia `frozen-input.json` verificata con hash,
+senza reinserire l'intero corpus nel parent e superare `max_allowed_packet` MySQL.
+Label, oracle e score non entrano nel pacchetto del modello. Un ordinamento DB
+stabile non pretende di ricostruire tempi di acquisizione storici non disponibili.
+
+Ogni originale riceve subito una decisione pending. Il runtime Python v2 è
+l'unico proprietario di inferenza, tentativi, circuito e accounting; PHP importa
+checkpoint con transazioni brevi e identità idempotenti. Conserva decisioni
+precedenti e indica quelle correnti. Pass copia la lead; block conserva originale
+e verdetto senza una nuova promozione; partial crea il payload del modello con
+lineage orchestrata. Merge sostituisce le canoniche citate, residual aggiunge la
+parte nuova. Le canoniche superate restano tracciabili, escluse dal downstream.
+Inconclusive, failed_technical e pending rimangono distinti da pass. Nessuna
+promozione è selezionabile fino alla completezza dell'intero corpus congelato.
+
+La nuova esecuzione richiede funding esplicito (`--roles-config` oppure
+`--deduper-points`). Gli override individuali sono incompatibili con
+`--roles-config`; il modello è GLM 5.3 Flash, con routing auto per le nuove
+esecuzioni DB e pin InferenceNet esplicito ancora disponibile.
+`--dedup-run` riusa input, directory ed envelope, senza ricaricarli;
+`--resume-failed` riprova soltanto tecnici/pending con la ripresa P0 e conserva
+tentativi, costi osservati e impegni sconosciuti. Successi compatibili non costano
+altre chiamate. Un lock impedisce invocazioni concorrenti della stessa esecuzione.
+Un import interrotto si riconcilia dal ledger già persistito. Su Windows la sola
+rinomina atomica del checkpoint tollera brevemente un handle di lettura occupato,
+con limite di 250 ms; questo non aggiunge tentativi HTTP.
+
+Prima dell'inferenza viene sempre eseguito il preflight all-pass dell'intero
+corpus. `--preflight-only` termina qui, con rete container disabilitata e zero
+inferenza. Il superamento del cap 64k lascia tutte le decisioni pending e produce
+exit 2; non introduce paginazione o un sottoinsieme implicito. Report DB/file e
+`phase-status.json` distinguono lead grezze, canoniche provvisorie, stati/verdetti,
+completezza, EP osservati, riserve sconosciute, USD e richieste. Exit 0 del solo
+preflight significa dimensionamento completato, non deduplica semantica eseguita.
+Run Reader incomplete possono fornire originali validi: la completezza successiva
+si riferisce soltanto al corpus congelato e conserva tale provenienza.
+
+`benchmark:confirmer --dedup-run=<id>` controlla esecuzione, progetto, commit,
+contratto, integrità degli originali e tutte le decisioni correnti, poi seleziona
+dal DB soltanto canoniche finali valide e promosse della specifica esecuzione.
+Non richiede il file ledger per selezionarle. È incompatibile con selettori
+artifact/dataset/file alternativi. Anche `--dedup-artifact` impone il gate v2.
+La categoria viene risolta dal catalogo e dalla lead; se ambigua richiede il flag
+categoria esistente, senza scegliere il primo manifest. Le nuove lead non hanno
+oracle costruiti dai verdetti: le metriche di correttezza restano non valutabili
+senza ground truth revisionata. Confirmer viene lanciato separatamente dall'utente.
+
+Comandi e preflight reali sono in
+`plans/P0-benchmark-deduper-db-delivery-20260929.md`. L'immagine separata è
+`lailaps-pentest-agent:deduper-db-p0-20260929-v2`; nessuna run attiva è sostituita.
+
+Per nuove esecuzioni del benchmark DB, il provider di `z-ai/glm-5.3-flash` è
+`auto`: il runner omette la preferenza `provider` e lascia a OpenRouter il routing
+e i fallback tra endpoint dello stesso modello. `--deduper-provider=InferenceNet`
+mantiene il pin precedente. Configurazione e provider sono nel fingerprint; il
+resume di una vecchia esecuzione usa immagine/provider/budget persistiti e non
+trasforma i verdetti esistenti in cache di un esperimento nuovo. Reader non cambia.
+Gli EP restano l'unità di budget del modello; per l'auto-route la riserva USD
+e la stima della run usano la tariffa InferenceNet del catalogo come riferimento
+approssimativo, senza listino per ogni provider. `usage.cost`, quando presente,
+alimenta il costo osservato; se manca, la stima resta esplicitamente non completa.
+Per le richieste senza usage la riserva resta un impegno sconosciuto. Il routing
+automatico può scegliere una tariffa diversa: la stima non è un cap in USD.
+Le nuove esecuzioni DB con `--deduper-points` congelano un cap deduper di
+16.384 token; un `--roles-config` esplicito conserva il proprio valore. Il
+contratto deduper 2.1 rimuove `reason` da pass/block e lascia `partial` come
+ReaderLead completo. L'immagine
+`lailaps-pentest-agent:deduper-output-p0-20260930-v1` e' separata dalle
+esecuzioni precedenti: il resume riusa immagine e contratto persistiti.
+
+### Esperimento deduper compatto P0 (30 settembre 2026)
+
+Il benchmark DB usa di default `lailaps-pentest-agent:deduper-isolation-p0-20260930-v1`,
+contratto 2.3.0 / schede 1.1.0, input 85.333 e output 16.384. Il percorso online
+e quello offline condividono schede, recupero e default deduper; la configurazione
+evaluator non cambia. Restano due richieste logiche e un tentativo extra, senza
+paginazione. Il corpus Cacti da 144 lead viene misurato in una nuova esecuzione
+con envelope esplicito di 1.000.000 EP: token effettivi medi/p95/picco, esiti
+pass/block/partial, canoniche finali e incompletezza sono distinti dalla stima
+prudenziale del preflight. Una singola run non stabilisce la capacita media
+generale ne la correttezza semantica dei verdetti.
+
+La prima misura Cacti usa il tag immutato `deduper-compact-p0-20260930-v1`: arresto
+alla lead 81 durante recupero originali, 70 decisioni completed, 9 failed_technical,
+2 inconclusive, 63 pending; 136 richieste e 494.551,8 EP. La v2 corregge soltanto
+il messaggio di riparazione di un artifact ID invalido, ricordando che sono
+recuperabili anche gli ID delle schede e i source_ref_id della proposta. Nessun
+replay provider della v2 e nessun cambio di schema, cap o budget.
+
+### Isolamento degli errori deduper (contratto 2.3, 30 settembre 2026)
+
+`Deduper` abilita l'isolamento nel runner condiviso, senza cambiare la policy
+dell'evaluator. Il preflight all-pass resta diagnostico: `--preflight-only`
+restituisce ancora incomplete per overflow, ma una normale esecuzione 2.3 non
+blocca l'intero corpus su quella previsione. CLI di normalizzazione, pipeline
+di valutazione e wrapper DB proseguono per lead. La run puo terminare l'iterazione
+con `lead_errors` e complete=false: errori/inconclusive non diventano pass,
+e il gate Confirmer non promuove un corpus incompleto. Budget e costi restano
+immutati, comprese riserve e resume. Una nuova esecuzione e necessaria per il
+contratto 2.3; non riutilizzare cache 2.2.
+
+Ogni decisione conserva `context_diagnostics`: ultimo input stimato (anche
+se rifiutato prima dell'invio), cap e caratteri dei singoli artifact recuperati.
+Questo evita di perdere il dettaglio del pacchetto che ha causato l'overflow.
+La nuova immagine e verificata offline; nessuna run provider parte automaticamente.
+
+L'ispezione dei 144 originali Cacti misura payload medi di 4.633 caratteri e
+source_refs medi di 10.684 caratteri. Il prodotto derivato piu grande della run
+`deduper-01m3rh219pj15ewkj8tv3q08wa` contiene 62.139 caratteri, oltre ai tre
+originali recuperati automaticamente (87.750 caratteri). Il pacchetto di lettura
+ha 107.078 caratteri di snippet, contro 47.446 di snippet distinti. Queste misure
+spiegano l'amplificazione causata da evidenze aggregate e lineage, senza
+ricostruire gli ID richiesti nello specifico overflow storico (non registrati).
+La ristrutturazione del recupero e la deduplicazione del testo delle evidenze
+non sono incluse nella modifica di isolamento.
+
+### Recupero semantico mirato del deduper (contratto 3.0, 1 ottobre 2026)
+
+Il deduper online e il benchmark DB condividono ora il contratto 3.0.2 / schede
+2.0.0. Il pacchetto iniziale contiene il payload semantico della proposta e
+schede compatte dei prodotti canonici, con alias brevi stabili nella decisione.
+Gli ID qualificati e le source reference restano autorevoli nel ledger, ma non
+vengono ripetuti nelle schede o nei risultati dei tool. `read_lead_details`
+accetta fino a quattro alias canonici e restituisce i loro payload semantici e
+metadati di evidenza, senza espandere automaticamente lineage o snippet.
+`read_evidence` accetta soltanto alias di evidenze registrate gia visibili e un
+offset; fornisce una finestra di testo solo quando richiesta. Gli snippet con
+stesso contenuto e posizione condividono un alias nella decisione. L'orchestratore
+normalizza gli alias degli output in ID qualificati prima di persistere block e
+partial e rifiuta riferimenti inventati.
+
+I default deduper sono 85.333 token input, 16.384 output, quattro richieste
+logiche, un tentativo extra e cinque tentativi HTTP massimi. I dettagli
+semantici hanno un limite cumulativo stimato di 8.192 token; le evidenze hanno
+8.192 token cumulativi e 4.096 per risposta. Prima di aggiungere dati a un
+prompt si usa lo stesso stimatore prudenziale del preflight; al limite il tool
+restituisce un avviso breve e resta un turno finale. I cap dell'evaluator non
+cambiano. Dubbi semantici e limiti di lettura ammettono un `pass` prudenziale
+(`uncertain: true`) completato e dispatchable, conteggiato separatamente.
+Timeout, output invalido e fatal restano errori tecnici locali alla lead; un
+budget globale esaurito ferma l'esecuzione senza inventare verdetti. I block e
+partial richiedono i dettagli semantici di ogni canonica citata, non gli snippet.
+Il benchmark DB usa una nuova immagine immutabile
+`lailaps-pentest-agent:deduper-details-p0-20261001-v3` e una nuova esecuzione:
+le decisioni dei contratti precedenti non sono riusate sotto il nuovo prompt.
+Il contratto 3.0.1 accetta nei due output di lettura l'omissione di `decision`
+quando il nome del tool identifica gia l'azione; l'orchestratore la ripristina.
+Questo evita un errore di schema osservato nella prima prova 3.0.0 Cacti.
+Nel 3.0.2 un block o partial che cita una canonica non letta diventa un
+`pass uncertain` valido: il deduper non puo scartare lavoro sulla base di una
+scheda incompleta, nemmeno quando il limite di recupero e stato raggiunto.
+# Deduplica Reader deterministica (P0, 1 ottobre 2026)
+
+Le `ReaderLead` espongono campi piatti opzionali `weakness_kind`, `primary_end_line`,
+`primary_symbol` e `input_key`, oltre a `primary_file`/`primary_line` già esistenti.
+L'orchestratore normalizza la posizione contro le source references autorevoli;
+valori assenti o invalidi lasciano passare la lead. Il DTO interno e la sua origine
+sono costruiti in Python, senza esporre wrapper annidati al modello Reader.
+
+`pentest_agent.deterministic_deduper` è il motore predefinito per le lead:
+stesso progetto e snapshot, categoria specifica canonica, file e riga principale
+uguale, oppure range brevi (massimo 40 righe) fortemente sovrapposti (IoU >= 0,80,
+estremi distanti al massimo 5 righe). La riga finale è facoltativa per il confronto
+puntuale. `input_key` e `primary_symbol` restano metadati, non condizioni di match.
+La tassonomia Reader è condivisa con il matcher; varianti note sono normalizzate
+tramite alias espliciti, valori ignoti passano. L'identità derivata conserva il
+valore dichiarato senza modificare le lead originali congelate. Si
+confronta ogni proposta con il rappresentante del gruppo. Gli originali restano
+persistiti; un block deterministico collega il duplicato al rappresentante e
+non avvia un nuovo Confirmer. Recon, task ed enrichment non usano questa regola.
+Le modalità `deterministic`, `llm` e `off` sono esplicite; `llm` conserva il
+deduper semantico esistente con budget autonomo. La novelty review inferenziale
+delle lead è bypassata in modalità deterministic/off. Nel Reader globale i child
+generano lead raw; il coordinatore applica un solo indice deterministico al
+corpus aggregato prima dell'handoff. Il normalizzatore deterministico opera
+offline, senza provider, token o EP di deduplica.
+Il runtime predefinito punta all'immagine separata
+`lailaps-pentest-agent:deduper-deterministic-p0-20261002-v2`; l'override
+`PENTEST_AGENT_IMAGE` resta disponibile. Il vecchio tag `dev` non viene
+sovrascritto da questa consegna.
+
+`benchmark:deduper-deterministic` congela ReaderLead da DB e produce decisioni,
+gruppi e canoniche con la stessa implementazione Python. Può confrontarsi in
+sola lettura con una run `benchmark:deduper` LLM sul medesimo corpus e generare
+un overlay di identità per le lead storiche. I partial residual del LLM non
+diventano automaticamente relazioni di duplicato pieno. I prodotti promossi
+restano scoped alla execution `DeduperRun`; Confirmer seleziona le canoniche
+attraverso il gate di completezza. Gli output LLM sono baseline comparativa,
+non ground truth.

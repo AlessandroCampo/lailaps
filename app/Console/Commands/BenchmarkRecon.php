@@ -10,6 +10,11 @@ use App\Services\Pentest\BenchmarkReconEvaluator;
 use App\Services\Pentest\BenchmarkStageArtifactRegistry;
 use App\Services\Pentest\BenchmarkStageProcessRunner;
 use App\Services\Pentest\BenchmarkTechnicalFailure;
+use App\Services\Sandbox\Audit\AuditProfile;
+use App\Services\Sandbox\Audit\SandboxPreparationService;
+use App\Services\Sandbox\DTO\SandboxDTO;
+use App\Services\Sandbox\DTO\SandboxSpecDTO;
+use App\Services\Sandbox\SandboxService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\File;
@@ -22,15 +27,17 @@ final class BenchmarkRecon extends Command
         {target-id : ID del target benchmark}
         {--path= : Path sorgente; default targets/<target-id>}
         {--global : Esegue una sola Recon trasversale su tutti i manifest del target}
+        {--assignments : Con --global produce incarichi funzionali per benchmark:reader-global}
         {--category= : Benchmark category o OWASP id; incompatibile con --global}
         {--recon-model= : Modello usato da Recon}
         {--reader-model= : Alias deprecato di --recon-model}
         {--reviewer-model= : Modello Reviewer configurato nel processo}
+        {--reuse-sandbox= : Audit ID di una sandbox Lailaps pronta da collegare}
         {--repetitions= : Ripetizioni; default 3 global, 1 categoriale, massimo 20}
         {--timeout=1200 : Timeout della singola Recon in secondi}
         {--tool-output : Mostra gli output compatti dei tool}';
 
-    protected $description = 'Esegue e valuta soltanto Recon, senza Reader o runtime dinamico';
+    protected $description = 'Esegue e valuta soltanto Recon, senza Reader';
 
     public function handle(
         BenchmarkCatalog $catalog,
@@ -40,11 +47,17 @@ final class BenchmarkRecon extends Command
         BenchmarkStageProcessRunner $runner,
         BenchmarkTechnicalFailure $technicalFailure,
         RunStorage $storage,
+        SandboxService $sandboxes,
+        SandboxPreparationService $preparation,
     ): int {
         $targetId = (string) $this->argument('target-id');
         $global = (bool) $this->option('global');
+        $assignments = (bool) $this->option('assignments');
         if ($global && trim((string) $this->option('category')) !== '') {
             throw new InvalidArgumentException('--global e --category sono incompatibili.');
+        }
+        if ($assignments && ! $global) {
+            throw new InvalidArgumentException('--assignments richiede --global.');
         }
         if ($this->option('recon-model') && $this->option('reader-model')) {
             throw new InvalidArgumentException('Usa soltanto --recon-model; --reader-model e un alias deprecato.');
@@ -109,6 +122,24 @@ final class BenchmarkRecon extends Command
                         : $manifests[0]->data['category'],
                 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
+                $sandbox = null;
+                if ($this->option('reuse-sandbox')) {
+                    $profile = AuditProfile::fromProject($source);
+                    $sandbox = $sandboxes->reuse(
+                        (string) $this->option('reuse-sandbox'),
+                        new SandboxSpecDTO(
+                            auditId: $runId,
+                            projectPath: $agentSource,
+                            webService: $profile->service,
+                            basePath: $profile->basePath,
+                            healthPath: $profile->healthPath,
+                            benchmarkTargetId: $targetId,
+                            sourceSnapshot: $commit,
+                        ),
+                    );
+                    $preparation->verifyReadiness($sandbox, $profile);
+                }
+
                 $started = microtime(true);
                 $safeToDelete = false;
                 try {
@@ -122,6 +153,7 @@ final class BenchmarkRecon extends Command
                         $storage,
                         $global,
                         $reconModel ? (string) $reconModel : null,
+                        $sandbox,
                         $timeout,
                     );
                     $safeToDelete = true;
@@ -144,6 +176,8 @@ final class BenchmarkRecon extends Command
                 $result['exit_code'] = $exit;
                 $result['repetition'] = $repetition;
                 $result['source_snapshot'] = $commit;
+                $result['target_runtime'] = $sandbox === null ? 'workspace_only' : 'reused_sandbox';
+                $result['target_audit_id'] = $sandbox?->auditId;
                 $result['timing'] = [
                     'wall_duration_seconds' => $wallDuration,
                     'bootstrap_duration_ms' => data_get($report, 'telemetry.cbm_index_duration_ms'),
@@ -154,8 +188,15 @@ final class BenchmarkRecon extends Command
                 ];
                 $results[] = $result;
                 $technical = $technicalFailure->failed($report, $exit);
+                $hasAssignmentPlan = collect((array) ($report['structured_outputs'] ?? []))
+                    ->contains(fn (mixed $output): bool => is_array($output)
+                        && ($output['role'] ?? null) === 'recon'
+                        && ($output['output_type'] ?? null) === 'ReconPlan'
+                        && ($output['accepted'] ?? false) === true);
                 $payload = is_array($report['category_recon'] ?? null)
                     ? $report['category_recon'] : null;
+                $accepted = ! $technical && data_get($report, 'category_recon.status') === 'ready'
+                    && (! $assignments || $hasAssignmentPlan);
                 $values = [
                     'project_key' => $targetId,
                     'category' => $artifactCategory,
@@ -167,7 +208,7 @@ final class BenchmarkRecon extends Command
                     'model' => data_get($report, 'model.requested_model'),
                     'reasoning_effort' => data_get($report, 'model.reasoning_effort'),
                     'status' => $technical ? 'technical_failure' : 'valid',
-                    'accepted' => ! $technical && data_get($report, 'category_recon.status') === 'ready',
+                    'accepted' => $accepted,
                     'payload' => $payload,
                     'usage' => (array) data_get($report, 'telemetry.role_usage.category_recon', []),
                     'metrics' => [
@@ -182,6 +223,8 @@ final class BenchmarkRecon extends Command
                     ],
                     'configuration_signature' => hash('sha256', json_encode([
                         'global' => $global,
+                        'assignments' => $assignments,
+                        'target_runtime' => $sandbox === null ? 'workspace_only' : 'reused_sandbox',
                         'model' => data_get($report, 'model.requested_model'),
                         'reasoning_effort' => data_get($report, 'model.reasoning_effort'),
                         'profile' => $report['recon_profile'] ?? null,
@@ -209,7 +252,7 @@ final class BenchmarkRecon extends Command
                 ));
                 $this->info('Log Recon: '.$storage->logPath($directory, $runId));
                 $this->info('Outcome Recon: '.$storage->outcomePath($directory, $runId));
-                $failed = $failed || $technical;
+                $failed = $failed || $technical || ($assignments && ! $accepted);
             } finally {
                 if ($safeToDelete && is_dir($workDirectory)) {
                     File::deleteDirectory($workDirectory);
@@ -287,16 +330,27 @@ final class BenchmarkRecon extends Command
         RunStorage $storage,
         bool $global,
         ?string $reconModel,
+        ?SandboxDTO $sandbox,
         int $timeout,
     ): int {
         $containerized = $runner->containerized();
         $args = [
             'recon', '--source-root', $containerized ? '/workspace' : $source,
             '--audit-id', $runId,
+            '--workspace-host-root', $source,
             '--benchmark-context', $containerized ? '/benchmark-context.json' : $context,
         ];
+        if ($sandbox !== null) {
+            array_push($args,
+                '--target-audit-id', $sandbox->auditId,
+                '--target-container-id', $sandbox->containerId,
+            );
+        }
         if ($global) {
             $args[] = '--global';
+            if ($this->option('assignments')) {
+                $args[] = '--assignments';
+            }
         } else {
             array_push($args, '--category', $manifest->auditCategory());
         }
@@ -345,7 +399,7 @@ final class BenchmarkRecon extends Command
 
     private function absolutePath(string $path): string
     {
-        $candidate = preg_match('#^(?:[A-Za-z]:[\\/]|/)#', $path) ? $path : base_path($path);
+        $candidate = preg_match('#^(?:[A-Za-z]:[/\\\\]|/)#', $path) ? $path : base_path($path);
         $resolved = realpath($candidate);
 
         return $resolved === false ? '' : str_replace('\\', '/', $resolved);

@@ -24,6 +24,7 @@ use Throwable;
 final class BenchmarkReaderGlobal extends Command
 {
     private const MAX_AREAS = 48;
+    private bool $dedupResumed = false;
 
     /** @var array<int, string> */
     private const SLOT_COLORS = [1 => 'cyan', 2 => 'green', 3 => 'yellow', 4 => 'magenta'];
@@ -34,11 +35,22 @@ final class BenchmarkReaderGlobal extends Command
         {--recon-artifact= : Golden Recon global se omesso}
         {--area=* : Area iniziale della Golden Recon; ripetibile}
         {--defer-enrichments : Acquisisce le proposte senza avviare nuove aree}
+        {--deduper-model= : Abilita normalizzazione semantica nel coordinatore}
+        {--deduper-provider= : Provider esplicito del deduper}
+        {--deduper-points= : Budget EP totale indipendente del deduper}
+        {--deduper-mode=deterministic : deterministic, llm oppure off}
+        {--image= : Runtime image for this Reader run}
+        {--result-json= : Write run ID and status to this JSON path}
+        {--roles-config= : Full role configuration; incompatible with individual deduper overrides}
+        {--resume-failed : Explicitly resume technical failures and pending normalization}
         {--concurrency=4 : Processi per tranche, da 1 a 4}
         {--assignment-points=500000 : Envelope Reader+Reviewer per area}
         {--follow-slot=1 : Transcript completo dello slot, 0 per nessuno}
         {--reader-model= : Modello Reader}
         {--reviewer-model= : Modello Reviewer}
+        {--reader-provider= : Provider OpenRouter da fissare per il Reader}
+        {--operational-context-window=1048576 : Cap fisico del contesto operativo}
+        {--max-prompt-input-tokens=900000 : Guardrail dell input completo}
         {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
         {--reuse-sandbox= : Audit ID di una sandbox pronta}
         {--timeout=7200 : Timeout per assignment in secondi}
@@ -62,14 +74,16 @@ final class BenchmarkReaderGlobal extends Command
         $followSlot = (int) $this->option('follow-slot');
         $points = (float) $this->option('assignment-points');
         $timeout = (int) $this->option('timeout');
+        $operationalContextWindow = (int) $this->option('operational-context-window');
+        $maxPromptInputTokens = (int) $this->option('max-prompt-input-tokens');
         if ($concurrency < 1 || $concurrency > 4) {
             throw new InvalidArgumentException('--concurrency deve essere compreso fra 1 e 4.');
         }
         if ($followSlot < 0 || $followSlot > $concurrency) {
             throw new InvalidArgumentException('--follow-slot deve essere 0 oppure uno slot attivo.');
         }
-        if ($points <= 0 || $timeout <= 0) {
-            throw new InvalidArgumentException('Assignment points e timeout devono essere positivi.');
+        if ($points <= 0 || $timeout <= 0 || $operationalContextWindow <= 0 || $maxPromptInputTokens <= 0) {
+            throw new InvalidArgumentException('Assignment points, timeout e cap di contesto devono essere positivi.');
         }
         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
         if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
@@ -103,7 +117,42 @@ final class BenchmarkReaderGlobal extends Command
             throw new InvalidArgumentException('La selezione delle aree e vuota.');
         }
         $deferEnrichments = (bool) $this->option('defer-enrichments');
-        $runtimeFingerprint = hash_file('sha256', base_path('agent/pentest-agent/src/pentest_agent/triple_agent.py'));
+        $deduperMode = (string) $this->option('deduper-mode');
+        if (! in_array($deduperMode, ['deterministic', 'llm', 'off'], true)) {
+            throw new InvalidArgumentException('--deduper-mode must be deterministic, llm or off.');
+        }
+        $hasLlmOptions = (string) $this->option('deduper-model') !== '' || (string) $this->option('roles-config') !== '';
+        if ($hasLlmOptions && $deduperMode === 'deterministic') {
+            $deduperMode = 'llm'; // Legacy explicit options retain their meaning.
+        }
+        if ($hasLlmOptions && $deduperMode === 'off') {
+            throw new InvalidArgumentException('LLM deduper options incompatible with --deduper-mode=off.');
+        }
+        $dedupEnabled = $deduperMode === 'llm';
+        if ($dedupEnabled && ! $hasLlmOptions) {
+            throw new InvalidArgumentException('LLM mode requires a deduper model or roles config.');
+        }
+        if ($this->option('roles-config')) {
+            foreach (['model', 'provider', 'points'] as $field) {
+                if ($this->option('deduper-'.$field) !== null) {
+                    throw new InvalidArgumentException('--roles-config is incompatible with individual deduper overrides.');
+                }
+            }
+        }
+        if ($dedupEnabled && ! $this->option('roles-config') && ((string) $this->option('deduper-provider') === '' || (float) $this->option('deduper-points') <= 0)) {
+            throw new InvalidArgumentException('Deduper requires explicit provider and positive total points.');
+        }
+        $runtimeFiles = [];
+        foreach (File::allFiles(base_path('agent/pentest-agent/src/pentest_agent')) as $file) {
+            if (in_array($file->getExtension(), ['py', 'json'], true)) {
+                $runtimeFiles['agent/pentest-agent/src/pentest_agent/'.str_replace('\\', '/', $file->getRelativePathname())] = hash_file('sha256', $file->getPathname());
+            }
+        }
+        foreach (['agent/pentest-agent/uv.lock', 'agent/pentest-agent/pyproject.toml', 'app/Console/Commands/BenchmarkReaderGlobal.php', 'app/Services/Pentest/BenchmarkStageProcessRunner.php'] as $path) {
+            $runtimeFiles[$path] = hash_file('sha256', base_path($path));
+        }
+        ksort($runtimeFiles);
+        $runtimeFingerprint = hash('sha256', json_encode($runtimeFiles, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         $models = [
             'reader' => $this->option('reader-model'),
             'reviewer' => $this->option('reviewer-model'),
@@ -113,12 +162,17 @@ final class BenchmarkReaderGlobal extends Command
         if ($source === '' || ! is_dir($source)) {
             throw new InvalidArgumentException('Directory sorgente inesistente.');
         }
+        $oldImage = config('pentest.agent.image');
+        if ($this->option('image')) {
+            config()->set('pentest.agent.image', (string) $this->option('image'));
+        }
         $parentLocation = $storage->create($target, ['reader-global']);
         $parentRunId = $parentLocation['run_id'];
         $parentDirectory = $parentLocation['directory'];
         $workDirectory = storage_path("framework/lailaps-reader-global/{$parentRunId}");
         $started = microtime(true);
         $children = [];
+        $mappedChildren = [];
         $aggregateLeads = [];
         $enrichmentProposals = [];
         $aggregateCases = [];
@@ -137,7 +191,7 @@ final class BenchmarkReaderGlobal extends Command
             $context = $workDirectory.'/benchmark-context.json';
             File::put($context, json_encode([
                 'schema' => 'lailaps.benchmark', 'version' => 1,
-                'target_id' => $target,
+                'target_id' => $target, 'source_snapshot' => $snapshot,
                 'category' => ['taxonomy' => 'scope', 'id' => 'global', 'name' => 'Global Reader'],
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
@@ -163,6 +217,18 @@ final class BenchmarkReaderGlobal extends Command
                 fn (array $area): array => ['area' => $area, 'origin' => 'golden'],
                 $selectedAreas,
             );
+            if ($dedupEnabled) {
+                $items = array_map(fn (array $area): array => [
+                    'id' => $parentRunId.':'.$area['area_id'], 'kind' => 'task',
+                    'project' => $target, 'snapshot' => $snapshot, 'payload' => $area, 'status' => 'queued',
+                ], $selectedAreas);
+                $normalization = $this->normalizeProducts($items, $target, $snapshot, $agentSource, $parentDirectory, $parentRunId, $runner, $storage, false, true);
+                $queue = $this->normalizationQueue($normalization);
+                File::put($parentDirectory.'/recon-projection.json', json_encode([
+                    'original_selected_ids' => array_column($selectedAreas, 'area_id'), 'normalization' => $normalization,
+                    'global_complete' => count($selectedAreas) === count($goldenAreas) && $normalization['complete'],
+                ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            }
             $knownEnrichments = [];
             $batchNumber = 0;
             $storage->writeOutcome($parentDirectory, $parentRunId, [
@@ -171,6 +237,7 @@ final class BenchmarkReaderGlobal extends Command
                 'golden_recon_artifact_id' => $recon->id,
                 'source_snapshot' => $snapshot, 'category_recon' => $recon->payload,
                 'reader_checkpoint_strategy' => $readerCheckpointStrategy,
+                'deduper_mode' => $deduperMode,
                 'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
                 'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
                 'defer_enrichments' => $deferEnrichments,
@@ -207,7 +274,13 @@ final class BenchmarkReaderGlobal extends Command
                         '--assignment-points', (string) $points,
                         '--workspace-host-root', $agentSource,
                         '--reader-checkpoint-strategy', $readerCheckpointStrategy,
+                        '--deduper-mode', 'off',
+                        '--operational-context-window', (string) $operationalContextWindow,
+                        '--max-prompt-input-tokens', (string) $maxPromptInputTokens,
                     ];
+                    if ($this->option('reader-provider')) {
+                        array_push($args, '--reader-provider', (string) $this->option('reader-provider'));
+                    }
                     if ($sandbox !== null) {
                         array_push(
                             $args, '--target-audit-id', $sandbox->auditId,
@@ -235,6 +308,12 @@ final class BenchmarkReaderGlobal extends Command
                         'process' => $process, 'started' => microtime(true),
                         'seen_outputs' => [], 'exception' => null,
                     ];
+                    $mappedChildren[] = ['run_id' => $runId, 'area_id' => $areaId,
+                        'outcome' => $storage->outcomePath($directory, $runId), 'status' => 'running'];
+                    $parentCurrent = $storage->outcome($parentDirectory, $parentRunId);
+                    $parentReport = (array) ($parentCurrent['report'] ?? []);
+                    $parentReport['mapped_children'] = $mappedChildren;
+                    $storage->writeOutcome($parentDirectory, $parentRunId, $parentReport, $parentCurrent['benchmark'] ?? null);
                     $this->line(sprintf('[batch %d slot %d] start %s', $batchNumber, $slot, $areaId));
                     $process->start(function (string $type, string $buffer) use (
                         $storage, $directory, $runId, $batchNumber, $slot, $areaId, $followSlot,
@@ -313,6 +392,7 @@ final class BenchmarkReaderGlobal extends Command
                             'lead_id' => $qualified,
                             'area_id' => $child['area']['area_id'],
                             'run_id' => $child['run_id'],
+                            'output_id' => $lead['output_id'],
                             'payload' => (array) ($lead['payload'] ?? []),
                             'source_refs' => (array) ($lead['source_refs'] ?? []),
                         ];
@@ -324,6 +404,7 @@ final class BenchmarkReaderGlobal extends Command
                             $normalized, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
                         ));
                         $accepted = ($enrichment['accepted'] ?? false) === true;
+                        $pendingReview = ($enrichment['review_status'] ?? null) === 'pending_review';
                         $record = [
                             'source_area_id' => $child['area']['area_id'],
                             'source_run_id' => $child['run_id'],
@@ -332,8 +413,31 @@ final class BenchmarkReaderGlobal extends Command
                             'accepted' => $accepted,
                             'rejection_reason' => $enrichment['rejection_reason'] ?? null,
                             'payload_hash' => $hash,
-                            'status' => $accepted ? 'pending' : 'rejected',
+                            'status' => $accepted ? 'pending' : ($pendingReview ? 'pending_review' : 'rejected'),
                         ];
+                        if ($dedupEnabled && ($accepted || $pendingReview)) {
+                            $qualifiedRefs = [];
+                            foreach ((array) ($enrichment['source_refs'] ?? []) as $ref) {
+                                $qualifiedRefs[$child['run_id'].':'.$ref['source_ref_id']] = $ref;
+                            }
+                            $qualifiedPayload = $proposal;
+                            $qualifiedPayload['source_ref_ids'] = array_map(fn (string $id): string => $child['run_id'].':'.$id, (array) ($proposal['source_ref_ids'] ?? []));
+                            $normalization = $this->normalizeProducts([[
+                                'id' => $child['run_id'].':'.$enrichment['output_id'], 'kind' => 'enrichment',
+                                'project' => $target, 'snapshot' => $snapshot, 'payload' => $qualifiedPayload,
+                                'source_refs' => $qualifiedRefs, 'status' => 'queued',
+                            ]], $target, $snapshot, $agentSource, $parentDirectory, $parentRunId, $runner, $storage, $deferEnrichments, true);
+                            $decision = collect($normalization['results'])->firstWhere('proposal_id', $child['run_id'].':'.$enrichment['output_id']);
+                            $record['deduplication'] = $decision;
+                            if (($decision['status'] ?? null) !== 'completed' || $decision['dispatch_ids'] === [] || $deferEnrichments) {
+                                $record['status'] = ($decision['status'] ?? null) !== 'completed' ? 'pending_dedup' : ($deferEnrichments ? 'deferred' : ($decision['pending_integration'] !== [] ? 'pending_integration' : 'dedup_blocked'));
+                                $enrichmentProposals[] = $record;
+                                continue;
+                            }
+                            $canonical = collect($normalization['canonical'])->firstWhere('id', $decision['canonical_id']);
+                            $proposal = $canonical['payload'];
+                            $accepted = true;
+                        }
                         if (! $accepted) {
                             $enrichmentProposals[] = $record;
                             continue;
@@ -414,6 +518,8 @@ final class BenchmarkReaderGlobal extends Command
                             }
                         }
                     }
+                    $scorecard = $this->assignmentScorecard($report, $leads, $enrichments, $status, $duration);
+                    $report['benchmark_scorecard'] = $scorecard;
                     $runArtifact = $registry->record([
                         'project_key' => $target, 'category' => 'global',
                         'source_commit' => $snapshot, 'parent_artifact_id' => $recon->id,
@@ -432,6 +538,7 @@ final class BenchmarkReaderGlobal extends Command
                             'economic_points' => $economic,
                             'finished_at' => $child['finished_at'],
                             'duration_seconds' => $duration,
+                            'scorecard' => $scorecard,
                         ],
                         'technical_error' => $technicalFailure->summary($report, $exit),
                     ]);
@@ -462,6 +569,7 @@ final class BenchmarkReaderGlobal extends Command
                         'reader_checkpoint_strategy' => $readerCheckpointStrategy,
                         'finished_at' => $child['finished_at'], 'duration_seconds' => $duration,
                         'diagnostics_by_manifest' => $diagnostics,
+                        'scorecard' => $scorecard,
                     ]);
                     $children[] = [
                         'area_id' => $child['area']['area_id'], 'origin' => $child['origin'],
@@ -471,6 +579,11 @@ final class BenchmarkReaderGlobal extends Command
                         'role_usage' => (array) data_get($report, 'telemetry.role_usage', []),
                         'economic_points' => $economic, 'finished_at' => $child['finished_at'],
                         'duration_seconds' => $duration,
+                        'started_offset_seconds' => round($child['started'] - $started, 3),
+                        'scorecard' => $scorecard,
+                        'reader_context' => data_get($report, 'telemetry.reader_context'),
+                        'reader_configuration' => $report['reader_benchmark'] ?? null,
+                        'pricing' => data_get($report, 'telemetry.pricing'),
                         'outcome' => $storage->outcomePath($child['directory'], $child['run_id']),
                     ];
                     $rows[] = [
@@ -490,7 +603,7 @@ final class BenchmarkReaderGlobal extends Command
                     'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
                     'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
                     'defer_enrichments' => $deferEnrichments,
-                    'assignments' => $children, 'suspected' => $aggregateLeads,
+                    'mapped_children' => $mappedChildren, 'assignments' => $children, 'suspected' => $aggregateLeads,
                     'enrichment_proposals' => $enrichmentProposals,
                     'coverage' => [
                         'complete' => false, 'area_limit' => self::MAX_AREAS,
@@ -518,6 +631,29 @@ final class BenchmarkReaderGlobal extends Command
                 }
             }
             $enrichmentCounts = array_count_values(array_column($enrichmentProposals, 'status'));
+            if ($dedupEnabled || $deduperMode === 'deterministic') {
+                $items = array_map(function (array $lead) use ($target, $snapshot): array {
+                    $payload = $lead['payload'];
+                    $payload['source_ref_ids'] = array_map(fn (string $id): string => $lead['run_id'].':'.$id, (array) ($payload['source_ref_ids'] ?? []));
+                    $refs = [];
+                    foreach ($lead['source_refs'] as $ref) {
+                        $refs[$lead['run_id'].':'.$ref['source_ref_id']] = [...$ref, 'origin_run_id' => $lead['run_id'], 'evidence_origin' => 'reader'];
+                    }
+                    return ['id' => $lead['run_id'].':'.$lead['output_id'], 'kind' => 'lead',
+                        'project' => $target, 'snapshot' => $snapshot, 'payload' => $payload,
+                        'source_refs' => $refs, 'status' => 'queued', 'origin_run_id' => $lead['run_id']];
+                }, $aggregateLeads);
+                if ($items !== []) {
+                    $normalization = $this->normalizeProducts($items, $target, $snapshot, $agentSource, $parentDirectory, $parentRunId, $runner, $storage);
+                    File::put($parentDirectory.'/confirmer-handoff.json', json_encode($normalization, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+                }
+            }
+            $parentScorecard = $this->aggregateScorecards($children);
+            $parentScorecard['time']['parent_wall_seconds'] = round(microtime(true) - $started, 3);
+            $parentScorecard['production']['enrichment_dispatches'] = count(array_filter(
+                $enrichmentProposals,
+                fn (array $row): bool => ($row['status'] ?? null) === 'queued',
+            ));
             $status = $technicalFailureSeen
                 ? 'technical_failure'
                 : (($allClosed && ! $limitReached) ? 'complete' : 'incomplete');
@@ -530,13 +666,22 @@ final class BenchmarkReaderGlobal extends Command
                 'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
                 'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
                 'defer_enrichments' => $deferEnrichments,
+                'reader_provider' => $this->option('reader-provider') ?: null,
+                'operational_context_window' => $operationalContextWindow,
+                'max_prompt_input_tokens' => $maxPromptInputTokens,
+                'pricing' => $children[0]['pricing'] ?? null,
+                'scorecard' => $parentScorecard,
                 'category_recon' => $recon->payload,
-                'assignments' => $children,
+                'mapped_children' => $mappedChildren, 'assignments' => $children,
                 'suspected' => $aggregateLeads,
                 'enrichment_proposals' => $enrichmentProposals,
                 'coverage' => [
                     'complete' => $globalScope && $status === 'complete'
-                        && ! collect($enrichmentProposals)->contains('status', 'deferred'),
+                        && ! collect($enrichmentProposals)->contains(
+                            fn (array $proposal): bool => in_array(
+                                $proposal['status'], ['deferred', 'pending_review'], true,
+                            ),
+                        ),
                     'selected_areas_complete' => $status === 'complete',
                     'scope' => $globalScope ? 'global' : 'selected_areas',
                     'area_limit' => self::MAX_AREAS,
@@ -570,6 +715,12 @@ final class BenchmarkReaderGlobal extends Command
                 'status' => $status, 'concurrency' => $concurrency,
                 'assignment_points' => $points,
                 'reader_checkpoint_strategy' => $readerCheckpointStrategy,
+                'deduper_mode' => $deduperMode,
+                'reader_provider' => $this->option('reader-provider') ?: null,
+                'operational_context_window' => $operationalContextWindow,
+                'max_prompt_input_tokens' => $maxPromptInputTokens,
+                'pricing' => $children[0]['pricing'] ?? null,
+                'scorecard' => $parentScorecard,
                 'runtime_sha256' => $runtimeFingerprint, 'models' => $models,
                 'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
                 'defer_enrichments' => $deferEnrichments,
@@ -588,6 +739,12 @@ final class BenchmarkReaderGlobal extends Command
                     ? 100_000 * count($aggregateLeads) / $totalPoints : null,
             ];
             $storage->writeOutcome($parentDirectory, $parentRunId, $parentReport, $parentBenchmark);
+            if ($this->option('result-json')) {
+                File::put((string) $this->option('result-json'), json_encode([
+                    'run_id' => $parentRunId, 'status' => $status,
+                    'outcome' => $storage->outcomePath($parentDirectory, $parentRunId),
+                ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+            }
             $registry->record([
                 'project_key' => $target, 'category' => 'global', 'source_commit' => $snapshot,
                 'parent_artifact_id' => $recon->id, 'run_id' => $parentRunId,
@@ -597,6 +754,7 @@ final class BenchmarkReaderGlobal extends Command
                 'payload' => [
                     'status' => $status, 'assignments' => $children,
                     'reader_checkpoint_strategy' => $readerCheckpointStrategy,
+                    'deduper_mode' => $deduperMode,
                     'selected_initial_area_ids' => array_column($selectedAreas, 'area_id'),
                     'defer_enrichments' => $deferEnrichments,
                 ],
@@ -606,6 +764,7 @@ final class BenchmarkReaderGlobal extends Command
 
             return $technicalFailureSeen ? self::FAILURE : self::SUCCESS;
         } finally {
+            config()->set('pentest.agent.image', $oldImage);
             foreach ($liveProcesses as $runId => $process) {
                 if ($process->isRunning()) {
                     $process->stop(1);
@@ -616,6 +775,300 @@ final class BenchmarkReaderGlobal extends Command
                 File::deleteDirectory($workDirectory);
             }
         }
+    }
+
+    private function normalizationQueue(array $normalization): array
+    {
+        return array_map(fn (array $product): array => ['area' => $product['payload'], 'origin' => 'golden'],
+            array_values(array_filter($normalization['canonical'], fn (array $product): bool =>
+                $product['kind'] === 'task' && ($product['adjudication_status'] ?? null) === 'completed')));
+    }
+
+    private function normalizeProducts(array $items, string $target, string $snapshot, string $source, string $directory, string $runId, BenchmarkStageProcessRunner $runner, RunStorage $storage, bool $defer = false, bool $markDispatched = false): array
+    {
+        $deterministic = (string) $this->option('deduper-mode') === 'deterministic'
+            && ! $this->option('deduper-model') && ! $this->option('roles-config');
+        $config = $this->option('roles-config') ? json_decode(File::get((string) $this->option('roles-config')), true, flags: JSON_THROW_ON_ERROR) : ['deduper' => ['model' => (string) $this->option('deduper-model'),
+            'provider' => (string) $this->option('deduper-provider'), 'total_points' => (float) $this->option('deduper-points')]];
+        File::put($directory.'/dedup-roles.json', json_encode($config, JSON_THROW_ON_ERROR));
+        File::put($directory.'/dedup-input.json', json_encode(['project' => $target, 'snapshot' => $snapshot,
+            'items' => $items, 'defer' => $defer, 'mark_dispatched' => $markDispatched], JSON_THROW_ON_ERROR));
+        $container = $runner->containerized();
+        $args = [
+            'reader-normalize', '--input', $container ? '/artifacts/dedup-input.json' : $directory.'/dedup-input.json',
+            '--mode', $deterministic ? 'deterministic' : 'llm',
+            '--output', $container ? '/artifacts' : $directory,
+        ];
+        if (! $deterministic) {
+            array_push($args, '--config', $container ? '/artifacts/dedup-roles.json' : $directory.'/dedup-roles.json');
+        }
+        if ($this->option('resume-failed') && ! $this->dedupResumed) {
+            $args[] = '--resume-failed';
+            $this->dedupResumed = true;
+        }
+        $code = $runner->run($source, $directory, $runId.'-dedup', $args, [], $storage,
+            fn ($type, $buffer) => $this->output->write($buffer), offline: $deterministic);
+        if (! in_array($code, [0, 2], true)) {
+            throw new InvalidArgumentException('Deduper stage failed before dispatch; originals preserved.');
+        }
+        return json_decode(File::get($directory.'/normalization-result.json'), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    /** @param array<int, array<string, mixed>> $leads @param array<int, array<string, mixed>> $enrichments */
+    private function assignmentScorecard(array $report, array $leads, array $enrichments, string $status, float $duration): array
+    {
+        $telemetry = (array) ($report['telemetry'] ?? []);
+        $reader = (array) data_get($telemetry, 'role_usage.reader', []);
+        $reviewer = (array) data_get($telemetry, 'role_usage.reviewer', []);
+        $checkpoints = (array) ($telemetry['reader_self_checkpoint_events'] ?? []);
+        $checkpointUsage = [];
+        $checkpointOutputs = [];
+        $checkpointCostComplete = true;
+        $reasons = [];
+        foreach ($checkpoints as $event) {
+            $event = (array) $event;
+            foreach ((array) ($event['usage'] ?? []) as $name => $value) {
+                $checkpointUsage[$name] = ($checkpointUsage[$name] ?? 0) + (float) $value;
+            }
+            if ((float) data_get($event, 'usage.requests', 0) > 0 && ($event['cost_complete'] ?? false) !== true) {
+                $checkpointCostComplete = false;
+            }
+            if (! empty($event['output_id'])) {
+                $checkpointOutputs[(string) $event['output_id']] = true;
+            }
+            $reason = (string) ($event['boundary_reason'] ?? 'unknown');
+            $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
+        }
+        $checkpointLeads = count(array_filter($leads, fn (array $lead): bool => isset($checkpointOutputs[(string) ($lead['output_id'] ?? '')])));
+        $tokens = [];
+        foreach (['input_tokens', 'cached_tokens', 'uncached_tokens', 'output_tokens'] as $name) {
+            $checkpoint = (int) round($checkpointUsage[$name] ?? 0);
+            $tokens[$name] = [
+                'operational' => max(0, (int) ($reader[$name] ?? 0) - $checkpoint),
+                'checkpoint' => $checkpoint,
+                'total' => (int) ($reader[$name] ?? 0),
+            ];
+        }
+        $toolRows = [];
+        $attempts = $known = $failures = 0;
+        foreach ((array) ($telemetry['reader_tool_outcomes'] ?? []) as $name => $row) {
+            $row = (array) $row;
+            $a = (int) ($row['attempts'] ?? 0);
+            $successes = (int) ($row['successes'] ?? 0);
+            $validation = (int) ($row['validation_failures'] ?? 0);
+            $execution = (int) ($row['execution_failures'] ?? 0);
+            $k = $successes + $validation + $execution;
+            $f = $validation + $execution;
+            $toolRows[$name] = [
+                'attempts' => $a, 'known_outcomes' => $k, 'successes' => $successes,
+                'validation_failures' => $validation, 'execution_failures' => $execution,
+                'pending' => max(0, $a - $k), 'error_rate' => $k ? $f / $k : null,
+            ];
+            $attempts += $a;
+            $known += $k;
+            $failures += $f;
+        }
+        $costComplete = array_key_exists('cost_complete', $reader) && ($reader['cost_complete'] === true);
+        $readerUsd = $costComplete ? (float) ($reader['cost_usd'] ?? 0) : null;
+        $checkpointUsd = $costComplete && $checkpointCostComplete ? (float) ($checkpointUsage['cost_usd'] ?? 0) : null;
+        $estimatedUsd = array_key_exists('estimated_cost_usd', $reader) ? (float) $reader['estimated_cost_usd'] : null;
+        $input = (int) ($reader['input_tokens'] ?? 0);
+        $cached = (int) ($reader['cached_tokens'] ?? 0);
+        $compactions = array_values(array_filter((array) ($telemetry['compaction_events'] ?? []),
+            fn (array $event): bool => ($event['role'] ?? null) === 'reader'));
+
+        return [
+            'production' => [
+                'leads' => count($leads), 'ordinary_leads' => count($leads) - $checkpointLeads,
+                'checkpoint_leads' => $checkpointLeads, 'enrichment_proposals' => count($enrichments),
+                'reviewer_requests' => (int) ($reviewer['requests'] ?? 0),
+                'enrichment_dispatches' => 0,
+            ],
+            'economy' => [
+                'reader_provider_usd' => $readerUsd,
+                'reader_cost_complete' => $costComplete,
+                'checkpoint_provider_usd' => $checkpointUsd,
+                'checkpoint_share' => $readerUsd !== null && $readerUsd > 0 && $checkpointUsd !== null ? $checkpointUsd / $readerUsd : null,
+                'reader_estimated_usd' => $estimatedUsd,
+                'reader_estimate_complete' => ($reader['estimated_cost_complete'] ?? false) === true,
+                'usage_events' => (array) ($telemetry['reader_economic_events'] ?? []),
+                'lead_events' => array_map(
+                    fn (array $output): array => [
+                        'output_id' => $output['output_id'], 'lead_id' => $output['lead_id'],
+                        'elapsed_seconds' => $output['accepted_elapsed_seconds'] ?? $output['elapsed_seconds'] ?? null,
+                        'phase' => isset($checkpointOutputs[(string) $output['output_id']]) ? 'checkpoint' : 'operational',
+                    ],
+                    array_values(array_filter((array) ($report['structured_outputs'] ?? []),
+                        fn (array $output): bool => ($output['output_type'] ?? null) === 'ReaderLead' && ($output['accepted'] ?? false) === true)),
+                ),
+                'provider_usd_per_lead' => $readerUsd !== null && count($leads) ? $readerUsd / count($leads) : null,
+                'reader_ep' => (float) ($reader['economic_points'] ?? 0),
+                'reviewer_ep' => (float) ($reviewer['economic_points'] ?? 0),
+                'cost_source_counts' => (array) ($telemetry['cost_source_counts'] ?? []),
+            ],
+            'tokens' => [
+                'by_phase' => $tokens,
+                'cache_hit_weighted' => $input ? $cached / $input : null,
+            ],
+            'tools' => [
+                'by_name' => $toolRows, 'attempts' => $attempts, 'known_outcomes' => $known,
+                'successes' => $known - $failures, 'failures' => $failures,
+                'pending' => max(0, $attempts - $known),
+                'error_rate' => $known ? $failures / $known : null,
+                'outcome_coverage' => $attempts ? $known / $attempts : null,
+            ],
+            'reliability' => [
+                'status' => $status, 'termination_reason' => $report['termination_reason'] ?? null,
+                'provider_errors' => (int) data_get($telemetry, 'upstream_errors_by_role.reader', 0),
+                'transport_failures' => count(array_filter((array) ($telemetry['model_request_transport_failures'] ?? []),
+                    fn (array $event): bool => ($event['role'] ?? null) === 'reader')),
+                'retries' => (int) data_get($telemetry, 'model_turn_retries_attempted.reader', 0),
+            ],
+            'time' => [
+                'assignment_seconds' => $duration,
+                'first_lead_seconds' => $telemetry['first_reader_lead_seconds'] ?? null,
+                'leads_per_hour' => $duration > 0 ? count($leads) * 3600 / $duration : null,
+            ],
+            'context' => [
+                'window' => (array) ($telemetry['reader_context'] ?? []),
+                'checkpoints' => count($checkpoints), 'checkpoint_reasons' => $reasons,
+                'compactions' => count($compactions), 'compaction_events' => $compactions,
+                'input_samples' => (array) ($telemetry['reader_request_inputs'] ?? []),
+                'input_distribution' => (array) ($telemetry['reader_input_distribution'] ?? []),
+            ],
+            'offline_evaluation' => [
+                'status' => 'pending', 'useful_root_causes' => null, 'semantic_cve_matches' => null,
+                'plausible_out_of_catalog' => null, 'duplicates_or_unsupported' => null,
+                'usd_per_useful_root_cause' => null,
+            ],
+        ];
+    }
+
+    /** @param array<int, array<string, mixed>> $children */
+    private function aggregateScorecards(array $children): array
+    {
+        $cards = array_column($children, 'scorecard');
+        $sum = fn (string $path): float => array_sum(array_map(
+            fn (array $card): float => (float) data_get($card, $path, 0), $cards,
+        ));
+        $leads = (int) $sum('production.leads');
+        $readerCostsComplete = $cards !== [] && collect($cards)->every(
+            fn (array $card): bool => data_get($card, 'economy.reader_cost_complete') === true,
+        );
+        $readerUsd = $readerCostsComplete ? $sum('economy.reader_provider_usd') : null;
+        $estimatedComplete = $cards !== [] && collect($cards)->every(
+            fn (array $card): bool => data_get($card, 'economy.reader_estimated_usd') !== null,
+        );
+        $checkpointUsd = $readerCostsComplete && collect($cards)->every(
+            fn (array $card): bool => data_get($card, 'economy.checkpoint_provider_usd') !== null,
+        ) ? $sum('economy.checkpoint_provider_usd') : null;
+        $toolRows = [];
+        $samples = ['operational' => [], 'checkpoint' => []];
+        $reasons = [];
+        $costSources = [];
+        $tokens = [];
+        foreach (['input_tokens', 'cached_tokens', 'uncached_tokens', 'output_tokens'] as $name) {
+            foreach (['operational', 'checkpoint', 'total'] as $phase) {
+                $tokens[$name][$phase] = (int) $sum("tokens.by_phase.{$name}.{$phase}");
+            }
+        }
+        foreach ($cards as $card) {
+            foreach ((array) data_get($card, 'tools.by_name', []) as $name => $row) {
+                foreach (['attempts', 'known_outcomes', 'successes', 'validation_failures', 'execution_failures', 'pending'] as $metric) {
+                    $toolRows[$name][$metric] = ($toolRows[$name][$metric] ?? 0) + (int) ($row[$metric] ?? 0);
+                }
+            }
+            foreach ($samples as $phase => $_) {
+                array_push($samples[$phase], ...(array) data_get($card, "context.input_samples.{$phase}", []));
+            }
+            foreach ((array) data_get($card, 'context.checkpoint_reasons', []) as $reason => $count) {
+                $reasons[$reason] = ($reasons[$reason] ?? 0) + (int) $count;
+            }
+            foreach ((array) data_get($card, 'economy.cost_source_counts', []) as $source => $count) {
+                $costSources[$source] = ($costSources[$source] ?? 0) + (int) $count;
+            }
+        }
+        foreach ($toolRows as &$row) {
+            $row['error_rate'] = $row['known_outcomes']
+                ? ($row['validation_failures'] + $row['execution_failures']) / $row['known_outcomes'] : null;
+        }
+        unset($row);
+        $distribution = [];
+        foreach ($samples as $phase => $values) {
+            sort($values);
+            $distribution[$phase] = [
+                'p95' => $values ? $values[max(0, (int) ceil(count($values) * 0.95) - 1)] : null,
+                'max' => $values ? end($values) : null,
+            ];
+        }
+        $attempts = (int) $sum('tools.attempts');
+        $known = (int) $sum('tools.known_outcomes');
+        $failures = (int) $sum('tools.failures');
+        $input = $tokens['input_tokens']['total'];
+
+        return [
+            'production' => [
+                'leads' => $leads,
+                'ordinary_leads' => (int) $sum('production.ordinary_leads'),
+                'checkpoint_leads' => (int) $sum('production.checkpoint_leads'),
+                'enrichment_proposals' => (int) $sum('production.enrichment_proposals'),
+                'reviewer_requests' => (int) $sum('production.reviewer_requests'),
+                'enrichment_dispatches' => 0,
+            ],
+            'economy' => [
+                'reader_provider_usd' => $readerUsd, 'reader_cost_complete' => $readerCostsComplete,
+                'checkpoint_provider_usd' => $checkpointUsd,
+                'checkpoint_share' => $readerUsd !== null && $readerUsd > 0 && $checkpointUsd !== null ? $checkpointUsd / $readerUsd : null,
+                'reader_estimated_usd' => $estimatedComplete ? $sum('economy.reader_estimated_usd') : null,
+                'reader_estimate_complete' => $cards !== [] && collect($cards)->every(
+                    fn (array $card): bool => data_get($card, 'economy.reader_estimate_complete') === true,
+                ),
+                'provider_usd_per_lead' => $readerUsd !== null && $leads ? $readerUsd / $leads : null,
+                'reader_ep' => $sum('economy.reader_ep'), 'reviewer_ep' => $sum('economy.reviewer_ep'),
+                'cost_source_counts' => $costSources,
+            ],
+            'tokens' => [
+                'by_phase' => $tokens,
+                'cache_hit_weighted' => $input ? $tokens['cached_tokens']['total'] / $input : null,
+            ],
+            'tools' => [
+                'by_name' => $toolRows, 'attempts' => $attempts, 'known_outcomes' => $known,
+                'successes' => (int) $sum('tools.successes'), 'failures' => $failures,
+                'pending' => $attempts - $known,
+                'error_rate' => $known ? $failures / $known : null,
+                'outcome_coverage' => $attempts ? $known / $attempts : null,
+            ],
+            'reliability' => [
+                'complete' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'complete')),
+                'incomplete' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'incomplete')),
+                'failed' => count(array_filter($children, fn (array $child): bool => $child['status'] === 'technical_failure')),
+                'provider_errors' => (int) $sum('reliability.provider_errors'),
+                'transport_failures' => (int) $sum('reliability.transport_failures'),
+                'retries' => (int) $sum('reliability.retries'),
+            ],
+            'time' => [
+                'assignment_total_seconds' => $sum('time.assignment_seconds'),
+                'first_lead_seconds' => collect($children)->map(
+                    fn (array $child): ?float => data_get($child, 'scorecard.time.first_lead_seconds') !== null
+                        ? (float) ($child['started_offset_seconds'] ?? 0) + (float) data_get($child, 'scorecard.time.first_lead_seconds')
+                        : null,
+                )->filter(fn (?float $value): bool => $value !== null)->min(),
+                'leads_per_assignment_hour' => $sum('time.assignment_seconds') > 0
+                    ? $leads * 3600 / $sum('time.assignment_seconds') : null,
+            ],
+            'context' => [
+                'windows_by_assignment' => array_column($children, 'reader_context', 'area_id'),
+                'checkpoints' => (int) $sum('context.checkpoints'),
+                'checkpoint_reasons' => $reasons,
+                'compactions' => (int) $sum('context.compactions'),
+                'input_distribution' => $distribution,
+            ],
+            'offline_evaluation' => [
+                'status' => 'pending', 'useful_root_causes' => null, 'semantic_cve_matches' => null,
+                'plausible_out_of_catalog' => null, 'duplicates_or_unsupported' => null,
+                'usd_per_useful_root_cause' => null,
+            ],
+        ];
     }
 
     /** @param array<int, object> $manifests */
@@ -639,8 +1092,8 @@ final class BenchmarkReaderGlobal extends Command
             || $recon->source_commit !== $snapshot || $recon->role !== 'recon'
             || $recon->output_type !== 'CategoryRecon' || $recon->status !== 'valid'
             || ! $recon->accepted || data_get($recon->payload, 'status') !== 'ready'
-            || count((array) data_get($recon->payload, 'areas', [])) !== 16) {
-            throw new InvalidArgumentException('Recon globale incompatibile: richiesto target/snapshot ready con 16 aree.');
+            || (array) data_get($recon->payload, 'areas', []) === []) {
+            throw new InvalidArgumentException('Recon globale incompatibile: richiesto target/snapshot ready con almeno un area.');
         }
     }
 

@@ -1,0 +1,26 @@
+[
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\agent\\pentest-agent\\src\\pentest_agent\\deduper.py",
+    "Hash": "E19C66AF70E78CC655DF505A0DE5C435A713DBB56C1EB2D7D14D8281CCCEE8AB"
+  },
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\agent\\pentest-agent\\src\\pentest_agent\\reader_evaluation.py",
+    "Hash": "20F6AD00C64045A242F57A6A6A4E3A5605B44893D2878054AA4C955957EB5FB3"
+  },
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\agent\\pentest-agent\\tests\\test_reader_evaluation.py",
+    "Hash": "ACC56F5DB38D9E071DDD34BF495D7000C2F46F1A72D472FD89B75E6B6FBE53CA"
+  },
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\app\\Console\\Commands\\BenchmarkReaderGlobal.php",
+    "Hash": "1379B36D26E5199FE7B177314EBA8E6ADDD3010AC52D97F6BB4EF8692EFDA51F"
+  },
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\app\\Console\\Commands\\BenchmarkReaderEvaluate.php",
+    "Hash": "C26680728CAD6A15C8A836FF7D3543FCB8D26064F31A7DC5B57CAFE88B672D47"
+  },
+  {
+    "Path": "C:\\Users\\Alessandro\\Desktop\\latest-projects\\lailaps\\plans\\testing-reader-20260929\\Start-ReaderRound.ps1",
+    "Hash": "E08408AF60B83BEF00701772CC7CCFF2A17A1A8F9F81D0E29C46187E87C095F5"
+  }
+]

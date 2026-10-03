@@ -25,6 +25,7 @@ final class BenchmarkWorker extends Command
     protected $signature = 'benchmark:worker
         {target-id : Project key del target benchmark}
         {--artifact=* : CandidateHandoff artifact; override della selezione automatica}
+        {--parent-run-id= : ID artifact o run_id della run Reader/Deduper di origine degli handoff}
         {--path= : Path target; default targets/<target-id>}
         {--category= : Limita alla benchmark category}
         {--worker-model= : Modello Worker}
@@ -173,6 +174,7 @@ final class BenchmarkWorker extends Command
             category: $this->option('category') ? (string) $this->option('category') : null,
             artifactIds: $ids,
             dataset: $this->option('dataset') ? (string) $this->option('dataset') : null,
+            parentRunId: $this->option('parent-run-id') !== null ? (string) $this->option('parent-run-id') : null,
         );
     }
 

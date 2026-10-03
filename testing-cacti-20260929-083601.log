@@ -1,0 +1,35 @@
+﻿**********************
+Inizio trascrizione Windows PowerShell
+Ora di inizio: 20260929083601
+Nome utente: DESKTOP-Q3CUKUJ\Alessandro
+Esegui come utente: DESKTOP-Q3CUKUJ\Alessandro
+Nome configurazione: 
+Computer DESKTOP-Q3CUKUJ (Microsoft Windows NT 10.0.26200.0)
+Applicazione host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID processo: 5772
+PSVersion: 5.1.26100.9444
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9444
+BuildVersion: 10.0.26100.9444
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Trascrizione avviata. File di output: .\testing-cacti-20260929-083601.log
+PS C:\Users\Alessandro\Desktop\latest-projects\lailaps> try {
+    & '.\plans\testing-reader-20260929\Start-ReaderRound.ps1' -Target cacti
+}
+finally {
+    Stop-Transcript
+}
+29.2.1
+php artisan benchmark:recon cacti --path=C:\Users\Alessandro\Documents\Codex\2026-09-28\ok-vorrei-fare-la-seguente-cosa\outputs\reader-round\sources\cacti --global --assignments --repetitions=1 --recon-model=z-ai/glm-5.3-flash --timeout=1200
+
+PS C:\Users\Alessandro\Desktop\latest-projects\lailaps> Errore fatale (): "Pipeline arrestata."
+>> Errore fatale (): "Pipeline arrestata."
+PS C:\Users\Alessandro\Desktop\latest-projects\lailaps> Errore fatale (): "Pipeline arrestata."
+**********************
+Fine trascrizione Windows PowerShell
+Ora di fine: 20260929083734
+**********************

@@ -1,0 +1,272 @@
+{
+  "status": "prepared_not_executed",
+  "prepared_at": "2026-09-27",
+  "target_id": "yeswiki",
+  "golden_recon_artifact_id": "01M309MYBKSARVPA2HWVTYT450",
+  "source_commit": "7325759547611def210a731b103878bd696c419c",
+  "area_ids": [
+    "area-assignment-3",
+    "area-assignment-4",
+    "area-assignment-5",
+    "area-assignment-6"
+  ],
+  "total_assignments": 8,
+  "common": {
+    "concurrency": 4,
+    "assignment_points": 500000,
+    "timeout_seconds": 7200,
+    "reader_checkpoint_strategy": "reader_checkpoint",
+    "defer_enrichments": true,
+    "operational_context_window": 1040000,
+    "max_prompt_input_tokens": 900000,
+    "runtime_settings": {
+      "reader_reasoning_effort": "high",
+      "reader_episode_request_limit": 32,
+      "reader_review_request_interval": 16,
+      "reader_extension_request_grant": 16,
+      "effective_context_percent": 0.9,
+      "estimated_system_prompt_tokens": 2000,
+      "estimated_tool_schema_tokens": 4000,
+      "estimated_output_schema_tokens": 1000,
+      "response_reserve_tokens": 4000,
+      "context_safety_tokens": 3000,
+      "max_tokens": 6500,
+      "tool_output_max_tokens": 4000,
+      "tool_output_step_max_tokens": 8000,
+      "recent_history_keep_tokens": 6000,
+      "codebase_memory_enabled": true,
+      "reader_data_flow_enabled": false,
+      "terminal_output_retry_reserve": 4
+    }
+  },
+  "readers": [
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "provider": "Xiaomi",
+      "context": {
+        "requested_window_tokens": 256000,
+        "effective_window_tokens": 256000,
+        "soft_limit_tokens": 192000,
+        "hard_limit_tokens": 230400,
+        "physical_context_tokens": 1040000,
+        "max_prompt_input_tokens": 900000,
+        "clamp_reason": null
+      }
+    },
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "provider": "InferenceNet",
+      "context": {
+        "requested_window_tokens": 256000,
+        "effective_window_tokens": 256000,
+        "soft_limit_tokens": 192000,
+        "hard_limit_tokens": 230400,
+        "physical_context_tokens": 1040000,
+        "max_prompt_input_tokens": 900000,
+        "clamp_reason": null
+      }
+    }
+  ],
+  "pricing": {
+    "schema_version": 2,
+    "currency": "USD",
+    "unit_tokens": 1000000,
+    "verified_at": "2026-09-27",
+    "source": "https://openrouter.ai/api/v1/models",
+    "catalog_checksum": "138c91da17002c99b9ba1f9eb1d1320b892b041ca22dfc53eb809d62b2c12988",
+    "models": {
+      "deepseek/deepseek-v4-flash-0731": {
+        "uncached_input": 0.021,
+        "cached_input": 0.016,
+        "output": 0.32,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Relace",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash-0731/endpoints",
+        "verification_status": "verified"
+      },
+      "deepseek/deepseek-v4.1-flash": {
+        "uncached_input": 0.035,
+        "cached_input": 0.001,
+        "output": 0.29,
+        "cognitive_window_tokens": 256000,
+        "price_provider": "InferenceNet",
+        "context_window_tokens": 1040000,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4.1-flash/endpoints",
+        "verification_status": "verified"
+      },
+      "deepseek/deepseek-v4-flash": {
+        "uncached_input": 0.03,
+        "cached_input": 0.016,
+        "output": 1.28,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Relace",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/deepseek/deepseek-v4-flash/endpoints",
+        "verification_status": "verified"
+      },
+      "google/gemini-3.7-flash": {
+        "uncached_input": 0.375,
+        "cached_input": 0.0375,
+        "output": 1.875,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Google",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/google/gemini-3.7-flash/endpoints",
+        "verification_status": "verified"
+      },
+      "z-ai/glm-5.3": {
+        "uncached_input": 1.4,
+        "cached_input": 0.14,
+        "output": 4.4,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Mistral",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints",
+        "verification_status": "verified"
+      },
+      "z-ai/glm-5.3-flash": {
+        "uncached_input": 0.045,
+        "cached_input": 0.01,
+        "output": 0.14,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "InferenceNet",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+        "verification_status": "verified"
+      },
+      "meta/muse-spark-1.3-contributor": {
+        "uncached_input": 0.1,
+        "cached_input": 0.002,
+        "output": 0.2,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Meta",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/meta/muse-spark-1.3-contributor/endpoints",
+        "verification_status": "verified"
+      },
+      "stealth/ox-alpha": {
+        "uncached_input": 1.4,
+        "cached_input": 0.14,
+        "output": 4.4,
+        "pricing_basis": "simulated:zhipuai/glm-5.3",
+        "verified_at": null,
+        "cognitive_window_tokens": 128000,
+        "verification_status": "simulated",
+        "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints"
+      },
+      "qwen/qwen3.8-max": {
+        "uncached_input": 2.0,
+        "cached_input": 0.25,
+        "output": 6.0,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "Alibaba",
+        "context_window_tokens": 1000000,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/qwen/qwen3.8-max/endpoints",
+        "verification_status": "verified"
+      },
+      "x-ai/grok-4.6": {
+        "uncached_input": 2.0,
+        "cached_input": 0.5,
+        "output": 6.0,
+        "cognitive_window_tokens": 128000,
+        "price_provider": "xAI",
+        "context_window_tokens": 500000,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/x-ai/grok-4.6/endpoints",
+        "verification_status": "verified"
+      },
+      "xiaomi/mimo-v2.6-pro": {
+        "cognitive_window_tokens": 256000,
+        "uncached_input": 0.435,
+        "cached_input": 0.0036,
+        "output": 0.87,
+        "price_provider": "Xiaomi",
+        "context_window_tokens": 1048576,
+        "verified_at": "2026-09-27",
+        "source": "https://openrouter.ai/api/v1/models/xiaomi/mimo-v2.6-pro/endpoints",
+        "verification_status": "verified"
+      }
+    },
+    "pricing_schema_version": 2,
+    "anchor": {
+      "model": "google/gemini-3.7-flash",
+      "uncached_input": 0.375,
+      "output": 1.875
+    },
+    "weight_floor": 0.2
+  },
+  "runtime_sha256": "53cb18eee911c6099e7d96243575f3ca10b8069268d94cc0910016d56a7f5f3a",
+  "runtime_files": {
+    "agent/pentest-agent/pyproject.toml": "65ecefbf990370c872e3f212f3b082695c1bb2e935f579d8f09478779b4d8a65",
+    "agent/pentest-agent/src/pentest_agent/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "agent/pentest-agent/src/pentest_agent/actors.py": "e907a196c0e046f4f6ba2390e1162f2f70a7f28f7a18d267ec5618544eb4c105",
+    "agent/pentest-agent/src/pentest_agent/artifacts.py": "7e94465443d036690219d211bfac0f623b58b5b7f700df4af5a853df55ed2d30",
+    "agent/pentest-agent/src/pentest_agent/browser/__init__.py": "c8a8c8350f3fc7453b410d40ace0454e0140245d8fc3998b7cc5c7674ce6a2dd",
+    "agent/pentest-agent/src/pentest_agent/browser/gateway.py": "999963f290884405f55f9b32058a39ebeab2a38890b3377f077d64ff0b365e53",
+    "agent/pentest-agent/src/pentest_agent/browser/models.py": "5db29919e31eebd1af27e1a79b23a290d8bc23426c6cdc5326ce195715574cc9",
+    "agent/pentest-agent/src/pentest_agent/browser/tools.py": "db6faf9ad7a27aa56bbd0912c8f5ff191e58cfa191aace1c86d6b84c208da1d5",
+    "agent/pentest-agent/src/pentest_agent/budget.py": "c2d6a08bcb002eebde002124ea45f8c090ceef389b0632327180d55b276e19bd",
+    "agent/pentest-agent/src/pentest_agent/categories.py": "1efdb71999038b76b50f44586a3defb85d76b87f922c2bcedcb3cce1df6cf71c",
+    "agent/pentest-agent/src/pentest_agent/cli.py": "e3f08e6041ac3e848d4ed1441f4ecc6e9540ca1cd48c50f9f29c47be2f43757e",
+    "agent/pentest-agent/src/pentest_agent/codebase_memory/bootstrap.py": "231f7315bb9985ddf6c44de819a82b50026c171ca98fc8b6c31e579eee94d0a5",
+    "agent/pentest-agent/src/pentest_agent/codebase_memory/client.py": "6a2f1ad33113e7dd75452eeb848182d15b7f443639feb2bbf547dfe9f1573bdb",
+    "agent/pentest-agent/src/pentest_agent/codebase_memory/models.py": "0a991d4851c41057801c75dcdb580c2896ea2ab7e98508104263f75b2b49a630",
+    "agent/pentest-agent/src/pentest_agent/config.py": "54415cf0b4415721139061747b912d11ca7d4123b2a989a9add2774060ac7484",
+    "agent/pentest-agent/src/pentest_agent/context_budget.py": "c863b5ba3dd414bc10a04727854c16241d238b1bab92f518cb1085db0c6c8df7",
+    "agent/pentest-agent/src/pentest_agent/data_flow/__init__.py": "c377be084cb02961dafe0294e08c562236f93fdb99d9dc223c5b53e718d1b898",
+    "agent/pentest-agent/src/pentest_agent/data_flow/joern.py": "160a7e33bd3b91a556d15a489a89345e97211743f7ca83518bd85900d2932000",
+    "agent/pentest-agent/src/pentest_agent/def_model.py": "2e9fd51369de23cd8a49f5bea5a75fbbc3a1aa7729c939278859b3c59c64688e",
+    "agent/pentest-agent/src/pentest_agent/deps.py": "4a72678ae6c15683642ce8ed8d71b2e9b95833f803a5c255a9bee7c694cc1208",
+    "agent/pentest-agent/src/pentest_agent/doctor.py": "dadb74e0f1f3771669271a2c99b45cacd07ffa3587eb2a805b07622e360ce50f",
+    "agent/pentest-agent/src/pentest_agent/execution.py": "1a8762765772904a3b86f9a86a5341affe9254361885c6e04280310431797b84",
+    "agent/pentest-agent/src/pentest_agent/fatal_errors.py": "288e9edf8a99b078eee88a331f98cb7f60d8abc8c4f47a3f52f2d34bb605e4a0",
+    "agent/pentest-agent/src/pentest_agent/ledger.py": "2518c55b06c2fe77de274aaa81d58ed4fbab6a93f4a0fb0a29f25b82b9ad04ae",
+    "agent/pentest-agent/src/pentest_agent/model_prices.json": "d11e1e86f061c1236dbdaf40b6835e74d1f9b2702af8e914d2aa1906fefdcd64",
+    "agent/pentest-agent/src/pentest_agent/model_trace.py": "307bdad7da20d9f49212e0b06a789e234ed490d6fb4d26b0c44cb768368991ac",
+    "agent/pentest-agent/src/pentest_agent/models.py": "229a3424ae2a41f9d548352ee3ad46b2c072a5688dab7b4f25260eaeb8cec8a5",
+    "agent/pentest-agent/src/pentest_agent/multi_category.py": "1a28db6c7cbdebca95f71b26293f6a158af9dcac33c661ceaf8da1d4a800e938",
+    "agent/pentest-agent/src/pentest_agent/net.py": "28e8ae9b04dc38a4197edb9fa560dd4915cd64d51fc302d3ceff6f890d7da9e1",
+    "agent/pentest-agent/src/pentest_agent/php_lsp.py": "7afea3ca2117d4c8232008543db5910050916cc5ae41b3fd02315c8c981ff2c1",
+    "agent/pentest-agent/src/pentest_agent/pricing.py": "2941c0c451afae1625483e018ceeec6dac37b95a903931d12a6cb57c39555de4",
+    "agent/pentest-agent/src/pentest_agent/probe.py": "a5ee5349a701b451c9d00923fc2e702f228ec5e9265eb388778a26112f41212a",
+    "agent/pentest-agent/src/pentest_agent/provider_diagnostics.py": "ec20e59816adacf1061c1b7b50f1d0a6a529edca5f136914200a383ec0e457a9",
+    "agent/pentest-agent/src/pentest_agent/provider_usage.py": "bccfa7031af14eb0d4a3872c00dbac2834fe232dcc4770786f6f74c7df63426b",
+    "agent/pentest-agent/src/pentest_agent/ptc.py": "10c5f7405b6cacd495c15aef4d3f094a5ad94c60e0b90d5f9ede7a54da10ff6d",
+    "agent/pentest-agent/src/pentest_agent/run_events.py": "398beda42baf75ffeb3b882a428481c98eb944838c86da6ae1e4431f99fd213b",
+    "agent/pentest-agent/src/pentest_agent/runtime_tools.py": "f304c8c1209c63d497e7c5e7bb3c55ab6c0d7d16ec970566929182e796428376",
+    "agent/pentest-agent/src/pentest_agent/scripts/audit_model_tool_trace.py": "7e747b6acf564dd9a58a29100fc8d31b4a1045e03ee64a5dc62ee5b359c8e365",
+    "agent/pentest-agent/src/pentest_agent/structured_output.py": "e04f907f163291effbdc88df7114506cc7d91a79c232bc7d0ac3d3246d3f74b5",
+    "agent/pentest-agent/src/pentest_agent/surface_context.py": "4342a500c602c3fc600849e1b0c3beb72a8df50f0cabf78b45ba246dba28ecaf",
+    "agent/pentest-agent/src/pentest_agent/tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "agent/pentest-agent/src/pentest_agent/tools/compression_manager.py": "6ea4bb5cae1840bbd0a37234a40e900272e9ed8a266f578afe716d2aa7b51afd",
+    "agent/pentest-agent/src/pentest_agent/tools/crypto_artifact.py": "62ff129a394fe278e2c06c81f9e5e026f91779bdf67d5b806723945d6813fcfb",
+    "agent/pentest-agent/src/pentest_agent/tools/data_flow.py": "5192dd6da940ff7e3e412abc53a17d92a7b271d649306dfd53045a0d9b8ba07a",
+    "agent/pentest-agent/src/pentest_agent/tools/graph.py": "57c8cd833eb36febe33550aac68f4003911b4cc493fb9b5360315475e584fe9d",
+    "agent/pentest-agent/src/pentest_agent/tools/http_probe.py": "ca7e61b88c87d597f7e1bfe7f376e64b7aba483c4a970913aa66178e9995adb6",
+    "agent/pentest-agent/src/pentest_agent/tools/more_tools.py": "7eb70257593da06f682a3ddda54a9d260d4fc514f645237f5ca74b08f8da61a6",
+    "agent/pentest-agent/src/pentest_agent/tools/owasp.py": "91cad11e7d1eafbfe839f647a770fd45d0c6bf2e7fb38035e584611dabdab2fd",
+    "agent/pentest-agent/src/pentest_agent/tools/tool_output.py": "ff3ddac922db0a6361294c18b601e027491f7f9f149974ad886ae09c857bb284",
+    "agent/pentest-agent/src/pentest_agent/triple_agent.py": "60c6c32d19cef14fdd4b002080aad380fbb0ba96045413590b91e0521093db09",
+    "agent/pentest-agent/uv.lock": "f4c08f291bd996530614855f136f315da1ffaa5c50b6808582b04a2bb876d721",
+    "app/Console/Commands/BenchmarkReaderGlobal.php": "d0ce42f2394fe838e376a12907921ce51a091e7a84b6549a7766199b67ef76cd",
+    "app/Services/Pentest/BenchmarkStageProcessRunner.php": "a453db9d5d43d567aaa43535297cedaa3a4c1c166895ebdc2b467fceab953219"
+  },
+  "offline_evaluation": {
+    "status": "pending",
+    "useful_root_causes": null
+  },
+  "comparison": {
+    "cost_basis": "complete_provider_usd",
+    "common_range": "0..min(reached_usd)",
+    "extrapolate": false
+  }
+}

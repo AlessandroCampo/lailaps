@@ -1,0 +1,28 @@
+ M ARCHITECTURE.md
+ M agent/pentest-agent/src/pentest_agent/cli.py
+ M agent/pentest-agent/src/pentest_agent/config.py
+ M agent/pentest-agent/src/pentest_agent/context_budget.py
+ M agent/pentest-agent/src/pentest_agent/deps.py
+ M agent/pentest-agent/src/pentest_agent/ledger.py
+ M agent/pentest-agent/src/pentest_agent/model_prices.json
+ M agent/pentest-agent/src/pentest_agent/pricing.py
+ M agent/pentest-agent/src/pentest_agent/runtime_tools.py
+ M agent/pentest-agent/src/pentest_agent/tools/compression_manager.py
+ M agent/pentest-agent/src/pentest_agent/tools/data_flow.py
+ M agent/pentest-agent/src/pentest_agent/tools/graph.py
+ M agent/pentest-agent/src/pentest_agent/triple_agent.py
+ M agent/pentest-agent/tests/test_benchmark_v0_metrics.py
+ M agent/pentest-agent/tests/test_context_budgeting.py
+ M agent/pentest-agent/tests/test_economic_budget.py
+ M agent/pentest-agent/tests/test_recon_reader_assignments.py
+ M agent/pentest-agent/tests/test_triple_agent.py
+ M app/Console/Commands/BenchmarkReaderGlobal.php
+ M app/Console/Commands/BenchmarkRecon.php
+ M app/Console/Commands/BenchmarkReconImport.php
+ M tests/Feature/Pentest/BenchmarkReaderGlobalCommandTest.php
+ M tests/Feature/Pentest/BenchmarkReconImportCommandTest.php
+ M tests/Unit/Pentest/BenchmarkReconCommandTest.php
+?? plans/.p0-baseline.patch
+?? plans/P0-deduper-e-valutazione-semantica-benchmark-20260928.md
+?? plans/reader-256k-comparison-20260927.json
+?? plans/reader-256k-delivery-20260927.md

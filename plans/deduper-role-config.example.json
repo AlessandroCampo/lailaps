@@ -1,0 +1,34 @@
+{
+  "project": "yeswiki",
+  "snapshot": "7325759547611def210a731b103878bd696c419c",
+  "deduper": {
+    "model": "z-ai/glm-5.3-flash",
+    "provider": "auto",
+    "total_points": 100000,
+    "input_cap": 85333,
+    "output_cap": 16384,
+    "requests": 4,
+    "extra_attempts": 1,
+    "max_http_attempts": 5,
+    "reasoning_effort": "low",
+    "connect_timeout_seconds": 15,
+    "read_timeout_seconds": 90,
+    "timeout_seconds": 120,
+    "decision_timeout_seconds": 300
+  },
+  "evaluator": {
+    "model": "z-ai/glm-5.3-flash",
+    "provider": "InferenceNet",
+    "total_points": 200000,
+    "input_cap": 64000,
+    "output_cap": 8192,
+    "requests": 2,
+    "extra_attempts": 1,
+    "max_http_attempts": 3,
+    "reasoning_effort": "low",
+    "connect_timeout_seconds": 15,
+    "read_timeout_seconds": 90,
+    "timeout_seconds": 120,
+    "decision_timeout_seconds": 300
+  }
+}

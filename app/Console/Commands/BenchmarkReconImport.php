@@ -44,8 +44,9 @@ final class BenchmarkReconImport extends Command
             );
         }
         $payload = $outputs[0]['payload'];
-        if (($payload['status'] ?? null) !== 'ready' || count((array) ($payload['areas'] ?? [])) !== 16) {
-            throw new InvalidArgumentException('La Golden Recon richiesta deve essere ready con esattamente 16 aree.');
+        $areaCount = count((array) ($payload['areas'] ?? []));
+        if (($payload['status'] ?? null) !== 'ready' || $areaCount < 1) {
+            throw new InvalidArgumentException('La Golden Recon richiesta deve essere ready con almeno un area.');
         }
 
         $manifests = $catalog->forTarget($target);
@@ -91,7 +92,7 @@ final class BenchmarkReconImport extends Command
             'accepted' => true,
             'payload' => $payload,
             'usage' => (array) data_get($report, 'telemetry.role_usage.category_recon', []),
-            'metrics' => ['imported_from' => $path, 'area_count' => 16],
+            'metrics' => ['imported_from' => $path, 'area_count' => $areaCount],
             'evaluator_version' => 'golden-import-v1',
         ]);
         $parent = $tree['parent'];
@@ -100,7 +101,7 @@ final class BenchmarkReconImport extends Command
         }
 
         $this->info("Recon importata: {$parent->id}");
-        $this->line('16 aree');
+        $this->line($areaCount.' aree');
         if ($this->option('golden')) {
             $this->info('Golden Recon global promossa.');
         }
