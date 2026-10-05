@@ -10,7 +10,7 @@ use Illuminate\Support\Collection;
 final class BenchmarkRoleCompare extends Command
 {
     protected $signature = 'benchmark:role:compare
-        {role : recon, reader, reviewer, confirmer, worker oppure judge}
+        {role : recon, reader, reviewer, confirmer, worker}
         {--experiment= : Limita a un esperimento}
         {--target= : Limita al target}
         {--category= : Limita alla categoria}
@@ -22,7 +22,7 @@ final class BenchmarkRoleCompare extends Command
     public function handle(): int
     {
         $role = strtolower(trim((string) $this->argument('role')));
-        if (! in_array($role, ['recon', 'reader', 'reviewer', 'confirmer', 'worker', 'judge'], true)) {
+        if (! in_array($role, ['recon', 'reader', 'reviewer', 'confirmer', 'worker'], true)) {
             $this->error('Ruolo non valido.');
 
             return self::INVALID;

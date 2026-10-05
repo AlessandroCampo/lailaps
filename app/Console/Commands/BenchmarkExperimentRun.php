@@ -95,7 +95,6 @@ final class BenchmarkExperimentRun extends Command
                         'reader_checkpoint_strategy' => $readerCheckpointStrategy,
                         'worker_model' => $models['worker'] ?? null,
                         'confirmer_model' => $models['confirmer'] ?? null,
-                        'judge_model' => $models['judge'] ?? null,
                         'benchmark_subject_role' => $definition['subject_role'] ?? null,
                         'target_mode' => 'sandbox', 'url' => null, 'db' => null,
                         'health_path' => null, 'skip_health' => false, 'authorized' => true,
@@ -169,14 +168,14 @@ final class BenchmarkExperimentRun extends Command
         $role = strtolower(trim((string) ($definition['subject_role'] ?? '')));
         $subjectModels = $definition['subject_models'] ?? null;
         $controls = $definition['control_models'] ?? null;
-        if (! in_array($role, ['recon', 'reader', 'reviewer', 'confirmer', 'worker', 'judge'], true)
+        if (! in_array($role, ['recon', 'reader', 'reviewer', 'confirmer', 'worker'], true)
             || ! is_array($subjectModels) || $subjectModels === [] || ! is_array($controls)) {
             throw new \InvalidArgumentException(
                 'Usa models oppure subject_role + subject_models + control_models.',
             );
         }
         $parameterRole = $role === 'recon' ? 'reader' : $role;
-        $requiredControls = array_values(array_diff(['reader', 'reviewer', 'confirmer', 'worker', 'judge'], [$parameterRole]));
+        $requiredControls = array_values(array_diff(['reader', 'reviewer', 'confirmer', 'worker'], [$parameterRole]));
         foreach ($requiredControls as $requiredRole) {
             if (! is_string($controls[$requiredRole] ?? null) || trim((string) $controls[$requiredRole]) === '') {
                 throw new \InvalidArgumentException("control_models deve fissare il ruolo {$requiredRole}.");

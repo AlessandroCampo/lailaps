@@ -6,6 +6,24 @@ use Tests\TestCase;
 
 uses(TestCase::class);
 
+it('propagates global pipeline configuration through both launch routes', function (string $type): void {
+    $run = new AuditRun;
+    $run->audit_id = 'global-fixture';
+    $run->type = $type;
+    $run->parameters = [
+        'global' => true, 'reader_checkpoint_strategy' => 'reader_checkpoint',
+        'reader_concurrency' => 3, 'confirmer_concurrency' => 2, 'worker_concurrency' => 1,
+        'reader_points' => 123000, 'worker_points' => 1000000, 'ttl' => 1800,
+        'preset' => $type === 'audit' ? 'dvwa' : null,
+        'benchmark_id' => $type === 'benchmark' ? 'bookstack' : null,
+    ];
+    expect((new AuditCommandBuilder)->build($run))->toContain(
+        '--global', '--reader-checkpoint-strategy=reader_checkpoint',
+        '--reader-concurrency=3', '--confirmer-concurrency=2', '--worker-concurrency=1',
+        '--reader-points=123000', '--worker-points=1000000',
+    );
+})->with(['audit', 'benchmark']);
+
 it('routes the OWASP preset through the unbiased benchmark command regardless of run type', function (): void {
     $run = new AuditRun;
     $run->audit_id = 'audit-123';
@@ -81,7 +99,7 @@ it('forwards a test-only Recon area hint to the benchmark runner', function (): 
         ->toContain('--test-area=Bazar: stored XSS in page rendering');
 });
 
-it('forwards a dedicated Dynamic Judge model without changing the Worker', function (): void {
+it('ignores historical Judge settings and forwards the Worker model', function (): void {
     $run = new AuditRun;
     $run->audit_id = 'audit-judge-model';
     $run->parameters = [
@@ -92,7 +110,7 @@ it('forwards a dedicated Dynamic Judge model without changing the Worker', funct
 
     expect((new AuditCommandBuilder)->build($run))
         ->toContain('--worker-model=deepseek/worker')
-        ->toContain('--judge-model=google/judge');
+        ->not->toContain('--judge-model=google/judge');
 });
 
 it('keeps ordinary presets on the generic pentest command', function (): void {

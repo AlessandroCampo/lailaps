@@ -32,10 +32,14 @@ final class BenchmarkRun extends Command
         {--recon-model= : Modello OpenRouter per Global Recon e Category Recon}
         {--reader-model= : Modello OpenRouter per il Reader}
         {--reviewer-model= : Modello OpenRouter per l Exploration Reviewer}
-        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+        {--reader-checkpoint-strategy= : Default globale reader_checkpoint; filtrato reviewer}
+        {--reader-concurrency=4 : Reader globali concorrenti, da 1 a 4}
+        {--confirmer-concurrency=4 : Confirmer globali concorrenti}
+        {--worker-concurrency=2 : Worker globali concorrenti}
+        {--reader-points= : Cap EP aggregato Reader globale}
+        {--worker-points= : Envelope EP per Worker globale; default 1000000}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
         {--worker-model= : Modello OpenRouter per il Worker}
-        {--judge-model= : Modello OpenRouter per il Dynamic Judge}
         {--operative-model= : Modello OpenRouter per Confirmer e Worker; sostituisce i default di ruolo}
         {--budget-category= : Preset discovery per categoria: small, regular, big oppure huge}
         {--test-area= : Solo benchmark/test: area semantica da prioritizzare in Recon}
@@ -55,10 +59,16 @@ final class BenchmarkRun extends Command
         BenchmarkResultAggregator $aggregator,
         RunStorage $storage,
     ): int {
+        if ($this->option('global')) {
+            \App\Services\Pentest\GlobalPipelineOptions::validate($this->options());
+        }
         if ((int) $this->option('depth') < 1) {
             throw new InvalidArgumentException('--depth deve essere almeno 1.');
         }
-        $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
+        $readerCheckpointStrategy = $this->option('reader-checkpoint-strategy') ?: ($this->option('global') ? 'reader_checkpoint' : 'reviewer');
+        if ($this->option('global') && $readerCheckpointStrategy !== 'reader_checkpoint') {
+            throw new InvalidArgumentException('--global richiede reader_checkpoint.');
+        }
         if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
                 'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
@@ -166,6 +176,7 @@ final class BenchmarkRun extends Command
                 $global,
                 $runtimeSource,
                 $sourceSnapshot,
+                $this->runtimeComposeFile($runtimeOverlay, $runtimeSource),
             );
             if ($global) {
                 $exit = Artisan::call('pentest:run', $parameters, $this->output);
@@ -336,6 +347,7 @@ final class BenchmarkRun extends Command
         bool $global,
         ?string $runtimeSource,
         string $sourceSnapshot,
+        ?string $runtimeCompose = null,
     ): array {
         $parameters = [
             '--path' => $agentSource,
@@ -351,7 +363,6 @@ final class BenchmarkRun extends Command
             '--reader-checkpoint-strategy' => $this->option('reader-checkpoint-strategy'),
             '--confirmer-model' => $this->option('confirmer-model'),
             '--worker-model' => $this->option('worker-model'),
-            '--judge-model' => $this->option('judge-model'),
             '--operative-model' => $this->option('operative-model'),
             '--budget-category' => $this->option('budget-category'),
             '--test-area' => $this->option('test-area'),
@@ -362,8 +373,17 @@ final class BenchmarkRun extends Command
             '--depth' => (string) $this->option('depth'),
             '--assume-authorized' => $this->enabledOption('assume-authorized'),
         ];
+        if ($runtimeCompose !== null) {
+            $parameters['--compose'] = $runtimeCompose;
+        }
         if ($global) {
             $parameters['--global'] = true;
+            $parameters['--reader-checkpoint-strategy'] = $this->option('reader-checkpoint-strategy') ?: 'reader_checkpoint';
+            foreach (['reader-concurrency', 'confirmer-concurrency', 'worker-concurrency', 'reader-points', 'worker-points'] as $name) {
+                if ($this->option($name) !== null && $this->option($name) !== '') {
+                    $parameters['--'.$name] = (string) $this->option($name);
+                }
+            }
             if ($categories !== []) {
                 $parameters['--category'] = $categories;
             }
@@ -381,6 +401,22 @@ final class BenchmarkRun extends Command
         }
 
         return $parameters;
+    }
+
+    private function runtimeComposeFile(?string $runtimeOverlay, ?string $runtimeSource): ?string
+    {
+        if ($runtimeOverlay === null || $runtimeSource === null) {
+            return null;
+        }
+
+        // Choose from the harness overlay, not upstream development compose files.
+        foreach (['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml'] as $name) {
+            if (is_file($runtimeOverlay.'/'.$name)) {
+                return $runtimeSource.'/'.$name;
+            }
+        }
+
+        return null;
     }
 
     /** @param array<string, mixed> $benchmark @return list<string> */

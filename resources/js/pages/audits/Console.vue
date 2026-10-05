@@ -110,7 +110,6 @@ const form = useForm({
     reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
-    judge_model: '',
     image: '',
     dockerfile: '',
     compose: '',
@@ -654,10 +653,6 @@ onBeforeUnmount(() => {
                         <Input
                             v-model="form.worker_model"
                             placeholder="Worker model (default)"
-                        />
-                        <Input
-                            v-model="form.judge_model"
-                            placeholder="Dynamic Judge model (default)"
                         />
                         <label
                             class="flex items-center gap-2 text-sm text-zinc-300"

@@ -77,7 +77,7 @@ final class AuditRunFinalizer
         ];
         $models = (array) ($report['models'] ?? []);
         if ($models === []) {
-            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium', 'judge' => 'medium'] as $role => $effort) {
+            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium'] as $role => $effort) {
                 $requested = $run->parameters[$role.'_model'] ?? null;
                 if (is_string($requested) && $requested !== '') {
                     $models[] = [
@@ -110,6 +110,17 @@ final class AuditRunFinalizer
     private function refreshBenchmarkLifecycle(AuditRun $run, string $targetId, string $root, array $benchmark): array
     {
         $outcome = $this->storage->outcome($root, $run->audit_id);
+        if (($benchmark['mode'] ?? null) === 'worker_checkpoint_batch') {
+            $batch = (array) data_get($outcome, 'report.worker_batch', []);
+            foreach (['attempted_count' => 'attempted', 'terminal_decision_count' => 'terminal_decisions',
+                'technical_failure_count' => 'technical_failures', 'not_run_count' => 'not_run',
+                'completed' => 'completed_all'] as $source => $destination) {
+                if (array_key_exists($source, $batch)) {
+                    $benchmark[$destination] = $batch[$source];
+                }
+            }
+            $benchmark['termination_reason'] = data_get($outcome, 'report.termination_reason');
+        }
         if (isset($benchmark['by_category']) && is_array($benchmark['by_category'])) {
             $results = [];
             foreach ($benchmark['by_category'] as $slug => $result) {
@@ -143,6 +154,9 @@ final class AuditRunFinalizer
     /** @return array<string, mixed>|null */
     private function recoverBenchmark(AuditRun $run, string $targetId, string $root, ?array $previous = null): ?array
     {
+        if (($previous['mode'] ?? null) === 'worker_checkpoint_batch') {
+            return $previous;
+        }
         $source = base_path('targets/'.$targetId);
         if (! is_dir($source)) {
             return null;

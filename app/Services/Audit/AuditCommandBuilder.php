@@ -52,6 +52,7 @@ final class AuditCommandBuilder
             }
             if ((bool) ($p['global'] ?? false)) {
                 $command[] = '--global';
+                $this->globalPipelineOptions($command, $p);
             }
             $this->value($command, 'url', $p['url'] ?? null);
             $this->value($command, 'db', $p['db'] ?? null);
@@ -65,7 +66,6 @@ final class AuditCommandBuilder
             );
             $this->value($command, 'confirmer-model', $p['confirmer_model'] ?? null);
             $this->value($command, 'worker-model', $p['worker_model'] ?? null);
-            $this->value($command, 'judge-model', $p['judge_model'] ?? null);
             $this->value($command, 'budget-category', $p['budget_category'] ?? null);
             $this->value($command, 'test-area', $p['test_area'] ?? null);
             if ((bool) ($p['skip_health'] ?? false)) {
@@ -99,6 +99,7 @@ final class AuditCommandBuilder
         }
         if ((bool) ($p['global'] ?? false)) {
             $argv[] = '--global';
+            $this->globalPipelineOptions($argv, $p);
         }
         $this->value($argv, 'url', $p['url'] ?? null);
         $this->value($argv, 'db', $p['db'] ?? null);
@@ -119,7 +120,6 @@ final class AuditCommandBuilder
         );
         $this->value($argv, 'confirmer-model', $p['confirmer_model'] ?? null);
         $this->value($argv, 'worker-model', $p['worker_model'] ?? null);
-        $this->value($argv, 'judge-model', $p['judge_model'] ?? null);
         $argv[] = '--ttl='.(int) $p['ttl'];
 
         foreach ([
@@ -144,6 +144,14 @@ final class AuditCommandBuilder
     {
         if ($value !== null && $value !== '') {
             $argv[] = '--'.$name.'='.(string) $value;
+        }
+    }
+
+    /** @param list<string> $argv @param array<string, mixed> $parameters */
+    private function globalPipelineOptions(array &$argv, array $parameters): void
+    {
+        foreach (['reader-concurrency', 'confirmer-concurrency', 'worker-concurrency', 'reader-points', 'worker-points'] as $name) {
+            $this->value($argv, $name, $parameters[str_replace('-', '_', $name)] ?? null);
         }
     }
 }

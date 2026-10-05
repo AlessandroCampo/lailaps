@@ -30,6 +30,11 @@ class StoreAuditRunRequest extends FormRequest
             'skip_health' => ['boolean'],
             'authorized' => ['boolean'],
             'global' => ['boolean'],
+            'reader_concurrency' => ['nullable', 'integer', 'between:1,4'],
+            'confirmer_concurrency' => ['nullable', 'integer', 'min:1'],
+            'worker_concurrency' => ['nullable', 'integer', 'min:1'],
+            'reader_points' => ['nullable', 'numeric', 'gt:0'],
+            'worker_points' => ['nullable', 'numeric', 'gt:0'],
             'depth' => ['required', 'integer', 'min:1'],
             'categories' => ['array', 'max:2'],
             'categories.*' => ['string', 'max:160', 'distinct'],
@@ -40,7 +45,6 @@ class StoreAuditRunRequest extends FormRequest
             ],
             'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
-            'judge_model' => ['nullable', 'string', 'max:255'],
             'image' => ['nullable', 'string', 'max:255'],
             'dockerfile' => ['nullable', 'string', 'max:2048'],
             'compose' => ['nullable', 'string', 'max:2048'],
@@ -59,6 +63,12 @@ class StoreAuditRunRequest extends FormRequest
     public function after(): array
     {
         return [function (Validator $validator): void {
+            if ($this->boolean('global') && $this->filled('reader_checkpoint_strategy') && $this->input('reader_checkpoint_strategy') !== 'reader_checkpoint') {
+                $validator->errors()->add('reader_checkpoint_strategy', 'La run globale richiede reader_checkpoint.');
+            }
+            if ($this->boolean('global') && $this->filled('reviewer_model')) {
+                $validator->errors()->add('reviewer_model', 'La run globale non prevede Reviewer.');
+            }
             if ((string) $this->input('type') === 'benchmark') {
                 if (! $this->filled('benchmark_id')) {
                     $validator->errors()->add('benchmark_id', 'Seleziona un benchmark.');
@@ -95,12 +105,17 @@ class StoreAuditRunRequest extends FormRequest
             'global' => false, 'depth' => 1, 'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
             'reader_checkpoint_strategy' => 'reviewer',
             'confirmer_model' => null,
-            'worker_model' => null, 'judge_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
+            'worker_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
             'test' => false, 'keep' => false, 'tool_output' => false, 'benchmark_id' => null,
         ], $this->validated());
 
         if ($normalized['global']) {
+            $normalized['reader_checkpoint_strategy'] = 'reader_checkpoint';
+            $normalized['reviewer_model'] = null;
+            $normalized['reader_concurrency'] ??= 4;
+            $normalized['confirmer_concurrency'] ??= 4;
+            $normalized['worker_concurrency'] ??= 2;
             $normalized['categories'] = [];
         }
 

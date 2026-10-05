@@ -4,6 +4,7 @@ use App\Console\Commands\BenchmarkExperimentRun;
 use App\Console\Commands\BenchmarkRun;
 use App\Jobs\ExecuteAuditRun;
 use App\Services\Pentest\BenchmarkResultAggregator;
+use Illuminate\Support\Facades\File;
 use Symfony\Component\Console\Input\ArrayInput;
 use Tests\TestCase;
 
@@ -16,7 +17,7 @@ it('exposes independent worker and operative model options', function (): void {
         ->and($definition->hasOption('model'))->toBeTrue()
         ->and($definition->hasOption('recon-model'))->toBeTrue()
         ->and($definition->hasOption('worker-model'))->toBeTrue()
-        ->and($definition->getOption('reader-checkpoint-strategy')->getDefault())->toBe('reviewer')
+        ->and($definition->getOption('reader-checkpoint-strategy')->getDefault())->toBeNull()
         ->and($definition->hasOption('test-area'))->toBeTrue()
         ->and($definition->hasOption('reuse-sandbox'))->toBeTrue()
         ->and($definition->hasOption('global'))->toBeTrue()
@@ -50,13 +51,65 @@ it('builds a one-variable-at-a-time role model matrix', function (): void {
         'subject_models' => ['acme/sol', 'acme/glm'],
         'control_models' => [
             'reviewer' => 'acme/reviewer', 'confirmer' => 'acme/confirmer',
-            'worker' => 'acme/worker', 'judge' => 'acme/judge',
+            'worker' => 'acme/worker',
         ],
     ]);
 
     expect($matrix)->toHaveCount(2)
         ->and($matrix[0])->toMatchArray(['reader' => 'acme/sol', 'worker' => 'acme/worker'])
-        ->and($matrix[1])->toMatchArray(['reader' => 'acme/glm', 'judge' => 'acme/judge']);
+        ->and($matrix[1])->toMatchArray(['reader' => 'acme/glm', 'worker' => 'acme/worker']);
+});
+
+it('passes the harness compose explicitly when upstream has a development compose', function (): void {
+    $directory = storage_path('framework/testing/benchmark-compose-'.uniqid());
+    File::ensureDirectoryExists($directory.'/overlay');
+    File::ensureDirectoryExists($directory.'/runtime');
+    try {
+        File::put($directory.'/overlay/compose.yml', "services:\n  bookstack-web:\n    image: benchmark\n");
+        File::put($directory.'/runtime/compose.yml', File::get($directory.'/overlay/compose.yml'));
+        File::put($directory.'/runtime/docker-compose.yml', "services:\n  app:\n    image: development\n");
+        $command = app(BenchmarkRun::class);
+        $command->setInput(new ArrayInput(['target-id' => 'bookstack'], $command->getDefinition()));
+        $compose = (new ReflectionMethod(BenchmarkRun::class, 'runtimeComposeFile'))->invoke(
+            $command, $directory.'/overlay', $directory.'/runtime',
+        );
+        $parameters = (new ReflectionMethod(BenchmarkRun::class, 'pentestParameters'))->invoke(
+            $command, base_path(), 'fixture-run', 'bookstack', null, [], true,
+            $directory.'/runtime', 'snapshot', $compose,
+        );
+        expect($parameters['--compose'])->toBe($directory.'/runtime/compose.yml');
+    } finally {
+        File::deleteDirectory($directory);
+    }
+});
+
+it('keeps source compose discovery when the runtime overlay has no compose', function (): void {
+    $command = app(BenchmarkRun::class);
+    $command->setInput(new ArrayInput(['target-id' => 'fixture'], $command->getDefinition()));
+    $compose = (new ReflectionMethod(BenchmarkRun::class, 'runtimeComposeFile'))->invoke(
+        $command, __DIR__, base_path(),
+    );
+    $parameters = (new ReflectionMethod(BenchmarkRun::class, 'pentestParameters'))->invoke(
+        $command, base_path(), 'fixture-run', 'fixture', null, [], false, base_path(), 'snapshot', $compose,
+    );
+    expect($compose)->toBeNull()->and($parameters)->not->toHaveKey('--compose');
+});
+
+it('defaults global benchmarks to reader checkpoints and forwards pipeline overrides', function (): void {
+    $command = app(BenchmarkRun::class);
+    $command->setInput(new ArrayInput([
+        'target-id' => 'bookstack', '--global' => true,
+        '--reader-concurrency' => '3', '--confirmer-concurrency' => '2', '--worker-concurrency' => '1',
+        '--reader-points' => '123000', '--worker-points' => '1000000',
+    ], $command->getDefinition()));
+    $parameters = (new ReflectionMethod(BenchmarkRun::class, 'pentestParameters'))->invoke(
+        $command, base_path(), 'fixture-run', 'bookstack', null, [], true, null, 'snapshot',
+    );
+    expect($parameters)->toMatchArray([
+        '--reader-checkpoint-strategy' => 'reader_checkpoint', '--reader-concurrency' => '3',
+        '--confirmer-concurrency' => '2', '--worker-concurrency' => '1',
+        '--reader-points' => '123000', '--worker-points' => '1000000',
+    ]);
 });
 
 it('supports sequential foreground experiments without a queue worker', function (): void {

@@ -25,9 +25,8 @@ final class BenchmarkCveRun extends Command
         {--assume-authorized=true : Conferma autorizzazione per target non locale}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
         {--worker-model= : Modello OpenRouter per il Worker}
-        {--judge-model= : Modello OpenRouter per il Dynamic Judge}
         {--operative-model= : Modello OpenRouter per Confirmer e Worker}
-        {--envelope-points= : Hard cap condiviso per Confirmer, Worker e Judge}
+        {--envelope-points= : Hard cap condiviso per Confirmer e Worker}
         {--tool-output : Mostra una sintesi compatta delle risposte dei tool}
         {--audit-id= : ID parlante della run}
         {--keep : Mantiene la sandbox avviata solo per diagnostica}
@@ -95,7 +94,7 @@ final class BenchmarkCveRun extends Command
                 '--category' => [$manifest->auditCategory()], '--cve-subject' => $subjectPath,
                 '--fixture-probes' => $fixturePath, '--envelope-points' => $envelope,
                 '--confirmer-model' => $this->option('confirmer-model'), '--worker-model' => $this->option('worker-model'),
-                '--judge-model' => $this->option('judge-model'), '--operative-model' => $this->option('operative-model'),
+                '--operative-model' => $this->option('operative-model'),
                 '--tool-output' => $this->option('tool-output'),
                 // A single-CVE benchmark is repeatable only with a pristine DB.
                 // Keep is deliberately opt-in; PentestRun then tears down both

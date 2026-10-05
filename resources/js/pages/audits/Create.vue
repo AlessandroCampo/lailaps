@@ -30,13 +30,17 @@ const form = useForm({
     skip_health: false,
     authorized: false,
     global: false,
+    reader_concurrency: 4,
+    confirmer_concurrency: 4,
+    worker_concurrency: 2,
+    reader_points: '' as string | number,
+    worker_points: '' as string | number,
     depth: 1,
     categories: [''] as string[],
     reader_model: '',
     reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
-    judge_model: '',
     image: '',
     dockerfile: '',
     compose: '',
@@ -67,6 +71,7 @@ const submit = () =>
     form
         .transform((data) => ({
             ...data,
+            reviewer_model: data.global ? '' : data.reviewer_model,
             categories: data.global ? [] : data.categories.filter(Boolean),
         }))
         .post('/audits');
@@ -323,15 +328,7 @@ const submit = () =>
                                 placeholder="Default configurato"
                             />
                         </div>
-                        <div>
-                            <Label>Dynamic Judge model</Label
-                            ><Input
-                                v-model="form.judge_model"
-                                class="mt-2"
-                                placeholder="Default: Gemini 3.7 Flash"
-                            />
-                        </div>
-                        <div>
+                        <div v-if="!form.global">
                             <Label>Exploration Reviewer model</Label
                             ><Input
                                 v-model="form.reviewer_model"
@@ -345,6 +342,69 @@ const submit = () =>
                                 v-model="form.confirmer_model"
                                 class="mt-2"
                                 placeholder="Default configurato"
+                            />
+                        </div>
+                    </div>
+                    <div
+                        v-if="form.global"
+                        class="mt-4 grid gap-4 md:grid-cols-3"
+                    >
+                        <div>
+                            <Label>Reader contemporanei</Label
+                            ><Input
+                                v-model="form.reader_concurrency"
+                                type="number"
+                                min="1"
+                                max="4"
+                                class="mt-2"
+                            /><InputError
+                                :message="form.errors.reader_concurrency"
+                            />
+                        </div>
+                        <div>
+                            <Label>Confirmer contemporanei</Label
+                            ><Input
+                                v-model="form.confirmer_concurrency"
+                                type="number"
+                                min="1"
+                                class="mt-2"
+                            /><InputError
+                                :message="form.errors.confirmer_concurrency"
+                            />
+                        </div>
+                        <div>
+                            <Label>Worker contemporanei</Label
+                            ><Input
+                                v-model="form.worker_concurrency"
+                                type="number"
+                                min="1"
+                                class="mt-2"
+                            /><InputError
+                                :message="form.errors.worker_concurrency"
+                            />
+                        </div>
+                        <div>
+                            <Label>Cap Reader (EP totali)</Label
+                            ><Input
+                                v-model="form.reader_points"
+                                type="number"
+                                min="1"
+                                placeholder="Default del preset"
+                                class="mt-2"
+                            /><InputError
+                                :message="form.errors.reader_points"
+                            />
+                        </div>
+                        <div>
+                            <Label>Budget per Worker (EP)</Label
+                            ><Input
+                                v-model="form.worker_points"
+                                type="number"
+                                min="1"
+                                placeholder="1000000"
+                                class="mt-2"
+                            /><InputError
+                                :message="form.errors.worker_points"
                             />
                         </div>
                     </div>
