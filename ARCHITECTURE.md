@@ -1,5 +1,18 @@
 # Architettura del loop agentico di Lailaps
 
+## Branch minimal: SQL sui record (P0-S)
+
+`query_database` è un unico tool per letture e INSERT/UPDATE/DELETE della sandbox.
+Il guard analizza una sola istruzione nel dialetto selezionato, incluse CTE,
+e rifiuta DDL, privilegi, cataloghi di sistema, hint e funzioni non riconosciute
+che potrebbero invocare procedure. Le sessioni non sono più forzate read-only;
+i limiti di righe riguardano i risultati e non alterano le scritture. Le query
+e gli esiti restano nel journal esistente. Setup realistico e validità della
+prova sono valutazioni del modello: non concedere all’attaccante il privilegio
+da dimostrare, non disabilitare protezioni, distinguere preparazione SQL da
+effetti ottenuti tramite HTTP/browser. Non ripetere scritture con esito incerto.
+Questa sezione sostituisce le descrizioni SQL read-only legacy sottostanti.
+
 ## Scopo e flusso generale
 
 ## Persistenza auditabile della run
