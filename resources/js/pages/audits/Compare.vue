@@ -44,7 +44,6 @@ interface Group {
     targetCommit?: string | null;
     models: {
         reader?: string | null;
-        reviewer?: string | null;
         worker?: string | null;
         confirmer?: string | null;
     };
@@ -63,7 +62,6 @@ interface Options {
     revisions: string[];
     experiments: Record<string, string>;
     readers: string[];
-    reviewers: string[];
     workers: string[];
     confirmers: string[];
 }
@@ -83,7 +81,6 @@ let scatter: echarts.ECharts | null = null;
 const modelLabel = (group: Group) =>
     [
         group.models.reader,
-        group.models.reviewer,
         group.models.worker,
         group.models.confirmer,
     ]
@@ -313,15 +310,7 @@ onBeforeUnmount(() => {
                         {{ value }}
                     </option>
                 </select>
-                <select
-                    v-model="form.reviewer"
-                    class="h-9 rounded-md border bg-background px-2 text-sm"
-                >
-                    <option value="">Reviewer: tutti</option>
-                    <option v-for="value in options.reviewers" :key="value">
-                        {{ value }}
-                    </option>
-                </select>
+
                 <select
                     v-model="form.confirmer"
                     class="h-9 rounded-md border bg-background px-2 text-sm"
@@ -471,72 +460,7 @@ onBeforeUnmount(() => {
                             ><tr class="border-t align-top">
                                 <td class="p-3 font-medium">
                                     {{ group.target
-                                    }}<span
-                                        class="block text-xs text-muted-foreground"
-                                        >{{ group.category }}</span
-                                    >
-                                </td>
-                                <td class="p-3 text-xs">
-                                    <div>
-                                        R {{ group.models.reader || '—' }}
-                                    </div>
-                                    <div>
-                                        Rev {{ group.models.reviewer || '—' }}
-                                    </div>
-                                    <div>
-                                        W {{ group.models.worker || '—' }}
-                                    </div>
-                                    <div>
-                                        C {{ group.models.confirmer || '—' }}
-                                    </div>
-                                </td>
-                                <td class="p-3 font-mono text-xs">
-                                    {{
-                                        group.harnessRevision?.slice(0, 8) ||
-                                        '—'
-                                    }}<span class="block text-muted-foreground"
-                                        >target
-                                        {{
-                                            group.targetCommit?.slice(0, 8) ||
-                                            '—'
-                                        }}</span
-                                    >
-                                </td>
-                                <td class="p-3">
-                                    {{ group.n
-                                    }}<span
-                                        class="block text-xs text-muted-foreground"
-                                        >complete
-                                        {{
-                                            percent(group.completionRate)
-                                        }}</span
-                                    >
-                                </td>
-                                <td class="p-3">
-                                    {{
-                                        format(
-                                            group.metrics.globalScore.median,
-                                            1,
-                                        )
                                     }}
-                                    <span
-                                        class="block text-xs text-muted-foreground"
-                                    >
-                                        IQR
-                                        {{
-                                            format(
-                                                group.metrics.globalScore.q1,
-                                                1,
-                                            )
-                                        }}
-                                        -
-                                        {{
-                                            format(
-                                                group.metrics.globalScore.q3,
-                                                1,
-                                            )
-                                        }}
-                                    </span>
                                 </td>
                                 <td class="p-3">
                                     {{

@@ -107,7 +107,6 @@ const form = useForm({
         props.presets[0]?.category || 'A01:2025 Broken Access Control',
     ],
     reader_model: '',
-    reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
     image: '',
@@ -642,10 +641,7 @@ onBeforeUnmount(() => {
                             v-model="form.reader_model"
                             placeholder="Reader model (default)"
                         />
-                        <Input
-                            v-model="form.reviewer_model"
-                            placeholder="Reviewer model (default)"
-                        />
+
                         <Input
                             v-model="form.confirmer_model"
                             placeholder="Confirmer model (default)"

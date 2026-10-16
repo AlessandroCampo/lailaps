@@ -51,6 +51,16 @@
 	],
 	"syscalls": [
 		{
+			"names": [
+				"mount",
+				"umount2",
+				"pivot_root"
+			],
+			"action": "SCMP_ACT_ALLOW",
+			"args": [],
+			"comment": "Bubblewrap mounts only inside an unprivileged user/mount namespace; outer CAP_SYS_ADMIN remains dropped."
+		},
+		{
 			"comment": "Allow create user namespaces",
 			"names": [
 				"clone",

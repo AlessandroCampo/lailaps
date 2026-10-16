@@ -34,7 +34,7 @@ php artisan benchmark:run yeswiki --global --budget-category=small --test --keep
 
 ## Selezione dei modelli
 
-`--model` imposta lo stesso modello per Global Recon, Category Recon, Reader, Reviewer,
+`--model` imposta lo stesso modello per Global Recon, Category Recon, Reader,
 Confirmer, Worker e Dynamic Judge. È intenzionalmente accettato soltanto con `--global`.
 
 ```powershell
@@ -47,12 +47,11 @@ Gli override individuali hanno precedenza su `--model`:
 php artisan benchmark:run yeswiki --global `
   --model=openai/gpt-5 `
   --recon-model=openai/gpt-5-mini `
-  --reviewer-model=openai/gpt-5-mini `
   --worker-model=openai/gpt-5.1 `
   --budget-category=small --ttl=43200
 ```
 
-Sono disponibili `--recon-model`, `--reader-model`, `--reviewer-model`,
+Sono disponibili `--recon-model`, `--reader-model`,
 `--confirmer-model`, `--worker-model` e `--judge-model`. `--operative-model` resta una
 scorciatoia Laravel per Confirmer e Worker ed è anch'esso più specifico di `--model`.
 Se un ruolo non ha un override e `--model` è assente, viene usato `Models.json`.

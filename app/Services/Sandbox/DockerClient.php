@@ -228,9 +228,19 @@ class DockerClient
         }
 
         $this->request('POST', "/exec/{$execId}/start", ['Detach' => false, 'Tty' => false]);
-        $result = $this->request('GET', "/exec/{$execId}/json");
-
-        return (int) ($result['ExitCode'] ?? -1);
+        // Without attached streams, start can return before the process exits.
+        // Inspect the same exec; never rerun a command whose outcome is unknown.
+        $deadline = microtime(true) + $this->timeout;
+        do {
+            $result = $this->request('GET', "/exec/{$execId}/json");
+            if (($result['Running'] ?? null) === false && is_int($result['ExitCode'] ?? null)) {
+                return $result['ExitCode'];
+            }
+            if (microtime(true) >= $deadline) {
+                throw new RuntimeException("Timeout exec bootstrap {$execId}: esito non disponibile; comando non ripetuto.");
+            }
+            usleep(100_000);
+        } while (true);
     }
 
     /** @return array<int, array<string, mixed>> */

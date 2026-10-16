@@ -44,14 +44,13 @@ final class BenchmarkReaderGlobal extends Command
         {--roles-config= : Full role configuration; incompatible with individual deduper overrides}
         {--resume-failed : Explicitly resume technical failures and pending normalization}
         {--concurrency=4 : Processi per tranche, da 1 a 4}
-        {--assignment-points=500000 : Envelope Reader+Reviewer per area}
+        {--assignment-points=500000 : Envelope Reader per area}
         {--follow-slot=1 : Transcript completo dello slot, 0 per nessuno}
         {--reader-model= : Modello Reader}
-        {--reviewer-model= : Modello Reviewer}
         {--reader-provider= : Provider OpenRouter da fissare per il Reader}
         {--operational-context-window=1048576 : Cap fisico del contesto operativo}
         {--max-prompt-input-tokens=900000 : Guardrail dell input completo}
-        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+        {--reader-checkpoint-strategy=reader_checkpoint : Self-checkpoint Reader}
         {--reuse-sandbox= : Audit ID di una sandbox pronta}
         {--timeout=7200 : Timeout per assignment in secondi}
         {--tool-output : Mostra gli output tool nel transcript seguito}';
@@ -86,9 +85,9 @@ final class BenchmarkReaderGlobal extends Command
             throw new InvalidArgumentException('Assignment points, timeout e cap di contesto devono essere positivi.');
         }
         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
-                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader-checkpoint-strategy deve essere reader_checkpoint.'
             );
         }
 
@@ -155,7 +154,6 @@ final class BenchmarkReaderGlobal extends Command
         $runtimeFingerprint = hash('sha256', json_encode($runtimeFiles, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         $models = [
             'reader' => $this->option('reader-model'),
-            'reviewer' => $this->option('reviewer-model'),
         ];
 
         $source = $this->absolutePath((string) ($this->option('path') ?: base_path('targets/'.$target)));
@@ -287,7 +285,7 @@ final class BenchmarkReaderGlobal extends Command
                             '--target-container-id', $sandbox->containerId,
                         );
                     }
-                    foreach (['reader-model', 'reviewer-model'] as $option) {
+                    foreach (['reader-model'] as $option) {
                         if ($this->option($option)) {
                             array_push($args, '--'.$option, (string) $this->option($option));
                         }
@@ -404,7 +402,7 @@ final class BenchmarkReaderGlobal extends Command
                             $normalized, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR,
                         ));
                         $accepted = ($enrichment['accepted'] ?? false) === true;
-                        $pendingReview = ($enrichment['review_status'] ?? null) === 'pending_review';
+                        $pendingIntegration = ($enrichment['review_status'] ?? null) === 'pending_integration';
                         $record = [
                             'source_area_id' => $child['area']['area_id'],
                             'source_run_id' => $child['run_id'],
@@ -413,9 +411,9 @@ final class BenchmarkReaderGlobal extends Command
                             'accepted' => $accepted,
                             'rejection_reason' => $enrichment['rejection_reason'] ?? null,
                             'payload_hash' => $hash,
-                            'status' => $accepted ? 'pending' : ($pendingReview ? 'pending_review' : 'rejected'),
+                            'status' => $accepted ? 'pending' : ($pendingIntegration ? 'pending_integration' : 'rejected'),
                         ];
-                        if ($dedupEnabled && ($accepted || $pendingReview)) {
+                        if ($dedupEnabled && ($accepted || $pendingIntegration)) {
                             $qualifiedRefs = [];
                             foreach ((array) ($enrichment['source_refs'] ?? []) as $ref) {
                                 $qualifiedRefs[$child['run_id'].':'.$ref['source_ref_id']] = $ref;
@@ -679,7 +677,7 @@ final class BenchmarkReaderGlobal extends Command
                     'complete' => $globalScope && $status === 'complete'
                         && ! collect($enrichmentProposals)->contains(
                             fn (array $proposal): bool => in_array(
-                                $proposal['status'], ['deferred', 'pending_review'], true,
+                                $proposal['status'], ['deferred', 'pending_integration'], true,
                             ),
                         ),
                     'selected_areas_complete' => $status === 'complete',
@@ -819,7 +817,6 @@ final class BenchmarkReaderGlobal extends Command
     {
         $telemetry = (array) ($report['telemetry'] ?? []);
         $reader = (array) data_get($telemetry, 'role_usage.reader', []);
-        $reviewer = (array) data_get($telemetry, 'role_usage.reviewer', []);
         $checkpoints = (array) ($telemetry['reader_self_checkpoint_events'] ?? []);
         $checkpointUsage = [];
         $checkpointOutputs = [];
@@ -881,7 +878,6 @@ final class BenchmarkReaderGlobal extends Command
             'production' => [
                 'leads' => count($leads), 'ordinary_leads' => count($leads) - $checkpointLeads,
                 'checkpoint_leads' => $checkpointLeads, 'enrichment_proposals' => count($enrichments),
-                'reviewer_requests' => (int) ($reviewer['requests'] ?? 0),
                 'enrichment_dispatches' => 0,
             ],
             'economy' => [
@@ -903,7 +899,6 @@ final class BenchmarkReaderGlobal extends Command
                 ),
                 'provider_usd_per_lead' => $readerUsd !== null && count($leads) ? $readerUsd / count($leads) : null,
                 'reader_ep' => (float) ($reader['economic_points'] ?? 0),
-                'reviewer_ep' => (float) ($reviewer['economic_points'] ?? 0),
                 'cost_source_counts' => (array) ($telemetry['cost_source_counts'] ?? []),
             ],
             'tokens' => [
@@ -1012,7 +1007,6 @@ final class BenchmarkReaderGlobal extends Command
                 'ordinary_leads' => (int) $sum('production.ordinary_leads'),
                 'checkpoint_leads' => (int) $sum('production.checkpoint_leads'),
                 'enrichment_proposals' => (int) $sum('production.enrichment_proposals'),
-                'reviewer_requests' => (int) $sum('production.reviewer_requests'),
                 'enrichment_dispatches' => 0,
             ],
             'economy' => [
@@ -1024,7 +1018,7 @@ final class BenchmarkReaderGlobal extends Command
                     fn (array $card): bool => data_get($card, 'economy.reader_estimate_complete') === true,
                 ),
                 'provider_usd_per_lead' => $readerUsd !== null && $leads ? $readerUsd / $leads : null,
-                'reader_ep' => $sum('economy.reader_ep'), 'reviewer_ep' => $sum('economy.reviewer_ep'),
+                'reader_ep' => $sum('economy.reader_ep'),
                 'cost_source_counts' => $costSources,
             ],
             'tokens' => [

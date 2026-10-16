@@ -24,7 +24,6 @@ it('recovers a partial benchmark after a terminal outer-run path', function (Aud
         'telemetry' => ['total_tokens' => 123],
         'models' => [
             ['role' => 'reader', 'requested_model' => 'deepseek/deepseek-v4-flash-0731', 'effective_model' => 'deepseek/deepseek-v4-flash-0731', 'reasoning_effort' => 'medium'],
-            ['role' => 'reviewer', 'requested_model' => 'deepseek/deepseek-v4-flash-0731', 'effective_model' => 'deepseek/deepseek-v4-flash-0731', 'reasoning_effort' => 'low'],
             ['role' => 'confirmer', 'requested_model' => 'meta/muse-spark-1.2-contributor', 'effective_model' => 'meta/muse-spark-1.2-contributor', 'reasoning_effort' => 'high'],
             ['role' => 'worker', 'requested_model' => 'meta/muse-spark-1.2-contributor', 'effective_model' => 'meta/muse-spark-1.2-contributor', 'reasoning_effort' => 'high'],
         ],
@@ -54,10 +53,9 @@ it('recovers a partial benchmark after a terminal outer-run path', function (Aud
         ->and($benchmark['score']['max_points'])->toBe(30)
         ->and($benchmark['cases'])->toHaveCount(7)
         ->and($run->evaluations()->count())->toBe(1)
-        ->and($run->roleEvaluations()->count())->toBe(4)
-        ->and($run->roleEvaluations()->where('status', 'not_exercised')->count())->toBe(4)
-        ->and($run->models()->count())->toBe(4)
-        ->and($run->models()->where('role', 'reviewer')->first()->reasoning_effort)->toBe('low')
+        ->and($run->roleEvaluations()->count())->toBe(3)
+        ->and($run->roleEvaluations()->where('status', 'not_exercised')->count())->toBe(3)
+        ->and($run->models()->count())->toBe(3)
         ->and($run->evaluations()->first()->artifact_state)->toBe('partial');
 })->with([
     'non-zero exit' => [AuditRunStatus::Failed, 1, 'model_exit_non_zero'],

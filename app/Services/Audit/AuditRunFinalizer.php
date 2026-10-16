@@ -77,7 +77,7 @@ final class AuditRunFinalizer
         ];
         $models = (array) ($report['models'] ?? []);
         if ($models === []) {
-            foreach (['reader' => 'medium', 'reviewer' => 'low', 'confirmer' => 'medium', 'worker' => 'medium'] as $role => $effort) {
+            foreach (['reader' => 'medium', 'confirmer' => 'medium', 'worker' => 'medium'] as $role => $effort) {
                 $requested = $run->parameters[$role.'_model'] ?? null;
                 if (is_string($requested) && $requested !== '') {
                     $models[] = [

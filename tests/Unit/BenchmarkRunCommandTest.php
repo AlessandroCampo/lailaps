@@ -99,7 +99,7 @@ it('defaults global benchmarks to reader checkpoints and forwards pipeline overr
     $command = app(BenchmarkRun::class);
     $command->setInput(new ArrayInput([
         'target-id' => 'bookstack', '--global' => true,
-        '--reader-concurrency' => '3', '--confirmer-concurrency' => '2', '--worker-concurrency' => '1',
+        '--reader-concurrency' => '3', '--lead-concurrency' => '2', '--lead-model' => 'acme/lead',
         '--reader-points' => '123000', '--worker-points' => '1000000',
     ], $command->getDefinition()));
     $parameters = (new ReflectionMethod(BenchmarkRun::class, 'pentestParameters'))->invoke(
@@ -107,7 +107,7 @@ it('defaults global benchmarks to reader checkpoints and forwards pipeline overr
     );
     expect($parameters)->toMatchArray([
         '--reader-checkpoint-strategy' => 'reader_checkpoint', '--reader-concurrency' => '3',
-        '--confirmer-concurrency' => '2', '--worker-concurrency' => '1',
+        '--lead-concurrency' => '2', '--lead-model' => 'acme/lead',
         '--reader-points' => '123000', '--worker-points' => '1000000',
     ]);
 });
@@ -189,4 +189,16 @@ it('scores global discovery once and removes suite matches from pending findings
             'out_of_catalog_credited' => 1,
             'pending_adjudications' => 2,
         ]);
+});
+
+
+it('forwards a frozen Recon fixture to the global pentest runner', function (): void {
+    $command = app(BenchmarkRun::class);
+    $command->setInput(new ArrayInput(['target-id' => 'fixture', '--global' => true], $command->getDefinition()));
+    $parameters = (new ReflectionMethod(BenchmarkRun::class, 'pentestParameters'))->invoke(
+        $command, base_path(), 'rerun', 'fixture', null, [], true, null, 'pinned', null, 'C:/fixtures/recon.json',
+    );
+    expect($parameters['--recon-fixture'])->toBe('C:/fixtures/recon.json')
+        ->and($command->getDefinition()->hasOption('recon-run'))->toBeTrue()
+        ->and($command->getDefinition()->hasOption('recon-artifact'))->toBeTrue();
 });

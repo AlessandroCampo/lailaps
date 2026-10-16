@@ -9,7 +9,7 @@ CLI e UI condividono un unico contratto filesystem sotto
 categoria e timestamp filesystem-safe, per esempio `yeswiki-injection-20260822-173900`;
 in caso di collisione riceve un suffisso numerico. Viene stampato all'inizio e alla fine.
 
-La directory viene riservata prima della preparazione del target e contiene due file
+La directory viene riservata prima della preparazione del target e contiene i file
 autorevoli con lo stesso prefisso del `run_id`:
 
 - `{run_id}-logs.php`: header PHP con `run_id` e transcript byte-per-byte della console,
@@ -17,20 +17,28 @@ autorevoli con lo stesso prefisso del `run_id`:
 - `{run_id}-outcome.json`: oggetto con sole chiavi top-level `run_id`, `started_at`, `report` e
   `benchmark`. `started_at` è l'istante di creazione della run in formato ISO 8601 con
   timezone `Europe/Rome`; report parziale/finale, telemetria ed environment state confluiscono nel
-  campo `report`; l'evaluator aggiorna `benchmark` nello stesso file.
+  campo `report`; l'evaluator aggiorna `benchmark` nello stesso file;
+- `{run_id}-investigator-{scope_hash}.jsonl`: journal append-only redatto delle tool call
+  della singola lead, isolato per run/pass/categoria/lead, con input e risultati acquisiti.
 
-L'outcome viene sostituito atomicamente durante i checkpoint. Nel percorso ordinario non esistono directory child,
-snapshot, JSONL, raw response, manifest o file di telemetria persistenti. Le fasi opzionali di
-normalizzazione/eval conservano artifact derivati separati, descritti sotto. I body HTTP e gli
-output completi dei tool restano bounded in memoria per la durata del processo. Il database
-conserva lifecycle, metadati e proiezioni benchmark, ma non duplica il transcript in una
-tabella eventi.
+L'outcome viene sostituito atomicamente durante i checkpoint. Non esistono directory child
+per gli output Investigator: il finding contiene il puntatore `tool_trace` al journal, con
+scope e contatori. Il journal resta fuori dal contesto LLM e dalla LRU: registra attempt,
+started, risultato, errore o cancellazione, non solo gli ID HTTP. I risultati sono quelli
+acquisiti dai tool prima della preview per il modello, con redazione e limiti di acquisizione
+espliciti; non sono una promessa di body illimitati o segreti riproducibili. Le subcall PTC
+conservano `parent_call_id`; i flow browser conservano step e assertion originali. Append
+con flush/fsync e fallimenti di persistenza propagati impediscono ulteriori effetti senza
+traccia. Un crash puo' lasciare una chiamata started con esito ignoto; la coda incompleta
+viene ignorata in lettura e riparata alla successiva append, senza replay degli effetti.
+Il database conserva lifecycle e proiezioni benchmark senza duplicare il journal.
 
 `ToolOutputManager` conserva ogni risultato prima della preview model-facing in una LRU da
 32 MiB per categoria. Ogni entry porta tool, ruolo, categoria, lead e area assegnati dal
 runtime; un ID non concede accesso fuori scope. `inspect_tool_output` permette ai ruoli
 investigativi di listare, leggere a finestre e cercare letteralmente gli output autorizzati,
-distinguendo disponibilita', espulsione e acquisizione incompleta. Il Worker recupera dallo
+distinguendo disponibilita', espulsione e acquisizione incompleta. Per gli output Investigator
+archiviati, il recupero scoped legge anche il journal dopo espulsione o riavvio. Il Worker recupera dallo
 stesso archivio, tramite `inspect_persisted_evidence`, anche evidenze HTTP, browser e source
 indicizzate. I tool di recupero non reinseriscono copie nella LRU. Le finestre redatte
 consultate e citate nella decisione vengono promosse nel finding con la propria provenance.
@@ -136,31 +144,60 @@ credenziali o stato autorevole e non provocano transizioni del ledger.
 Il percorso ordinario puo' ancora eseguire una o due categorie filtrate in sequenza. Il
 percorso esplicito `--global` non effettua invece uno sweep A01-A10: esegue una sola Recon
 trasversale, inizializza un unico Area Ledger e avvia una sola pipeline investigativa
-Reader -> Confirmer -> Worker. Le aree Recon sono domande concrete su
+Reader -> investigatore unificato per lead (fasi contabili Confirmer e Worker). Le aree Recon sono domande concrete su
 entrypoint, operazioni sensibili, confini di fiducia e controlli osservati; non sono nomi di
 categoria. Non esistono riconciliazioni o handoff intermedi per categoria.
 
-Il coordinatore `GlobalPipeline` possiede un deduper deterministico, il broker e tre
-code con pool indipendenti: 4 Reader, 4 Confirmer e 2 Worker di default. Il pool Reader
+La Recon decide quando la mappa osservata e' utile ai Reader, accorpando domande che
+richiedono lo stesso contesto. Prompt e schemi model-facing non espongono quote di aree
+o richieste. L'orchestratore conserva i cap: se la risposta supera la capacita' ammessa,
+mantiene le prime aree nell'ordine di priorita' del modello (48 globali per default,
+12 filtrate), senza retry per ridurre la lista, e registra il taglio nell'evento
+`recon_output_truncated`. La stessa normalizzazione vale per il recovery testuale e
+gli incarichi ReconPlan. I limiti economici restano nell'accounting e nella telemetria
+per l'operatore; al modello viene comunicata soltanto la disponibilita' operativa della
+fase, senza importi EP o residui da consumare.
+
+Il coordinatore `GlobalPipeline` possiede un deduper deterministico, il broker e due
+code operative con pool indipendenti: 4 Reader e 2 investigatori di default. Il pool Reader
 riempie immediatamente gli slot liberi con un'altra area. Ogni Reader usa Deps, HTTP,
-cookie, history, telemetria e toolbox propri; Confirmer e Worker della stessa lead
-condividono una sessione isolata in sequenza. ID di lead, output e source reference sono
+cookie, history, telemetria e toolbox propri. Un task possiede la lead dalla verifica statica
+alla conclusione dinamica con lo stesso modello, prompt stabile, history e sessione provider;
+la compaction cambia epoch locale ma conserva la sessione e i riferimenti durevoli.
+ID di lead, output e source reference sono
 qualificati per scope e pass. Il coordinatore e' l'unico publisher del report aggregato.
 Un figlio chiude soltanto le proprie sessioni browser e risorse operative.
 
-La run globale impone `reader_checkpoint` e deduper deterministico: non chiama il
-Reviewer, nemmeno per enrichment o recovery. Ogni Reader decide la continuazione e la
+`benchmark:run --global` puo' saltare la generazione Recon con `--recon-run=<run_id>`
+oppure `--recon-artifact=<artifact_id>`, mutuamente esclusivi. La prima opzione legge
+l'outcome dello stesso target e richiede una sola Recon `ready` non vuota nella run;
+per sorgenti multipass ambigue si seleziona un artifact. Una run fallita nel downstream
+puo' fornire una Recon valida. L'artifact deve essere una CategoryRecon globale accettata,
+valida e dello stesso snapshot. Per gli storici senza snapshot registrato, l'identita'
+del target deriva dalla directory e il commit sorgente resta esplicitamente sconosciuto.
+Laravel estrae solo la mappa in una fixture privata montata read-only; non importa
+finding, history, source reference o usage della vecchia run. Il coordinatore valida
+la mappa, crea una coda nuova mantenendo ordine e contenuto delle aree e avvia normalmente
+Reader e Investigator. Ogni pass riparte dalla stessa mappa congelata. Provenienza,
+hash e numero di aree sono in `global_pipeline.recon_reuse`; le chiamate e gli EP
+incrementali Recon sono zero. Setup del target e indicizzazione restano necessari.
+Una sorgente assente, invalida o ambigua ferma il lancio senza generare una Recon sostitutiva.
+
+La run globale impone `reader_checkpoint` e deduper deterministico. Ogni Reader decide la continuazione e la
 chiusura della sola area assegnata. Ogni ReaderLead valida le source reference e passa
 atomicamente dal deduper unico prima dell'ammissione Confirmer. Una lead ammessa viene
 accodata subito, senza sospendere il Reader in attesa del downstream. CandidateHandoff
-sblocca un solo envelope Worker e lo accoda mentre gli altri agenti continuano. Gli
-esiti downstream possono aggiornare il Reader ancora attivo senza riaprire un'area chiusa.
+e' un boundary interno normalizzato dal payload narrativo piatto: `ledger.promote` persiste
+e pubblica la milestone statica prima di sbloccare l'unico envelope dinamico.
+Il task prosegue con un breve delta di fase, senza nuovo dossier o seconda coda Worker.
+Le lead acquisite proseguono esclusivamente downstream; il Reader continua l'esplorazione.
+Il suo inventario conserva ID e titolo dei prodotti emessi, senza esiti o direttive downstream.
 AreaEnrichmentLead viene validata su reference e locator e accodata dal coordinatore;
 gli assignment esattamente duplicati sono scartati deterministicamente.
 
 Il cap Reader aggregato copre tutti i Reader, checkpoint, retry e compressione: default
 3.000.000 EP regular per pass, scalato una sola volta dal preset oppure sostituito da
-`--reader-points`. Recon conserva il limite distinto di 640.000 EP. L'accounting include
+`--reader-points`. Recon conserva il limite distinto di 160.000 EP. L'accounting include
 il consumo live di tutti i task e lo salda una sola volta. Esaurire il cap Reader blocca
 nuovi assignment, richieste Reader e nuove lead; non blocca lead gia' ammesse, anche in
 coda, o nuovi Worker derivati da esse. Le risposte gia' in volo possono sforare il cap:
@@ -169,16 +206,40 @@ Confirmer sblocca 500.000 EP per lead canonica e 250.000 per continuazione; Work
 un envelope unico da 1.000.000 EP. Nessuno dei due erode il cap Reader.
 
 Python, `pentest:run`, `benchmark:run --global` e avvio web propagano
-`reader-concurrency` (1-4), `confirmer-concurrency`, `worker-concurrency`,
+`reader-concurrency` (1-4), `lead-concurrency` (default 2), `lead-model` (default modello Worker),
 `reader-points` e `worker-points`. Il report `global_pipeline` registra configurazione,
 stati/eventi per scope, conteggi, code, stop Reader e completamento downstream. Il pass
 finisce dopo aver drenato tutte le lead ammesse; coverage resta incompleta se esistono
 aree non chiuse. Failure locali non cancellano altri agenti. Un errore di persistenza
 o una cancellazione globale raccoglie i task e conserva il checkpoint disponibile.
 
+Le fasi contabili non sono due agenti. Il prompt stabile dichiara il valore autonomo della
+conferma statica: assenza di prova dinamica, budget negato, test fallito o errore non la
+annullano. `rejected` richiede una barriera positiva; `confirmed` richiede evidenza dinamica
+scoped e valida. Gli override Confirmer/Worker incompatibili producono un errore prima del
+runtime; il nuovo pool usa soltanto `lead-concurrency`. I percorsi sequenziali e i benchmark
+Confirmer-only/Worker-only mantengono le proprie opzioni e conversazioni.
+
+Ogni episodio unificato passa dalla finalizzazione prima di chiudere gli stage. Dopo uno
+stop operativo tenta al massimo un checkpoint tool-free con il contratto minimo; un esito
+conclusivo viene applicato direttamente senza seconda serializzazione. Durante la raccolta,
+Confirmer e Worker accettano anche testo libero: resta nella stessa conversazione e passa
+al self-checkpoint esistente, senza inferire decisioni o applicare milestone dalla narrativa.
+Checkpoint, terminale e riparazione richiedono invece l'output strutturato `decision` e
+`narrative` facoltativa, senza tool investigativi. Il recovery di output
+e' limitato a un tentativo; non riprende la raccolta e non usa la riserva Worker per HTTP. Senza envelope
+dinamico chiude sullo stage statico ancora aperto, senza grant Worker artificiale. Errori
+permanenti, cancellazione e checkpoint/terminale falliti portano a conservazione da stato
+autorevole con motivo esplicito, senza inventare output modello o trace. Una promozione
+persistita conserva milestone, piano, severity, ref e prove acquisite in `suspected`;
+`lead_investigation` distingue terminale tentato/applicato e salute tecnica. Gli errori
+restano contabilizzati anche quando il finding statico sopravvive. Una persistenza
+fallita propaga l'errore e impedisce nuove pubblicazioni dal pool, conservando lo snapshot
+atomico precedente; un kill del processo non puo' garantire un'altra chiamata modello.
+
 La categoria proposta dal Reader e' opzionale: l'orchestratore la normalizza sulla
 registry OWASP oppure usa `unclassified`. Nelle run filtrate il filtro richiesto resta
-autorevole; il percorso sequenziale legacy mantiene il Reviewer e la discovery condivisa.
+autorevole; il percorso filtrato standalone usa il self-checkpoint e la discovery condivisa.
 
 `--depth N` ripete l'intero pass in sequenza. Ogni pass riceve nuove dipendenze operative,
 ledger, history/provider session, notebook, evidence ledger, client HTTP, cookie e budget;
@@ -220,7 +281,7 @@ Nel percorso filtrato sequenziale legacy il flusso è:
 1. Recon costruisce la mappa iniziale di domande di sicurezza e inizializza l'Area Ledger
    autorevole; in modalita' globale la mappa e' trasversale alle categorie.
 2. Reader svolge la discovery statica in epoch cognitive limitate e isolate per area.
-3. Exploration Reviewer produce il checkpoint semantico dell'area e decide se continuare,
+3. self-checkpoint Reader produce il checkpoint semantico dell'area e decide se continuare,
    cambiare focus o chiudere l'area; continua soltanto con un test discriminante bounded e
    non reitera una direttiva inevasa o una tranche dominata da duplicati senza nuova evidenza.
    L'orchestratore applica la transizione usando l'identita' area catturata nello snapshot:
@@ -228,12 +289,10 @@ Nel percorso filtrato sequenziale legacy il flusso è:
    Decisione proposta, decisione applicata e causa di normalizzazione restano registrate.
 4. Confirmer ricostruisce ogni lead e prepara un piano di verifica ancorato all'istanza, eseguibile dal Worker fin dal primo passo.
 5. Worker verifica dinamicamente il candidate.
-6. Il Reader riprende la stessa area e history, aggiungendo una volta l'esito downstream; una lead non chiude l'area.
+6. Il Reader prosegue nella stessa area e history dopo l'acquisizione; una lead non chiude l'area e il suo verdetto non ritorna in discovery.
 7. Il Reader puo' proporre una `AreaEnrichmentLead` come recovery per una superficie
-   imprevedibile; il Reviewer decide semanticamente e l'orchestratore accoda l'area approvata.
-8. La chiusura Reviewer-owned dell'ultima area completa deterministicamente la discovery
-   quando non esistono lead pending; in alternativa `finish_pass` applica lo stop semantico
-   dopo la prima visita di tutte le aree note.
+   imprevedibile; il Reader decide semanticamente e l'orchestratore accoda l'area approvata.
+8. La chiusura dell'ultima area completa la discovery; le lead pending restano nella coda downstream.
 9. Se `depth` richiede un altro pass, l'orchestratore crea un nuovo scope operativo isolato
    e riparte da Recon senza trasferire memoria semantica dal pass precedente.
 
@@ -254,7 +313,7 @@ processi: appena un assignment termina, il coordinatore avvia il successivo disp
 Sorgente e target sono condivisi in sola lettura, mentre outcome, transcript, history, cache
 CBM e stato agente restano per-assignment.
 
-Reader ed eventuale Exploration Reviewer consumano per ogni assignment un unico envelope economico
+Reader e i suoi self-checkpoint consumano per ogni assignment un unico envelope economico
 con cap configurabile (500.000 punti di default); i limiti dei due ruoli non partizionano il
 cap e Confirmer/Worker non vengono avviati. Le lead restano locali durante la ricerca e
 sono qualificate con l'area soltanto nell'aggregato parent. La deduplica cross-area non blocca
@@ -287,11 +346,10 @@ Tutte le aree chiuse producono `complete`; budget o limite aree producono un out
 `incomplete`; gli errori infrastrutturali sono `technical_failure` per l'area e non fermano
 le altre aree.
 
-Nel confronto con `--reader-checkpoint-strategy=reader_checkpoint`, i boundary
-ordinari sono self-checkpoint dello stesso Reader. Il benchmark non avvia Reviewer
-online per novelty o enrichment: le lead ulteriori restano acquisite con novelty
-`unresolved`, le proposte di enrichment restano `pending_review`, e la valutazione
-di deduplica e qualita' e' offline. `--defer-enrichments` mantiene a zero il dispatch
+I boundary ordinari sono self-checkpoint dello stesso Reader. Le lead restano
+acquisite senza una seconda review online; le aree aggiuntive sono validate e trasferite
+al parent come `pending_integration`. La valutazione di deduplica e qualita' e' offline.
+`--defer-enrichments` mantiene a zero il dispatch
 di aree derivate. Le scorecard child e parent distinguono produzione ordinaria e
 checkpoint, costo provider completo o mancante, stima, EP, token/cache, tool con
 esito noto o pendente, retry, tempo e pressione di contesto; la qualita' offline
@@ -320,7 +378,7 @@ un altro Reader o il target riutilizzato.
    completo e un artifact figlio `ReconArea` per ciascuna area. La fixture predefinita e' la
    prima repetition tecnicamente valida, scelta senza usare lo score benchmark.
 2. `benchmark:reader` carica una Golden Recon congelata, ricostruisce l'Area Ledger
-   autorevole e avvia il Reader normale. L'Exploration Reviewer resta un controllo operativo
+   autorevole e avvia il Reader normale. Il self-checkpoint Reader resta un controllo operativo
    fisso necessario a checkpoint e chiusura aree, ma non riceve una scorecard autonoma. Le
    lead non proseguono a Confirmer e vengono conservate come output Reader accettati. Per
    default il comando eredita il preset economico configurato della run normale; un preset
@@ -345,6 +403,28 @@ un altro Reader o il target riutilizzato.
    Se `--dataset` e' valorizzato, la selezione resta limitata agli artifact canonici della
    versione congelata; se e' omesso, il comando usa direttamente le ReaderLead `valid` del DB,
    filtrate per progetto e per l'eventuale `--category`. `--artifact` resta l'override puntuale.
+   Con `--unified-lead` lo stesso runner usa `_investigate`, il percorso di produzione globale,
+   con stage condizionati anziche' un fondo operativo anticipato. `--replay-manifest` e `--scope`
+   selezionano ReaderLead storiche validate sul commit/checksum e frozen in subject separati
+   dagli esiti evaluator; nessun CandidateHandoff o oracle storico entra nell'input.
+   Il replay `--unified-lead --replay-manifest` esegue una sola `GlobalPipeline` e sandbox
+   per ripetizione: ammette le ReaderLead frozen attraverso il deduper e il broker globali,
+   le drena con `lead-concurrency` (default 2) e un cap totale condiviso. Recon viene
+   recuperata dal primo output storico congelato e ogni lead eredita la propria area
+   Reader originaria; il surface inventory e il bootstrap runtime avvengono una volta.
+   Non esegue nuove chiamate Recon/Reader e non importa note o prove downstream storiche.
+   I notebook della nuova run sono condivisi; history, cookie/client HTTP e sessione
+   provider restano separati per lead, come in produzione. Lo stato applicativo resta
+   comune durante il batch; il reset avviene solo fra ripetizioni. `--isolated-leads`
+   conserva il controllo con sandbox nuova per caso. E' un benchmark downstream
+   condizionato alle lead frozen: non dichiara completa la coverage di discovery.
+   Le fixture probes esistenti verificano il setup; `--preflight-only` valida gli input
+   e `--runtime-preflight` verifica l'ambiente senza modelli. Il registry conserva i boundary validi e un
+   `UnifiedLeadRun` con snapshot del finding, anche in caso di errore tecnico downstream.
+   Il report aggregato collega ogni finding al proprio artifact/replay scope, mantiene
+   l'accounting per lead/fase e misura il batch separatamente dal lavoro attivo. La matrice
+   accetta sia gli outcome globali sia i controlli isolati; i contatori retry/errori
+   aggregati restano esplicitamente marcati come appartenenti al batch.
 5. `benchmark:worker` riceve un `CandidateHandoff` congelato o tutti gli handoff di un
    parent selezionato tramite `--parent-run-id` e ricostruisce le source reference dal
    commit assegnato. Con un parent ogni ripetizione esegue un batch seriale in un'unica
@@ -407,14 +487,11 @@ Regola operativa: il modello decide e racconta; l'orchestratore identifica, norm
 collega e persiste. I DTO model-facing sono distinti dai modelli interni persistiti. Esempi
 positivi correnti:
 
-- l'Exploration Reviewer emette una decisione piatta e `checkpoint_summary` narrativo;
+- il self-checkpoint Reader emette una decisione piatta e `checkpoint_summary` narrativo;
   l'orchestratore costruisce l'`AreaCheckpoint` interno con area id, superfici osservate e
   source reference ricavate dallo snapshot autorevole;
-- il Lead Novelty Reviewer usa un output piatto e l'assenza recuperabile di
-  `related_lead_id` viene normalizzata dall'orchestratore a `unresolved`, senza chiedere al
-  modello di riserializzare l'intera risposta. La novelty e' un'ottimizzazione fail-open:
-  soltanto `same_hypothesis` con un ID autorevole e `not_a_security_lead` respingono la
-  proposta; errori tecnici, sentinel testuali e relazioni non risolvibili ammettono la lead.
+- la deduplica resta nel componente dedicato alla frontiera di acquisizione;
+  non introduce un output di ritorno della lead al Reader.
 
 Il default e' dare autonomia ai modelli, soprattutto ai ruoli smart come `Confirmer` e
 `Worker`. Limiti stretti, budget cap locali, supervisioni frequenti e prompt molto
@@ -424,7 +501,7 @@ guardrail che interrompe il ragionamento del modello bisogna chiedersi se il pro
 meglio risolto aumentando tranche, semplificando il contratto o lasciando il ruolo
 completare il proprio workflow.
 
-Prima di patchare un comportamento fragile con regole orchestration, reviewer aggiuntivi o
+Prima di patchare un comportamento fragile con regole orchestration, self-checkpoint aggiuntivi o
 prompt piu' stretti, valutare esplicitamente un upgrade del modello usato da quel ruolo. Se
 un modello non riesce a seguire un contratto ragionevolmente semplice o a completare un
 workflow operativo, patchare intorno al modello puo' introdurre complessita' e regressioni
@@ -433,7 +510,7 @@ peggiori del costo di usare un modello migliore.
 Non patchare preventivamente problemi non dimostrati, soprattutto problemi di comportamento
 dei modelli. Due regressioni da evitare come anti-pattern:
 
-- Reviewer usato come timer generalizzato per ruoli operativi: ha consumato budget e
+- Reader usato come timer generalizzato per ruoli operativi: ha consumato budget e
   interrotto flussi produttivi. La review del solo Reader e' invece event-driven e produce
   memoria/decisioni che il Reader non deve piu' serializzare.
 - Category Recon troppo strict come checklist bloccante: puo' impedire al Reader di
@@ -442,17 +519,19 @@ dei modelli. Due regressioni da evitare come anti-pattern:
   concrete emerse durante la discovery.
 
 Il reasoning del modello è sempre attivo. Modello e reasoning predefiniti di `recon`,
-`reader`, `reviewer`, `confirmer` e `worker` risiedono nel singolo
+`reader`, `confirmer` e `worker` risiedono nel singolo
 `agent/pentest-agent/Models.json`, validato all'avvio; ciascun ruolo ha i campi piatti
 `model` e `reasoning_effort` (`low`, `medium` o `high`, con `high` massimo supportato).
-Category Recon e Reader sono quindi configurabili indipendentemente. Gli override CLI e
+Category Recon e Reader sono quindi configurabili indipendentemente.
+I default Confirmer e Worker sono entrambi `z-ai/glm-5.3-flash`, con reasoning `high`;
+nel globale questo e' anche il default dell'investigatore unificato. Gli override CLI e
 le rispettive variabili d'ambiente restano prioritari. Nel runtime Laravel containerizzato
 il JSON viene montato read-only dall'host a ogni run, così il suo aggiornamento non richiede
 un rebuild dell'immagine. L'opzione `pentest:run --test` controlla soltanto il rebuild
 dell'immagine e il wire debug e non modifica il reasoning.
 
 Il protocollo positivo di completamento non richiede una proposta Reader separata: quando
-il Reviewer chiude l'ultima area, l'orchestratore verifica deterministicamente Area Ledger,
+il Reader chiude l'ultima area, l'orchestratore verifica deterministicamente Area Ledger,
 area attiva e lead pending e termina la categoria.
 Un limite economico non soddisfa il protocollo e conserva `coverage.complete = false`.
 
@@ -520,10 +599,9 @@ leggere implementazioni, eseguire command tool o usare HTTP. Se modello, provide
 validazione falliscono dopo tre retry di output riservati, l'orchestratore emette soltanto
 `status=fallback`, `areas=[]` e `unknowns=["Category Recon non disponibile."]`: non recupera
 output parziali e non costruisce hotspot deterministici. Prima del fallback applica anche
-la policy comune di retry completo del turno modello. Recon dispone di otto richieste
-investigative, 12.000 token massimi e una richiesta per la serializzazione. Consuma
-l'allowance discovery locale da 3.000.000 EP regular, condivisa con Reader e Reviewer
-senza quote economiche concorrenti. Il prompt impone breadth e riconciliazione delle
+la policy comune di retry completo del turno modello. Category Recon dispone di sedici richieste
+investigative, 24.000 token massimi e una richiesta per la serializzazione. Ha un
+plafond cumulativo distinto di 80.000 EP, intersecato con il cap economico della run. Il prompt impone breadth e riconciliazione delle
 famiglie prima della serializzazione, non approfondimento di un singolo finding.
 Riserva, consumo e pending admission della Recon usano gli stessi pesi economici del modello
 servente; il gate history non puo' reinterpretare usage model-scaled con i pesi anchor
@@ -543,106 +621,35 @@ Il comando
 diagnostico `pentest surface-context` esegue solo questo sensore e stampa il JSON risultante,
 senza inizializzare Codebase Memory o ruoli LLM.
 
-Reader cerca piste statiche concrete e puo' produrre `ReaderLead`, `LeadEnrichment`,
-`AreaEnrichmentLead` o il yield leggero `ReaderReviewRequested`. Nel contratto operativo
-non produce checkpoint, proposte di chiusura o completion; l'opzione sperimentale
-`reader_checkpoint` sostituisce temporaneamente quel contratto soltanto al boundary
-tool-free descritto sotto. La soglia di `ReaderLead` e' deliberatamente la plausibilita', non la
-conferma: richiede un sink o un'operazione sensibile, una source reference, un possibile
-input controllabile o trust boundary e un collegamento plausibile. Appena la soglia è
-visibile il Reader serializza la lead senza completare il lavoro del Confirmer. Come P0
-sperimentale e facilmente rollbackabile, il prompt applica una soglia one-hop: dopo
-operazione concreta, variabile nominata e origine plausibilmente meno trusted concede al
-Reader al massimo un controllo locale su origine o barriera. Se sicurezza, ACL, route,
-privilegi, caller distanti o runtime restano da stabilire, questi diventano unknown del
-Confirmer. Il dubbio generico privo dei tre elementi non genera una lead; l'ignorare una
-pista richiede invece una barriera locale esplicita, incondizionata e pertinente oppure
-l'assenza di una variabile meno trusted dopo il controllo bounded. Il Reviewer sorveglia
-soltanto il rispetto di questo confine operativo e non valida semanticamente il sink.
-Quando abilitato, `trace_data_flow` puo' costituire quel singolo controllo bounded ma non e'
-obbligatorio e non autorizza una ricostruzione esaustiva prima della lead.
+Reader produce soltanto `ReaderLead`, `AreaEnrichmentLead` o `ReaderCheckpoint`.
+Il modello decide e racconta; l'orchestratore normalizza categoria, locator e source
+reference dalle letture osservate, identifica il prodotto, lo collega e lo persiste.
+Una lead emessa non torna al Reader e non viene riaperta mediante un output di enrichment.
+Confirmer e Worker leggono autonomamente il sorgente della lead assegnata.
+Il Reader continua nell'area corrente dopo l'acquisizione, senza attendere un verdetto.
+Il coordinatore globale esegue gia' il downstream contemporaneamente; l'ingresso filtrato
+standalone riserva l'envelope Confirmer all'acquisizione, accoda le lead e drena il
+downstream dopo discovery, senza restituirne l'esito.
 
-Il tracking dei signal e' memoria interna dell'orchestratore e sopravvive alle epoch Reader:
-separa `listed`, `read` e `evaluated`, collega le lead alle identita' pertinenti e proietta
-nel dossier soltanto conteggi e pochi esempi ancora aperti. Il listing non equivale a una
-lettura; `read_file` marca soltanto i match nel range realmente restituito; una lead o la
-chiusura Reviewer dell'area marca la valutazione. Questo stato non schedula il Reader e non
-sostituisce Area Ledger o Reviewer come autorita' di chiusura.
-Il contratto model-facing di `read_file` espone soltanto `path`, `start` e `count`; il
-contratto Python legacy resta adattato internamente. Successo, errore e vuoto dei tool sono
-classificati dai metadata dell'envelope quando presenti, mai cercando la parola `error` nel
-codice sorgente restituito.
+`ReaderLead` descrive titolo, ipotesi, operazione sospetta, evidenza iniziale e unknowns.
+Locator e weakness_kind sono descrittivi e tolleranti. Il quality gate esistente verifica
+che la narrativa descriva una pista concreta; la deduplica resta alla frontiera di
+acquisizione, senza un secondo agente di review.
+`AreaEnrichmentLead` descrive domanda, motivazione, locator e prossima verifica. I controlli
+esistenti su reference, path e identita' precedono l'accodamento. Nei benchmark con coda
+esterna il parent riceve il prodotto `pending_integration` e lo valuta offline.
 
-I contratti Reader sono piatti: `ReaderLead` espone direttamente `coverage_delta` e `next_focus`, mentre
-`LeadEnrichment` contiene soltanto identita', evidenza e condizioni di riapertura. Non
-espongono `kind` ridondanti o `CategoryStateUpdate`; l'orchestratore aggiorna e sincronizza lo stato strategico
-da ledger, coverage, focus e checkpoint autorevoli. La persistenza non affida al Reader la
-copia di identificatori opachi: lo schema model-facing di `ReaderLead` non contiene
-`source_ref_ids` o `owasp_category`; gli stessi campi restano soltanto nel modello interno
-per leggere artifact legacy e vengono ricostruiti dall'harness. Il Reader puo' indicare il locator
-descrittivo e tollerante `primary_file` + `primary_line`, senza retry se e' assente o errato.
-L'orchestratore seleziona soltanto reference registrate nella tranche o nell'area: prima la
-reference piu' stretta che contiene il locator primario, poi al massimo una reference per
-ciascun file citato nella narrativa, fino a sei complessive; come fallback usa al massimo le
-tre reference piu' recenti della tranche. Categoria
-e rimozione di eventuali area id da `coverage_delta` sono normalizzate dallo stato
-autorevole. Soltanto l'assenza completa di evidence sorgente reale respinge la proposta,
-senza consumare retry di structured output per chiedere al modello di ricopiare un ID. Lo
-stato durevole distingue `active_area_id`, `closed_area_ids` ed esplorazione granulare: una lead
-non può chiudere un'area e, dopo il relativo handoff, il Reader riprende la stessa area per
-cercare sink fratelli. `close_area` del Reviewer sposta l'orchestratore alla successiva area
-non chiusa. Al boundary il Reviewer puo' continuare, cambiare focus entro l'area o chiuderla;
-un pivot verso un'altra area non bypassa la chiusura esplicita di quella attiva. Il Reviewer
-produce una decisione piatta con direttive e `checkpoint_summary` narrativo. L'orchestratore
-costruisce l'`AreaCheckpoint` interno unendo quel testo ad area id, checked surfaces e source
-reference ricavate deterministicamente dallo snapshot; il modello non serializza il DTO
-persistito. L'orchestratore completa deterministicamente la categoria
-dopo la chiusura dell'ultima area se non esistono lead pending.
-
-Con la strategia di default `reviewer`, il Reviewer entra su `ReaderReviewRequested`, soglia
-cognitiva soft/hard, intervallo massimo di 16 richieste o proposta `AreaEnrichmentLead`.
-La novelty review delle lead resta separata. Non entra nei boundary ordinari di Confirmer o
-Worker. La strategia alternativa del benchmark sostituisce soltanto le prime tre review
-ordinarie; enrichment e novelty restano sempre al Reviewer.
-
-`CategoryRecon` resta la fotografia iniziale immutabile; l'Area Ledger separato e' la fonte
-autorevole per scheduling e completion e contiene record `queued`, `active` e `closed` con
-origine `category_recon` o `reader_enrichment`. Una `AreaEnrichmentLead` puo' avere locator
-concreti oppure soli `seed_checks` bounded. Non attraversa validazione deterministica
-semantica o provenienziale: l'Exploration Reviewer restituisce `approve_area_enrichment` o
-`reject_area_enrichment`; l'orchestratore assegna l'id e accoda FIFO l'area approvata senza
-interrompere quella attiva. Non e' una finding, non usa il finding ledger e non consuma un
-lead stage.
-
-Una `LeadEnrichment` riapre la stessa ipotesi chiusa o fermata dal Worker con una source
-reference nuova oppure, una sola volta senza nuovi ref, con `closure_contradiction`
-sostanziale che dimostri come l'evidenza già registrata contraddica l'adjudication. Un sink
-distinto è sempre una nuova `ReaderLead`, anche quando condivide file o intervallo sorgente.
-Un errore di applicazione del ledger su output Reader viene respinto e corretto nella stessa
-discovery, senza trasformarsi in shutdown fatale dell'orchestratore.
-
-Quando esistono lead già adjudicated, la nuova `ReaderLead` resta fuori dal ledger finché
-un Reviewer semantico stateless non confronta l'ipotesi proposta con lo stato globale
-compatto: ciò che il Reader ha letto e tentato, le decisioni pregresse e, in particolare,
-motivo, evidence gap, prossimo test di uno stop del Worker. Il Reviewer emette
-`distinct_sink`, `same_hypothesis`, `not_a_security_lead` o `unresolved`. L'harness non
-decide la duplicazione con
-uguaglianze di path, righe, source reference o testo del sink: coordinate uguali non provano
-una duplicata e coordinate diverse non provano una sink distinta. `same_hypothesis` instrada
-il Reader verso l'enrichment della lead indicata; `not_a_security_lead` scarta evidenza
-negativa o una proposta che descrive un controllo sicuro; `unresolved` restituisce strumenti
-e una richiesta di chiarimento semantico, senza forzare la creazione; soltanto
-`distinct_sink` inserisce una nuova lead. Il verdetto e la relativa istruzione restano persistiti nel finding
-o nell'enrichment per rendere ricostruibile la decisione. Se `same_hypothesis` omette o cita
-un `related_lead_id` non adjudicated, l'orchestratore lo normalizza a `unresolved`: e' un
-errore semantico recuperabile e non consuma un retry di serializzazione.
-
-Prima dell'inserimento nel ledger, ogni `ReaderLead` attraversa anche un quality gate
-deterministico: titolo, ipotesi, operazione sospetta ed evidenza iniziale devono essere
-informativi e non possono essere placeholder come `test`, `true`, `todo` o `unknown`; la
-categoria deve coincidere con quella attiva. Un rifiuto produce un evento
-`reader_output_rejected` con pressione di contesto e motivazioni e usa il retry di output
-per richiedere la serializzazione concreta dalle evidenze già osservate, senza nuove letture.
+Il self-checkpoint e' l'unico percorso. `ReaderCheckpoint` e' ammesso anche durante il
+turno operativo e viene applicato senza un'altra richiesta al modello. Ai boundary
+periodici e cognitivi l'orchestratore chiede un turno tool-free allo stesso Reader,
+conservando modello, sessione, history e contratto. Decisione `continue` richiede un
+singolo `next_step`; `area_closed` non lo accetta. `reason` e `checkpoint_summary` sono
+narrativi; `category_notes` e' opzionale. Area, superfici e fonti vengono collegate
+all'`AreaCheckpoint` interno dallo snapshot autorevole. Il checkpoint puo' anche emettere
+una lead o un'area sostenuta dalle osservazioni: il prodotto viene acquisito prima di nuove
+letture e non implica la chiusura dell'area. La chiusura dell'ultima area completa la
+discovery indipendentemente dal downstream. Errori tecnici conservano memoria, evidenze e
+prodotti acquisiti e marcano la discovery incompleta. La strategia e' `reader_checkpoint`.
 
 Confirmer riceve anche lead acerbe e svolge discovery verticale nell'intera codebase, sempre scoped alla lead. Il suo compito è raccogliere contesto completo dal codice e confermare staticamente source, propagation, sink, reachability, mitigazioni e route rilevanti. Non deve completare una checklist esaustiva di dettagli operativi: il Worker dispone di `read_source_ref`, lettura del codice, accesso read-only a database e target e tool HTTP, quindi può adattare actor, autenticazione, formato e setup durante la verifica. Il Confirmer termina quando ha un sink verificato sul sorgente, una primitive plausibile e un primo test HTTP discriminante descrivibile, oppure quando una barriera statica positiva dimostra la chiusura. Un fatto ottenibile soltanto da una risposta HTTP appartiene normalmente al `verification_plan` del Worker.
 
@@ -653,15 +660,18 @@ il Worker ricostruisce autonomamente route, parametri, setup e catena statica co
 il codice e il runtime. L'ingresso resta sempre un CandidateHandoff valido: nessun ritorno
 al Confirmer o richiesta di autorizzazione per arricchire la stessa lead.
 
-Il contratto minimo `CandidateHandoff` è narrativo e piatto: `verification_plan`, `success_signal` e `rejection_signal`. La `ConfirmationRecipeCard` strutturata è un acceleratore opzionale e normalmente viene omessa. Il Confirmer specifica l'osservazione HTTP discriminante senza doverla già osservare; payload definitivo, fixture completa, formato esatto dell'autenticazione, alternative e fallback non bloccano l'handoff. Una chiusura ordinaria richiede evidenza statica positiva di flusso interrotto, sanitizzazione efficace, costante sicura o irraggiungibilità. La basis `not_exploitable` richiede invece la prova che il controllo necessario appartenga a stato o privilegi non posseduti dall'attore; non può derivare da assenza di payload, conferma dinamica o budget. Non esiste un output o uno stato `NeedsReaderEvidence`.
-
-Alla fine di ogni tranche il medesimo Confirmer esegue un self-checkpoint tool-free con
-output piatto `ConfirmerCheckpoint`: `decision`, `reason`, `decisive_question` e `next_step`.
-La decisione è `candidate_handoff`, `lead_closure` oppure `continue`; gli ultimi due campi
-sono obbligatori soltanto per `continue`. Quest'ultimo è valido esclusivamente quando manca
-un singolo fatto non-HTTP che può cambiare il verdetto o impedire il primo test HTTP e un
-singolo tool call può risolverlo. Gli esiti terminali bloccano il tipo della successiva
-serializzazione tool-free. Il Reviewer non partecipa al percorso P0 ordinario.
+L'output model-facing statico e dinamico e' un unico `InvestigatorOutput`: soltanto
+`decision` obbligatorio e `narrative` opzionale (default vuoto). La fase statica ammette
+`continue|candidate_handoff|lead_closure`, la dinamica
+`continue|confirmed|rejected|suspected|blocked`. Il modello racconta flusso, barriera, test e
+risultato nella narrativa; non deve ripetere ID lead, metadata Reader, checklist o segnali in
+campi obbligatori. L'orchestratore costruisce `CandidateHandoff`/`LeadClosure` interni con
+identita' e source reference autorevoli. I vecchi piani e recipe restano leggibili; non
+sono requisiti del nuovo output. Un esito conclusivo, anche durante la tranche operativa,
+viene applicato direttamente. Solo un boundary privo di esito richiede un self-checkpoint
+senza tool investigativi. `continue` non ha un validatore di concretezza: la valutazione
+dell'utilita' e del prossimo passo e' semantica e appartiene al modello. Il Reader non
+riceve di ritorno la lead e non partecipa a questa finalizzazione.
 
 Il checkpoint usa la stessa `RoleConversationState`, lo stesso `session_id` e la stessa
 pipeline `_role_history` della tranche: la history rimane append-only finché non raggiunge
@@ -715,68 +725,51 @@ Quando il flag Confirmer e' attivo riceve anche `trace_data_flow` per ricostruir
 verticale source, propagation e sink della sola lead attiva; il Confirmer, non Joern, valuta
 semanticamente controllabilita', trasformazioni, condizioni e barriere.
 
-Ogni ruolo, non soltanto il Confirmer, dispone di due retry orchestrati per
-`UnexpectedModelBehavior`, `ModelAPIError` e l'eventuale `APIError` OpenAI non ancora
-normalizzato. Il transport esegue un solo tentativo, evitando di moltiplicare implicitamente
-i tre tentativi complessivi dell'orchestratore; i retry Pydantic di validazione dell'output
-restano invece interni al medesimo episodio. Prima della validazione Pydantic, tutti gli output strutturati
-attraversano una normalizzazione JSON schema-aware: una stringa che contiene un oggetto o
-una lista JSON viene decodificata soltanto quando il campo dichiarato richiede quel container;
-un container viene codificato a stringa soltanto per campi JSON testuali espliciti come
-`payload_json`. Stringhe narrative, JSON scalari e forme incompatibili restano intatti e
-continuano a fallire normalmente. Le rappresentazioni equivalenti recuperate localmente non
-consumano quindi retry modello. Un errore riconducibile a context/output token exhaustion forza
-immediatamente la compression della conversation operativa prima del primo retry e riduce
-il reasoning effort del tentativo successivo; gli altri errori tecnici seguono il retry
-ordinario. Dopo token exhaustion l'orchestratore calcola una fingerprint di prompt,
-history e settings e non reinvia un tentativo ancora identico; i retry di errori provider
-transitori possono invece conservare il payload. Un rifiuto locale del guardrail input del
-Reviewer avviene prima di contattare il provider e non entra nella retry ladder: lo snapshot
-viene già adattato prima dell'admission e un ulteriore rifiuto attiva direttamente il fallback
-conservativo. Ogni tentativo Reviewer, inclusi i retry di validazione dell'output, ripassa
-dallo stesso fitting; il retry context è strutturato, limita il messaggio d'errore e sostituisce
-quello precedente invece di accodare nuovamente l'intero prompt. La soppressione viene
-registrata nella telemetria. Ogni rifiuto di validazione Pydantic, per tutti i ruoli, è inoltre
-stampato e persistito come `[role:validation-retry] <motivo>` / evento `validation_retry` prima
-del retry. Il client HTTP del provider applica un timeout di inattivita' configurabile di
-120 secondi. Una deadline distinta, di default 240 secondi, avvolge ogni singola richiesta
-modello nel nodo di stream e non il tempo complessivo della sessione o dei tool.
-Timeout e guasti di trasporto esauriti entrano nei recovery tecnici gia' previsti per ogni ruolo:
-Reader conserva il checkpoint e termina incompleto dopo due cicli, Confirmer blocca la lead
-sospetta, Worker conserva la lead sospetta con causa tecnica esplicita;
-Recon, Reviewer e Handoff usano i rispettivi fallback conservativi. Ogni guasto di trasporto
-della richiesta registra nella telemetria persistita durata, indice della richiesta e retry
-orchestratoriale, ruolo,
-modello, policy provider richiesta, provider osservato se disponibile e stato dello stream
-(`before_response`, `stream_without_content` o `stream_with_content`). Un provider non
-osservato resta sconosciuto e non viene inferito dal modello o dal segnaposto diagnostico.
-Per il Reader il primo retry conserva l'intera history;
-prima del secondo l'orchestratore chiede un checkpoint all'Exploration Reviewer e apre una
-nuova epoch. Se la review fallisce, usa un checkpoint deterministico: ledger, source
-reference, file osservati, dossier area e stato della categoria restano autorevoli, mentre i
-messaggi potenzialmente corrotti vengono eliminati. L'evento `reader_retry_compaction`
-distingue checkpoint Reviewer e fallback deterministico.
-`UsageLimitExceeded` rappresenta invece i guardrail locali di budget o richieste e non
-viene ritentato dall'orchestratore. Il turno terminale del Confirmer restituisce un
-`ConfirmerTerminalPayload` piatto (`decision`, `reason` e, per un candidate,
-`verification_plan`, `success_signal`, `rejection_signal`; per una closure, `closure_basis`):
-l'orchestratore collega lead ID, categoria, severity e source reference dallo stato
-autorevole e tratta `recipe` come payload opzionale non tipizzato, convertito alla card
-interna e scartato se malformato, senza retry. Gli adattatori legacy tollerano candidate e
-closure JSON complete, envelope escapati e forme precedenti: un nucleo semanticamente
-valido non viene mai rispedito al modello per ID, recipe o escaping. Durante la serializzazione terminale del Confirmer le
-risposte raw vivono fuori dalla history comprimibile: l'orchestratore recupera soltanto un
-`CandidateHandoff` o `LeadClosure` pienamente valido per schema, scope e source reference.
-Se i cinque tentativi terminali terminano senza un output recuperabile, la lead resta
-`suspected` con lifecycle `terminal_output_exhausted`; gli output emessi vengono persistiti
-nel finding e il limite locale non produce un blocker tecnico.
+La policy distingue errori di output, di contesto e di trasporto. Il transport esegue un
+solo tentativo; guasti provider transitori possono usare al massimo due retry orchestrati.
+Errori di configurazione/input e guardrail locali non vengono ritentati. Gli output passano
+prima dalla normalizzazione JSON schema-aware, senza inventare narrativa o semantica.
 
-Worker usa il candidate e sessioni actor separate per verificare dinamicamente il finding. Il contratto minimo Confirmer→Worker non richiede più una Recipe Card annidata: `verification_plan`, `success_signal` e `rejection_signal` sono tre stringhe piatte obbligatorie, complete ma adattabili al runtime. La Recipe Card strutturata è un acceleratore opzionale; se valida il Worker può seguirla dal primo step non completato, mentre se è assente l'harness proietta deterministicamente il piano piatto in una recipe compatibile a singolo step. Una recipe opzionale malformata non blocca la promozione di un candidate che soddisfa il nucleo statico e i tre campi piatti. Il Worker conserva l'evidenza, non ripete test riusciti e deve comunque raccogliere una baseline per prove differenziali o temporali. `ContinueInvestigation` persiste gli eventuali identificatori degli step strutturati completati, oltre al progresso narrativo e al prossimo esperimento già presenti nel checkpoint. L'assignment proietta anche prima azione concreta, actor, prerequisiti già soddisfatti, oracle, impedimento e progresso precedente usando piano e checkpoint autorevoli; non impone deterministicamente HTTP come primo tool. L'handoff iniziale non duplica gli snippet integrali raccolti dal Confirmer: consegna il piano di conferma e i metadata delle source reference autorizzate, mentre `read_source_ref` permette al Worker di recuperare on demand soltanto il codice necessario al prossimo test. L'access set del Worker include deterministicamente sia `finding.source_ref_ids` sia ogni source reference citata nella proiezione del piano, così un ref usato dal piano è sempre recuperabile. I candidate storici con Recipe Card o campi setup/baseline/exploit restano adattati in lettura. Se i metadata eccedono il budget del singolo prompt, l'orchestratore conserva tutti gli identificatori recuperabili e rimuove la proiezione ridondante di path e range. Quando il command executor è disponibile il Worker riceve sia `query_database`, per `SELECT` strutturate tramite il dossier runtime persistente, sia `run_target_command` per altre osservazioni read-only strettamente pertinenti nel servizio scelto dall'enum, incluse configurazione, route e verifica di effetti già prodotti tramite l'applicazione; non può usarli per fabbricare direttamente l'impatto. Il contratto di `run_target_command` rende obbligatori sia `argv` sia `script`: la modalità non scelta viene rappresentata rispettivamente da lista o stringa vuota, evitando parametri opzionali nello schema esposto al modello. Ogni ruolo che dispone di `run_target_command` dispone anche di `query_database`. Il Worker restituisce progresso investigativo o una decisione tipizzata
-(`ConfirmedDecision`, `RejectedDecision`, `BlockedDecision`, `SuspectedDecision` o
-`ContinueInvestigation`). Ogni uscita passa al proprio checkpoint prima della serializzazione
-terminale. Riferimenti alle prove sono model-facing e autoritativi soltanto dopo validazione
-di provenance; lo scope della lead viene collegato dall'harness. Non esistono richieste di
-informazioni a Confirmer, routing inverso o nuove ammissioni economiche ai checkpoint.
+Il Reader ha un cap iniziale di risposta di 32.000 token e reasoning almeno medium.
+Il cap non e' un grant economico. Pydantic non ritenta internamente gli output Reader.
+Un payload completo ma invalido viene prima normalizzato localmente; se serve, una sola
+richiesta tool-free con payload, schema, errore e contesto autorevole minimo ripara la
+serializzazione senza history investigativa. La riparazione conserva tipo e decisione.
+Una risposta troncata dal limite di output ha un solo recupero con cap fino a 64.000 token
+nello stesso episodio, se l'input entra nella capacita' con la nuova riserva. Il guardrail
+considera questa riserva prima della richiesta. Output exhaustion non forza compattazione
+e non abbassa il reasoning. Una seconda failure ferma l'area incompleta senza un nuovo
+ciclo esterno o replay investigativo. Evidenze e prodotti acquisiti restano persistiti.
+
+Confirmer/Worker usano lo stesso recovery limitato descritto sotto; gli altri ruoli
+conservano i rispettivi retry e recuperi esistenti. Il client ha timeout
+di inattivita' di 120 secondi, deadline Reader di 300 secondi (anche nel recovery) e
+deadline di 240 secondi per gli altri ruoli. Consumi falliti
+restano contabilizzati. La cache dipende dal prefisso di input e dal provider: cambiare il
+solo cap non implica necessariamente invalidarla; nessun recupero presume costo nullo.
+
+`UsageLimitExceeded` rappresenta i guardrail locali di budget o richieste e non viene
+ritentato. Confirmer/Worker hanno zero retry SDK di output: un payload completo viene prima
+normalizzato localmente; se resta invalido, una sola richiesta tool-free riceve payload,
+schema, errore e decisioni ammesse senza ripetere la history investigativa. Un output
+troncato puo' avere un solo recupero sulla history originale con cap raddoppiato fino a
+64.000 token, soltanto se entra nella capacita' con la nuova riserva. Non si riduce il
+reasoning e non si forza compaction per recuperare output. Il cap ordinario resta invariato;
+checkpoint e un eventuale recupero hanno riserva di due richieste, non pile di retry
+terminali. Un secondo fallimento conserva finding e journal con stato incompleto senza
+riavviare l'investigazione o chiedere un altro checkpoint. Costo dei tentativi falliti e
+recuperi resta contabilizzato.
+
+Il Worker usa il candidate, letture del codice e sessioni actor separate per verificare il
+finding. `verification_plan`, `success_signal`, `rejection_signal` e recipe appartengono ai
+piani legacy importati, non sono campi richiesti al nuovo Investigator. Il dossier narrativo
+e gli indici scoped consentono di ricostruire route, setup e primo esperimento senza
+routing inverso. `read_source_ref` recupera on demand il codice autorizzato; l'access set
+include le reference del finding e del piano. Quando disponibili, `query_database`,
+`run_target_command` e `run_target_probe` forniscono osservazioni runtime. Una shell non
+puo' fabbricare direttamente l'impatto usato come prova. Il modello decide il verdetto e lo
+racconta in `narrative`; l'orchestratore collega identita', citazioni note e trace senza
+richiedere un secondo DTO del modello.
 
 Il dossier Confirmer→Worker aggiunge una sola `narrative` piatta che collega primitive,
 controlli osservati, gap residuo, esperimento discriminante e criteri positivo/negativo.
@@ -784,26 +777,56 @@ Lead, area e stato operativo provengono dall'assegnazione; gli storici privi del
 vengono proiettati deterministicamente dai campi legacy, senza parser semantici. I campi
 piatti necessari al controllo di flusso e al report restano tipizzati.
 
-Con `WORKER_BROWSER_ENABLED` il provisioning Laravel crea un sidecar Playwright/Chromium isolato per audit su una rete dedicata, gli assegna l'origin target già autorizzato e un token casuale scoped alla run, poi lo rimuove insieme alla rete anche su errore o cancellazione. Il sidecar non riceve socket Docker, sorgenti o artifact; l'agente riceve soltanto l'URL interno e il token effimero. Chromium parte lazy con sandbox esplicita, profilo seccomp Playwright pinned e sole capability `SYS_CHROOT` necessaria al sandbox (tutte le altre restano droppate con `no-new-privileges`); i context sono separati per audit/categoria/lead/actor, service worker e download sono bloccati, popup e richieste fuori origin sono bloccati dal gateway. Il Worker, e nessun altro ruolo, riceve gli unici tool `browser_flow` e `inspect_browser`: step e assertion piatti, bounded, strict e senza CDP, shell o JavaScript arbitrario. Login UI conserva le credenziali nel lato privato del gateway; sessioni HTTP e browser dello stesso actor restano separate. Il context vive attraverso compression, checkpoint e retry Worker e si chiude solo alla lead terminale o alla fine dell'episodio Worker condizionale.
+Con `WORKER_BROWSER_ENABLED` Laravel prepara un sidecar Playwright/Chromium effimero per
+audit, con rete e token privati. Soltanto l'Investigator dinamico riceve
+`browser_code(actor, code)` e `inspect_browser`. Il codice e' il corpo di una funzione
+JavaScript async con `page`, `context`, `target_url` e valori privati dell'actor;
+`return` e' libero e facoltativo. Non esistono piu' step/locator/assertion DTO esposti al
+modello. Gli artifact del vecchio contratto restano leggibili.
 
-Ogni flow assegna un `action_ref` e checkpointa atomicamente azione, rete, dialog e osservazioni browser redatte nel medesimo outcome a due file, accanto alle transazioni HTTP senza inventare request id browser. `exploit_ref`/`test_ref` possono risolvere una transazione HTTP o una browser action; le proiezioni legacy restano leggibili. DOM, ARIA, page error, assertion UI e log generici sono diagnostici. Una conferma XSS browser richiede un evento con marker univoco, contesto pertinente, causalità del payload e `observation_ref` persistita della stessa action. Dialog esatto e cattura console contestualizzata sono oracle equivalenti; reflection, status 200 e impatto prodotto direttamente dalla shell restano insufficienti. L’orchestratore verifica ownership, episodio e provenance prima di promuovere il ledger. Il benchmark end-to-end usa il discriminante versionato `requires_browser_execution`; il benchmark Worker conserva e valuta separatamente action/observation browser, e un caso DOM-only non richiede traffico HTTP fittizio.
+Ogni sessione audit/categoria/lead/actor avvia lazy un runner Bubblewrap e una propria
+istanza Chromium. Browser, cookie e storage persistono; le variabili locali dello
+snippet no. Il runner ha namespace Linux separati per user, mount, rete e PID, ambiente
+ripulito, filesystem di runtime read-only e /tmp privato; non riceve token gateway,
+chiavi LLM, sorgenti, mount host o socket Docker. Node non ha rete diretta. Due socket
+Unix del solo compartimento inoltrano proxy target e controllo CDP; un terzo socket
+trasporta comandi/risultati. Gateway e collector restano fuori dal compartimento.
+Il codice puo' usare Playwright e moduli Node standard, senza VM JavaScript come barriera
+di sicurezza. Anche un nuovo browser/context creato dal codice resta nella rete isolata.
 
-Il contratto browser comprende `submit_form`: una POST di navigazione reale, con query nel `path` e body nel campo piatto `form` come testo URL-encoded (anche con nomi ripetuti). Il gateway crea e invia una form tramite codice interno fisso, conservando documento, redirect e CSP della risposta; non renderizza risposte API tramite HTML sintetico. `set_cookie` e `clear_cookie` operano soltanto sull'host target e nel context dell'actor, usando `name`, `value`, `path` e attributi cookie espliciti. Queste azioni producono osservazioni di setup: non provano da sole controllo dei cookie della vittima o provenienza cross-site. Origin attaccante, frame interattivi, popup e upload restano fuori dal contratto corrente.
+Il proxy autorizza schema/host/porta target anche attraverso redirect e CONNECT HTTPS,
+senza modificare body, risposte o CSP. Popup, service worker e download sono disabilitati
+nel context fornito; il modello non riceve un origin attaccante aggiuntivo. Cookie/DOM,
+JavaScript evaluate/addScriptTag o altri interventi diretti del tester sono setup,
+non prova automatica di XSS. Il modello valuta causalita', marker e contesto; il
+benchmark richiede eventi reali raccolti e osservazioni persistite, senza inventare
+assertion PASS per gli script. Un valore restituito dallo script non crea un evento.
 
-Playwright gestisce strictness e auto-wait senza pre-check di esistenza. Le assertion attendono il proprio timeout e un loro fallimento restituisce `assertion_failed`, distinto dagli errori degli step. Il modello riceve un riepilogo narrativo piatto con PASS/FAIL, osservazioni rilevanti e riferimenti citabili; i DTO delle assertion e dei collector restano interni. Ogni nuova chiamata del tool ha un identificatore di invocazione nuovo; il gateway serializza i flow dello stesso actor e deduplica soltanto ritrasmissioni con lo stesso identificatore, anche in-flight. Gli action ref derivano dall'identificatore di invocazione e non dalla lunghezza della finestra in memoria. Il timeout HTTP del gateway copre le attese ammesse dal flow. La rete usa una finestra scorrevole bounded che continua a raccogliere dopo la saturazione, con collector separato per azione e indicazione delle omissioni; i dialog hanno priorita' sul rumore console. Le WebSocket sono bloccate esplicitamente.
+Deadline di 60 secondi per script, misurata dal gateway esterno; il client concede 105
+secondi includendo avvio e margine. Errori di sintassi, Playwright e serializzazione sono
+risultati ordinari: non provocano retry SDK o fatal dell'Investigator. Un errore conserva
+lo stato; timeout, cancellazione o morte del runner terminano la sola sessione e dichiarano
+`state_lost`. Una nuova chiamata puo' ricrearla, senza replay. Le invocazioni della stessa
+sessione sono serializzate; solo ritrasmissioni dello stesso invocation id sono deduplicate.
+Il cleanup chiude runner, Chromium, socket, proxy e profili, anche dopo errori. Il profilo
+sidecar predefinito concede 2 GiB e 1024 PID/thread per le istanze Chromium separate;
+non aggiunge CAP_SYS_ADMIN. Il seccomp pinned consente mount/umount/pivot_root necessari
+ai namespace non privilegiati. Readiness verifica namespace e sandbox Chromium prima
+dell'avvio dell'agente; se il kernel non li supporta il provisioning fallisce.
 
-`inspect_browser` offre anche `forms`, con form, campi, opzioni e locator CSS senza valori degli input. `summary` descrive capacita', limiti e stato; `network` mostra metadati redatti inclusi metodo, status, nomi dei campi form, Content-Type, CSP, Origin e Referer. Tutte le modalita' leggono snapshot immutabili paginati tramite cursor scoped a context, mode e selector: avanzare non rilegge il DOM e non salta caratteri. Il gateway conserva fino a otto snapshot da 1 MB per context, segnala l'eventuale limite di acquisizione e richiede un selector piu' stretto; ogni pagina di massimo 12.000 caratteri viene conservata integralmente nell'osservazione browser persistita.
+Ogni script persiste automaticamente codice redatto, actor/scope, output libero,
+stdout/stderr bounded, errore, durata, stato perso, rete, dialog e osservazioni. action_ref
+ed observation_ref sono assegnati dall'harness nel ledger atomico e nel journal esterno
+al contesto. Nel prompt tornano soltanto riepilogo, risultato utile e riferimenti; il
+modello non serializza DTO di persistenza. Le action in memoria restano bounded a 80,
+con cursor assoluti per le tranche. Questo materiale prepara il regression testing
+assistito, senza introdurre un agente di replay o un framework generale di macro.
 
-I prompt Confirmer e Worker richiedono esecuzione browser per dimostrare XSS, anche se il
-candidate propone un success signal HTTP piu' debole. Il Worker valuta causalita', marker,
-contesto e osservazione persistita: dialog e console contestualizzata sono oracle equivalenti,
-mentre reflection e status HTTP non dimostrano esecuzione. La sufficienza semantica appartiene
-al Worker; l'harness verifica gli ID e lo scope. Un trasporto necessario indisponibile produce
-un blocco ambientale motivato; prove incomplete o un'indagine poco proficua restano suspected.
-
-Il sidecar include un proxy privato per context vincolato a schema, host e porta dell'origin autorizzato. Il browser lo usa anche per loopback e redirect: il solo routing Playwright non intercetta gli hop successivi al primo. Le richieste HTTP e le POST vengono inoltrate senza modificare body o risposte; HTTPS usa CONNECT soltanto verso l'autorita' target, senza terminazione TLS o modifica della validazione dei certificati. Un redirect fuori origin viene bloccato prima di consegnare la richiesta e produce `policy_blocked`; i redirect same-origin conservano la normale semantica browser. Proxy, socket e connessioni vengono chiusi insieme al context; nessun endpoint aggiuntivo viene esposto al modello.
-
-La finestra in memoria conserva 80 browser action; un cursore assoluto con offset mantiene coerenti assignment e gate della tranche anche quando le azioni piu' vecchie vengono rimosse dalla finestra.
+`inspect_browser` conserva summary, forms, ARIA/DOM, testo, eventi e rete con redazione,
+snapshot immutabili paginati (fino a otto da 1 MB per sessione) e pagine di massimo
+12.000 caratteri. Leggere uno snapshot non riesegue il codice. Le sessioni HTTP e browser
+dello stesso actor restano separate; dopo login il CSRF va acquisito nella sessione
+corrente. Script o POST con effetti parziali non vengono mai ripetuti automaticamente.
 
 Il Worker dispone sempre di `search_source`, `list_dir`, `read_file` e `read_source_ref`
 sull'intero `source_root`. L'accesso resta verticale e vincolato alla lead assegnata: risolve
@@ -839,59 +862,42 @@ boundary della stessa esecuzione, ma non generano file post-run.
 Ogni ispezione riuscita di una response Worker genera inoltre un'osservazione derivata
 bounded nel medesimo `evidence_ledger` atomico della transazione originaria. L'orchestratore
 deriva `observation_id`, run/categoria/lead, request e response id dalla response store e dalla
-transazione autorevole. Il Worker cita gli ID nella decisione finale. `observation_refs`
-accetta direttamente request ID HTTP dell'episodio attivo, anche senza inspection:
-il riferimento seleziona l'intera transazione registrata e rimane un request ID.
-Alias response ID risolvono univocamente la richiesta; action e `tool-output-*`
-risolvono le osservazioni quando disponibili nello scope. `exploit_ref`/`baseline_ref`
-e `test_ref` selezionano le prove principali. Sono ammesse liste miste di richieste e
-osservazioni, senza creare osservazioni sintetiche o espandere una richiesta nei suoi
-estratti. Il body conserva la normale policy di redazione e troncamento; citare una
-transazione non duplica il body nel payload model-facing. Oracle Worker v5 e report
-accettano le medesime reference; i casi senza oracle classificabile sono esclusi
-dall'accuracy semantica. Gli storici `*_request_id` restano alias in lettura. L'osservazione conserva locator, tipo di
-estrazione, rappresentazione (`text_excerpt`, proiezione JSON o DOM), trasformazioni,
-troncamento e redazione; una proiezione JSON/DOM non e' dichiarata copia byte-per-byte del
-body. Gli estratti restano redatti e bounded, non sono un archivio di body; un risultato vuoto
-o parziale non attesta l'assenza del comportamento fuori dalla porzione osservata.
+transazione autorevole. Le citazioni nella narrativa sono facoltative: l'orchestratore collega soltanto ID noti
+nello scope senza spendere retry per assenza o ref sconosciuti. Non seleziona automaticamente
+un test decisivo e non inventa baseline, assertion o oracle. I campi `exploit_ref`,
+`baseline_ref`, `test_ref` e `observation_refs` restano leggibili negli output storici.
 
-Il Worker e' l'autorita' semantica dell'episodio dinamico. Parte sempre da un
-`CandidateHandoff` valido (o input equivalente normalizzato al medesimo contratto), prodotto
-dal Confirmer o importato da un artifact precedente: non occorre eseguire Confirmer nella
-stessa run. Un ReaderLead grezzo non e' un ingresso Worker. Il contratto conserva
-`verification_plan`, `success_signal` e `rejection_signal` obbligatori.
+Il Worker e' l'autorita' semantica dell'episodio dinamico. Parte da un `CandidateHandoff`
+interno oppure importato, anche senza Confirmer eseguito nella stessa run. Il contratto
+model-facing e' sempre `InvestigatorOutput`, inclusi i self-checkpoint. Un confirmed
+richiede soltanto provenienza tecnica: almeno una tool call eseguita con risultato nella
+stessa lead, anche probe, script o browser, senza whitelist di trasporti. L'harness non
+interpreta status, body, timing, concretezza della narrativa o sufficienza della prova.
+Il report dichiara `evidence_validation.mode=tool_execution_provenance` e
+`semantic_validation=model`: non attesta i controlli rimossi. Senza trace conserva il
+confirmed dichiarato con `applied=false`, finding suspected e incompletezza tecnica,
+senza retry semantici. Il milestone statico resta acquisito. Gli evaluator leggono anche
+le attestazioni storiche Worker e Dynamic Judge.
 
-Ogni uscita investigativa, yield o boundary operativo porta al `WorkerCheckpoint` piatto:
-`decision=continue|confirmed|rejected|suspected|blocked`, `reason`, `decisive_question` e
-`next_step`. `continue` richiede una domanda decisiva e un prossimo esperimento concreto.
-Il checkpoint valuta utilita' marginale, impedimenti e sufficienza delle prove senza tool.
-La continuazione mantiene scope, history e sessione e usa il residuo dell'envelope gia'
-ammesso; non concede nuove quote. Il verdict terminale viene bloccato nella stessa
-conversazione e serializzato senza tool; i retry correggono il payload senza cambiare esito.
-System prompt, definizioni dei tool e unione degli output restano stabili tra le fasi;
-l'harness respinge invocazioni operative durante checkpoint, terminalizzazione e
-riparazione di un output Worker respinto dal validatore. Gli errori attesi del contratto
-diventano `ModelRetry` anche nel percorso investigativo: il modello riceve campo,
-motivo e riferimenti validi. L'esaurimento dei retry di output non riavvia il turno
-tramite i retry provider. `output_validation_by_role` registra retry, recuperi ed
-esaurimenti separatamente da trasporto, costo ed esperimenti; il batch conserva i delta.
+Il report conserva narrativa dell'exploit, citazioni riconosciute e puntatore al journal
+completo. Questo materiale permette report semidettagliati e una futura regressione
+assistita; il P0 non implementa un agente di regression testing o replay automatico.
+Baseline e barrier positive restano criteri semantici nel prompt, non campi bloccanti.
+Errori tecnici o economici conservano le prove e la lead suspected con motivo esplicito.
 
-`SuspectedDecision` conserva motivo, evidence gap, prossimo test ed eventuali osservazioni.
-Errori tecnici esauriti, limite economico e output non applicabile conservano la lead
-`suspected` con lifecycle `worker_stopped` e `worker_stop_cause` esplicito. Il ledger
-mantiene tutte le prove raccolte. `blocked` richiede un impedimento concreto osservato:
-limiti locali, prove mancanti o scarsa utilita' di continuazione non sono rigetti o blocchi.
+I tool HTTP richiedono `actor` nello schema inviato al modello, incluso `anonymous`.
+Gli actor browser sono limitati ai profili applicativi realmente configurati piu'
+`anonymous`; gli errori riportano le alternative. I child Investigator ereditano i profili
+autorevoli. Sessioni HTTP/browser restano separate, il modello deve acquisire CSRF fresco
+dopo login e nessun POST viene ripetuto automaticamente. Il profilo BookStack imposta
+APP_URL sull'origin runtime effettivo prima della readiness: non allarga gli origin del
+browser e non aggira la sua policy di rete.
 
-Il Worker seleziona gli ID decisivi: `exploit_ref`, `baseline_ref`, `test_ref` e
-`observation_refs` sono model-facing, mentre `lead_id` appartiene all'harness. Prima di
-applicare confirmed o rejected, l'orchestratore verifica campi non vuoti, identita' della
-lead ed esistenza/provenienza delle prove nell'episodio Worker attivo. Gli alias sono
-normalizzati soltanto se univoci; ID inventati, ambigui o fuori scope richiedono un retry.
-Prove differenziali o temporali richiedono baseline distinta; senza baseline una prova
-diretta richiede una motivazione. L'harness non interpreta status, body, timing o contenuti
-per decidere la vulnerabilita'. Il report persiste `adjudication.role=worker`, decisione,
-trace e `evidence_validation` v3 (`mode=structural_provenance_only`). Gli evaluator leggono
-anche le attestazioni storiche `dynamic_judge` senza introdurre un supervisore nel runtime.
+Il riferimento DeepSeek Harness e' la separazione fra risultato validato, conclusione del
+turno e log persistente separato dal contesto: commit
+[`5719020`](https://github.com/deepseek-ai/deepseek-harness/blob/571902028a75c64c1d767f4ae5fd099485f0ddf0/packages/subagent/subagent/src/structured.ts)
+e [session persistence](https://github.com/deepseek-ai/deepseek-harness/blob/571902028a75c64c1d767f4ae5fd099485f0ddf0/packages/session/session-persistence/README.md).
+Non sono introdotti runtime o dipendenze DS; la policy di singolo repair e' di Lailaps.
 
 Nel solo percorso filtrato multi-categoria, Handoff Reader produce il contesto riutilizzabile dalla categoria successiva con soli fatti
 `topic`/`fact` e `unknowns` model-facing. Le source ref dell'episodio restano un indice
@@ -949,7 +955,7 @@ genera un file JSON effimero con permessi restrittivi, montato read-only nell'ag
 cancellato in `finally`: contenuto e segreti non entrano in argv, outcome, ledger, eventi o
 log. Python assegna handle opachi derivati da ruolo e posizione (es. `administrator-1`) e
 Confirmer e Worker ricevono nel prompt privato credenziali e descrizioni;
-Reader, Recon e Reviewer restano ignari delle utenze. Nessuna sessione viene preautenticata.
+Reader e Recon restano ignari delle utenze. Nessuna sessione viene preautenticata.
 Le sessioni HTTP sono isolate per handle e persistono tra round e lead della stessa run;
 prima di ogni round Worker una vista senza valori segreti espone stato vuoto o materiale
 riusabile, nomi di cookie/header e ultima request dell'actor. Questa vista offre contesto e
@@ -978,7 +984,7 @@ solo un piano acquisito puo' essere promosso a Golden Recon. `benchmark:reader-g
 ready dello stesso target e snapshot con almeno un incarico, senza imporre il numero di
 aree della fixture YesWiki; ogni figlio riceve un solo incarico e il briefing comune.
 Le ripetizioni del comando producono run e outcome distinti. Il profilo globale iniziale
-concede 32 richieste investigative, 640.000 punti, 24.000 token di output e fino a 48 aree;
+concede 48 richieste investigative, 160.000 punti, 32.000 token di output e fino a 48 aree;
 la Recon categoriale conserva i limiti precedenti. La Global Recon dispone di lettura file,
 segnali statici, recupero degli output e `run_code` con i soli binding statici
 `search_source`/`read_file`, oltre agli strumenti architetturali. Il benchmark impone per
@@ -1003,7 +1009,7 @@ controllo. Due righe sono quindi confrontabili soltanto quando la
 Gli obiettivi P0 seguono le responsabilita' osservabili del ruolo: Recon misura coverage
 strict/guided/weak e recall@K sugli anchor; Reader misura `suspected`, Confirmer
 `static_validation` e Worker `dynamically_confirmed`, di cui possiede la decisione.
-Reviewer mantiene la proxy discovery nei report che lo esercitano. Gli obiettivi a casi
+Reader mantiene la proxy discovery nei report che lo esercitano. Gli obiettivi a casi
 usano F1 contro positivi e negative control e conservano TP/FP/FN e risultati per caso.
 Un ruolo senza richieste e' `not_exercised` e non riceve uno zero artificiale. Le scorecard
 storiche Judge sono leggibili soltanto quando la run contiene la relativa telemetria.
@@ -1080,7 +1086,7 @@ che crea la lead viene trasferita alla lead stessa; Confirmer e Worker sono attr
 lo scope durevole `active_lead_id`. Il benchmark conserva questi record in `cost.lead_usage`
 e confronta le run soltanto a parita' di oracle/snapshot. I modelli richiesti ed effettivi e
 il reasoning effort sono registrati in `audit_run_models` per Category Recon, Reader,
-Reviewer, Confirmer e Worker; il provider non e' parte dell'identita'
+Reader, Confirmer e Worker; il provider non e' parte dell'identita'
 sperimentale.
 
 La telemetria Worker espone tool call per ruolo e lead, breadth sorgente, tempo e richieste
@@ -1131,13 +1137,10 @@ separatamente. Quando un tentativo Worker ha già prodotto transazioni HTTP, il 
 il loro riepilogo e il divieto di ripeterle. La telemetria espone per ruolo retry tentati,
 recuperati ed esauriti.
 
-Un ciclo Reader esaurito conserva l'episodio se la stessa area e il contesto sono ancora utilizzabili.
-Due cicli consecutivi esauriti, pari a sei tentativi complessivi, attivano il circuit breaker:
-il pass viene pubblicato incompleto con `termination_reason=model_unavailable`. Il percorso
-filtrato puo' produrre l'handoff deterministico previsto; nel percorso globale il failure
-interrompe gli eventuali pass successivi. Un output
-Reader valido azzera il contatore. Recon, Reviewer, Confirmer, Worker e Handoff
-restano contenuti nei rispettivi fallback descritti nelle sezioni dei ruoli.
+Il Reader termina incompleto dopo l'esaurimento del recupero previsto, con
+`termination_reason=model_unavailable`. Non esiste un secondo ciclo di retry completo.
+Le lead gia' acquisite restano disponibili al downstream e nei report parziali.
+Gli altri ruoli conservano i rispettivi fallback descritti nelle sezioni dedicate.
 
 ## Budget e richieste
 
@@ -1162,7 +1165,7 @@ continuazione; Worker 1.000.000 per handoff senza rinnovi. Il peso del modello s
 restano visibili negli snapshot; gli artifact storici non vengono ricalcolati.
 
 Nella run globale il cap discovery misura soltanto Reader; Recon usa una quota distinta.
-Nel percorso filtrato Recon, Reader, Reviewer e Handoff condividono discovery. Ogni lead ammette Confirmer indipendentemente;
+Nel percorso filtrato Recon, Reader e Handoff condividono discovery. Ogni lead ammette Confirmer indipendentemente;
 la promozione a CandidateHandoff rilascia il residuo statico e ammette un solo envelope
 Worker. Questi stage non erodono discovery. Alla chiusura gli impegni inutilizzati vengono
 rilasciati senza cancellare i consumi. Nel Worker standalone l'ammissione del candidate non
@@ -1176,10 +1179,10 @@ tranche. `candidate_handoff` e `lead_closure` avviano la terminalizzazione tool-
 di output correggono la serializzazione senza riaprire la decisione. La telemetria distingue
 `full_grant`, `partial_grant` e `terminal_only`. Il cap controlla esclusivamente il consumo
 e non esprime un verdetto tecnico: quando non consente un'altra tranche, l'orchestratore
-conserva la lead suspected (`reviewer_stop` nel percorso statico, `worker_stopped` nel
+conserva la lead suspected (`stop statico` nel percorso statico, `worker_stopped` nel
 percorso dinamico). La terminalizzazione tool-free mantiene una riserva di retry di output
 piu' generosa per assorbire problemi di serializzazione strutturata. Il limite della
-singola risposta e' 6.500 token per Reader e ruoli generici, 5.000 per Reviewer, 12.000 per Recon e
+singola risposta e' 32.000 token per Reader e handoff, 24.000 per Recon filtrata, 32.000 per Recon globale e
 14.000 per il Confirmer. Il guardrail predefinito dell'input e' 230.000 token stimati,
 includendo history, nuovo prompt, prompt persistente e schemi: resta distinto dalla
 finestra operativa da 256k e permette la review della history Reader disponibile. Un
@@ -1191,15 +1194,28 @@ terminalizzazione Confirmer/Worker un preflight verifica che history, nuovo prom
 riserva di risposta entrino nella finestra effettiva: quando non entrano comprime la stessa
 conversation, senza sostituirla con il solo checkpoint. Tutti i ruoli dispongono inoltre
 di due retry completi per gli errori tecnici retryable del modello. Recon conserva richieste
-investigative dedicate e retry Pydantic di output. Il Reviewer ha prompt/output propri
+investigative dedicate e retry Pydantic di output. Il Reader ha prompt/output propri
 e riceve una copia read-only dell'episodio Reader. Se il budget a score termina durante un task attivo, la produzione
 dell'output ha priorita' sul consumo raw.
 
-Ogni singola richiesta LLM ha una deadline wall-clock configurabile, inizialmente 240
-secondi, applicata allo stream del relativo model request e distinta sia dal timeout HTTP
-di inattivita' sia dalla durata dell'intera sessione, dei tool e dei backoff. Il recovery conserva
-messaggi e tool result completati; per il Worker reinietta le transazioni HTTP gia'
-persistite e vieta di ripetere automaticamente operazioni mutanti note.
+Ogni singola richiesta LLM ha una deadline wall-clock: 300 secondi per Reader e suo
+recovery, 240 per gli altri ruoli, distinta dal timeout HTTP di inattivita' (120 secondi)
+e dalla durata della sessione. I retry SDK e transport sono disabilitati; l'orchestratore
+possiede i retry bounded e il backoff cancellabile, senza aumentare il limite esistente.
+Un errore di trasporto ripete la sola richiesta pendente dall'ultimo confine autorevole,
+senza duplicare prompt, includere output parziali, imporre serializzazione terminale o
+rieseguire tool acquisiti. Restano invariati medium Reader, cap ordinario 32.000 e budget.
+AreaEnrichmentLead puo' omettere gli ID: l'orchestratore collega solo source reference
+osservate nello scope e pertinenti ai locator, prima dei gate ordinari e del recovery.
+Una proposta senza riferimento acquisibile e' conservata non acquisita, senza repair LLM
+degli ID. Il recovery conserva una sola riparazione semantica dopo normalizzazione locale.
+La telemetria registra anche i tentativi repair una sola volta e conserva ruolo/scope,
+fase, durata, prima/ultima attivita' stream e provider osservato attraverso aggregazione
+globale e multipass. Deadline locali, timeout di inattivita', errori di trasporto e risposte
+HTTP upstream sono distinti; una deadline locale non incrementa gli errori HTTP provider.
+Usage mancante resta incompleto, senza inventare costi. Il riferimento e' il
+[retry executor DeepSeek](https://github.com/deepseek-ai/deepseek-harness/blob/86a402200d95fecef4529d969836f1fe13c6cb0d/packages/llm/llm-retry/src/index.ts),
+con recovery tecnico separato dal contenuto semantico.
 
 Il Worker usa un envelope di 1.000.000 EP per handoff, indipendente dal preset discovery e
 dal prezzo del modello. Finestre operative da 32 richieste scandiscono i self-checkpoint;
@@ -1229,18 +1245,15 @@ spenta. I checkpoint e il finalizer proiettano sempre la stessa istanza autorevo
 telemetria, quindi finalizzazioni ripetute non incrementano i contatori. Outcome storici non
 vengono migrati con zeri inventati e possono non contenere la sezione.
 
-Il Worker costituisce inoltre un'eccezione al cap generico di 5.500 token: usa un limite dedicato
+Il Reader usa un cap di 32.000 token. Il Worker usa un limite dedicato
 di 14.000 token, riservato nel calcolo della capacita' di history, per evitare retry completi
 causati dall'esaurimento dell'output.
 
-Nel retry successivo a una token exhaustion, il Reviewer usa sempre reasoning `low`; gli
-altri ruoli continuano a usare l'effort di retry configurato.
+Reader e Investigator mantengono il reasoning ordinario anche nei recuperi di output.
+Il Reader resta almeno medium; i retry di trasporto degli altri ruoli usano l'effort configurato.
 
-Dopo la lavorazione completa di una lead, il Reader riparte soltanto se la sua allowance
-residua finanzia almeno due turni medi della grant policy: uno per ottenere nuova evidenza
-e uno per serializzare una lead. Una coda inferiore termina come
-`insufficient_reader_tail_budget`, evitando epoch che possono consumare il residuo ma non
-produrre un nuovo output durevole.
+Dopo ogni acquisizione il Reader continua entro la propria allowance; la lavorazione
+downstream della lead non governa il suo avanzamento nella discovery.
 
 Restano validi soltanto limiti token non economici: capacità della context corrente, riserva di risposta e margine di sicurezza, dimensione della singola risposta e troncamento o paginazione degli output dei tool.
 
@@ -1251,8 +1264,10 @@ Restano validi soltanto limiti token non economici: capacità della context corr
 Discovery, self-checkpoint, produzione del summary di compaction e serializzazione
 terminale sono fasi dello **stesso agente**, salvo un cambio di agente esplicito.
 Una transizione di fase non autorizza a sostituire il contratto inviato al provider.
-Devono restare identici modello, system prompt, provider session ID, definizioni e
-ordine dell'intero toolset, inclusi gli schemi degli output strutturati. La history
+La policy di cache privilegia modello, system prompt, provider session ID e schemi
+stabili. Investigator conserva prompt e schema di output, ma il toolset cambia fra fase
+statica e dinamica ed e' rimosso nei checkpoint; il repair compatto usa una richiesta
+dedicata senza history. Queste transizioni non garantiscono il riuso del prefisso. La history
 gia' inviata deve mantenere contenuto, ordine e rappresentazione: le istruzioni della
 nuova fase si aggiungono in coda, senza riscrivere il prefisso o ricostruire la
 conversazione come un nuovo prompt. Riutilizzare soltanto l'oggetto conversation o
@@ -1264,13 +1279,14 @@ diverse fasi. Nel checkpoint le chiamate operative (letture, ricerche, probe) so
 bloccate: il modello deve produrre un output terminale ammesso, anche il solo
 `ReaderCheckpoint` che autorizza a continuare la discovery. I tool di output
 strutturato non sono tool investigativi. "Tool-free" indica questa restrizione
-operativa, **non la rimozione dei tool o la sostituzione dello schema**.
+operativa. Per Investigator il blocco avviene anche rimuovendo i tool dalla richiesta,
+con il limite di cache dichiarato sopra; lo schema di output resta lo stesso.
 
 La restrizione va applicata con un meccanismo di selezione degli output compatibile
 con il provider e con un controllo nell'harness prima di eseguire qualsiasi tool
 operativo. Il solo prompt non basta. Un filtro SDK che elimina o riordina le
-definizioni prima dell'invio viola il vincolo, anche se chiamato `tool_choice` o
-`prepare_tools`. La verifica riguarda la richiesta realmente serializzata, non
+definizioni prima dell'invio modifica il prefisso anche se chiamato `tool_choice` o
+`prepare_tools`; il percorso Investigator descritto sopra accetta questo limite. La verifica riguarda la richiesta realmente serializzata, non
 soltanto la configurazione dell'Agent.
 
 Per la compaction distinguere la **richiesta che produce la memoria**, che deve
@@ -1297,39 +1313,18 @@ inizia una nuova epoch solo dopo la decisione semantica. I percorsi di summary
 Confirmer/Worker con prompt dedicato restano distinti e vanno verificati a parte.
 
 Reader mantiene una conversazione append-only dentro l'area attiva attraverso review
-periodiche, approfondimenti e ritorni downstream; Confirmer per lead e Worker per candidate.
+periodiche e approfondimenti; Confirmer per lead e Worker per candidate.
 Recon e Handoff la mantengono per il rispettivo episodio. L'uscita
 eccezionale da uno stream persiste tutti i messaggi gia' osservati prima di trasferire il
 controllo. Ogni nuova epoch Reader svuota la history e cambia conversation ID mantenendo lo
 stesso provider session ID; system prompt, toolset e output schema restano invarianti. La
 memoria reiniettata e' un dossier bounded della sola area attiva, non l'intera CategoryRecon.
-L'Exploration Reviewer riceve la history disponibile dell'episodio Reader come copia
-read-only portabile fra modelli: messaggi, tool call, risultati e reasoning visibile sono
-proiettati senza metadata provider firmati; nessuna tool call storica viene rieseguita.
-Il Reviewer conserva prompt e output propri, persiste la decisione e l'orchestratore
-l'aggiunge alla history Reader originale.
-Il dossier Reader conserva inoltre i delta accettati dopo l'ultimo checkpoint: narrativa
-della lead, source reference e stato downstream vengono aggiunti alla history originale
-e restano separati dal lifecycle autorevole. Il successivo checkpoint narrativo del
-Reviewer li integra; se la review fallisce resta valida la sintesi precedente insieme al
-delta esplicito. Le source reference citate nella memoria attiva e quelle selezionate dalla
-lead hanno priorità sugli excerpt recenti. Il Reader può recuperare una ref autorizzata con
-`read_source_ref` e paginare l'indice metadata con `list_source_refs`; ref sconosciute o
-fuori area non ampliano lo scope. Ogni nuova epoch ricostruisce anche il catalogo notebook.
-Il contatore del boundary di review appartiene all'area e non viene azzerato quando una lead
-torna dal downstream: se la soglia e' maturata, il Reviewer interviene prima di un altro giro
-di sibling discovery. Le superfici controllate vengono ricostruite dalle source reference
-autorevoli accumulate nell'area, incluse quelle delle lead e dei downstream, separatamente
-dal delta di novita' della tranche. La chiusura discovery di un'area non dipende dalla coda
-downstream delle lead. Un pivot verso un'altra area autorevole cambia davvero l'area attiva,
-conserva checkpoint e rami residui dell'area sospesa e permette di riprenderla; decisione
-proposta e applicata, con eventuale causa di normalizzazione, sono persistite.
-L'Exploration Reviewer scandisce soltanto i boundary cognitivi/event-driven del Reader e
-`AreaEnrichmentLead`; la novelty review interviene prima di inserire una `ReaderLead` quando
-esiste gia' uno stato adjudicated. Il Reviewer non appartiene al percorso
-Worker e modifica il ledger soltanto indirettamente tramite il verdetto di novita' applicato
-dall'orchestratore. Il Worker esegue i propri self-checkpoint sulla stessa history. La prima lead di una categoria non richiede confronto di novita' perche'
-non esiste ancora un antecedente adjudicated.
+Il self-checkpoint legge la conversazione originale dello stesso Reader; tool call
+storiche non vengono rieseguite. Il dossier conserva fonti e prodotti acquisiti senza
+restituire una lead dal downstream alla discovery. Le source reference restano recuperabili
+tramite `read_source_ref` e indice bounded. Il contatore periodico appartiene all'area e
+attraversa gli handoff. La chiusura dell'area e la coda downstream sono indipendenti.
+Confirmer e Worker usano i propri self-checkpoint.
 
 Per il Reader la finestra tecnica e quella cognitiva sono distinte. `model_prices.json`
 contiene prezzi, provider di riferimento, capacita' fisica e `cognitive_window_tokens`:
@@ -1367,59 +1362,33 @@ token prima/dopo, token del summary, modalità `llm_summary` o
 `deterministic_fallback` e l'eventuale carattere forzato dal retry/preflight.
 
 Recon non usa la compression episodica. Il percorso categoriale conserva la tranche breve;
-quello globale puo' usare fino a 32 richieste investigative. Se la history raggiunge la
+quello globale puo' usare fino a 48 richieste investigative. Se la history raggiunge la
 soglia hard del 90%,
 l'orchestratore disabilita i tool e richiede immediatamente l'output terminale sulla
-history integra. La telemetria registra `recon_status`, `recon_terminal_reason` e rende
+history che conserva esiti e decisioni, riducendo se necessario i body dei tool
+a stub recuperabili prima del terminale. La telemetria registra `recon_status`, `recon_terminal_reason` e rende
 quindi esplicita qualsiasi futura regressione che introducesse una compaction Recon.
 
 ## Esperimento Recon -> Reader per incarichi funzionali (P0)
 
 Il branch sperimentale espone `benchmark:recon-reader {target-id}` in Laravel e
 `pentest recon --global --with-reader` in Python. Esegue una Recon nuova e poi un solo
-Reader attivo alla volta, riusando il lifecycle Reader/Exploration Reviewer esistente.
+Reader attivo alla volta, riusando il lifecycle Reader con self-checkpoint esistente.
 Il flag interno `recon_reader_test` richiede modalita' globale e `stop_after_reader`:
 Confirmer, Worker e Handoff non vengono eseguiti. I comandi ordinari conservano
 il proprio contratto Recon. Questo esperimento valuta il percorso congiunto, non Recon
 in isolamento.
 
-Ogni ingresso che inizializza il Reader espone per run
-`--reader-checkpoint-strategy=reviewer|reader_checkpoint`, con `reviewer` come default:
-`pentest scan`, `pentest reader`, `pentest recon --with-reader` e i relativi comandi
-Laravel `pentest:run`, `benchmark:run`, `benchmark:reader`, `benchmark:reader-global` e
-`benchmark:recon-reader`. Anche gli shortcut e le matrici benchmark propagano lo stesso
-valore; il fan-out globale lo applica indipendentemente a ogni assignment. La scelta vive
-in `Deps`, non in settings globali, ed e' persistita nei report e negli outcome disponibili.
-Nel secondo percorso gli stessi identici boundary ordinari chiedono al modello Reader un
-turno tool-free sulla sua `ReaderConversationState`, conservando modello, sessione, epoch e
-history append-only. Puo' restituire direttamente `ReaderLead` o `AreaEnrichmentLead` gia'
-sostenuti dalle evidenze, oppure `ReaderCheckpoint`. Il contratto di quest'ultimo e' piatto: decisione
-`continue|area_closed`, motivo, singolo `next_step` obbligatorio solo per `continue`,
-`checkpoint_summary` e `category_notes` opzionali. Area, source reference, superfici lette,
-scheduling e completion restano autorevoli nell'orchestratore, che converte il risultato
-nell'`ExplorationReview` interno e riusa grant, stale guard, chiusura area e transizioni epoch
-esistenti. La factory checkpoint mantiene toolset e output schema operativi;
-il flag di fase nel runtime blocca l'esecuzione dei tool investigativi senza
-rimuoverne le definizioni. Errori tecnici o
-structured-output exhaustion producono la continuazione
-conservativa corrente senza cascata verso il Reviewer.
+Ogni ingresso Reader usa esclusivamente `reader_checkpoint`, inclusi scan, Reader isolato,
+Recon con Reader e wrapper Laravel. Il parametro di strategia accetta soltanto questo
+valore. Ai boundary il runtime blocca i tool investigativi conservandone le definizioni;
+la riparazione breve espone soltanto il contratto di output e nessun tool.
 
-I prodotti restituiti al checkpoint attraversano la stessa acquisizione degli output Reader
-operativi prima di qualsiasi nuova richiesta. Non chiudono l'area; in caso di budget esaurito
-la lead valida resta acquisita con novelty `unresolved`, mentre una proposta enrichment
-valida resta `pending_review` e non viene accodata finche' manca l'approvazione del Reviewer.
-Nel benchmark globale self-checkpoint tutte le proposte enrichment restano pending
-per la valutazione offline e le lead non richiedono novelty review online.
-Il parent del benchmark distingue questa proposta da quelle respinte e da quelle approvate
-ma differite. Un prodotto non inventa una decisione `continue` o `area_closed`.
-
-I self-checkpoint sono contabilizzati sotto `reader`, non `reviewer`. Telemetria ed artifact
-registrano strategia, boundary originario, epoch/sessione, tipo di output e, quando presente,
-decisione proposta e applicata,
-normalizzazione/fallback e delta di richieste, input cached/uncached, output, USD e relativa completezza, ed EP. Restano
-inoltre i contatori concettuali degli exploration boundary; le review enrichment sono
-contate separatamente. L'outcome Laravel conserva la strategia per ogni repetition, senza
-stato globale mutabile fra run.
+I prodotti del checkpoint attraversano la stessa acquisizione degli output operativi.
+Le aree con coda esterna restano `pending_integration` per il parent. I self-checkpoint sono
+contabilizzati sotto `reader`; artifact e telemetria conservano boundary, epoch, sessione,
+output, decisione proposta/applicata, normalizzazione e consumi. Un checkpoint anticipato
+applica direttamente il risultato senza una seconda richiesta.
 
 Recon parte dal briefing deterministico del progetto, da Codebase Memory quando
 disponibile, dalle directory e da letture mirate del sorgente. Riceve lo stato dei
@@ -1442,18 +1411,18 @@ l'orchestratore assegna gli ID e normalizza il piano nel `CategoryRecon`/area le
 esistente. Briefing e note restano testo, senza duplicarli in nuovi campi semantici.
 
 Ogni epoch Reader riceve briefing e note comuni, l'incarico attivo completo e un indice
-con ID e titoli degli altri incarichi. Il Reviewer conserva la vista di coordinamento
+con ID e titoli degli altri incarichi. Il Reader conserva la vista di coordinamento
 completa. Reader sceglie le letture successive fra percorsi inesplorati, controlli da
 confrontare e dipendenze condivise; puo' seguire codice fuori dai locator e proporre
 `AreaEnrichmentLead` per comportamenti non rappresentati anche senza un sink sospetto.
 Emette zero, una o piu' `ReaderLead`, con osservazioni e domande discriminanti negli
 unknowns: il nuovo protocollo autonomo `InvestigationPacket` non e' implementato nel P0.
 Una lead acquisita resta non validata e non finanziata dal downstream; Reader prosegue
-nella stessa epoch. Chiusura, pivot e checkpoint sono coordinati dal Reviewer; al cambio
+nella stessa epoch. Chiusura, pivot e checkpoint sono coordinati dal Reader; al cambio
 di incarico viene aperta una nuova epoch. L'ordine iniziale segue gli incarichi Recon,
 con i pivot semantici gia' previsti dal lifecycle.
 
-Recon, Reader e Reviewer consumano il budget discovery condiviso esistente, entro il
+Recon e Reader consumano il budget discovery condiviso esistente, entro il
 cap della run e i limiti di ruolo. Non esistono riserve per incarico o garanzia di
 completare tutti gli incarichi: un cutoff conserva lavoro residuo e risultati parziali.
 Se Recon non produce un piano valido, la run termina con `recon_unavailable`, senza
@@ -1583,19 +1552,19 @@ Confirmer non usa residui Worker e Worker non usa residui Confirmer. Un limite e
 conserva la lead suspected, con `worker_stopped` o `unfunded_dynamic` nel percorso dinamico;
 non produce un verdetto tecnico.
 
-I boundary Reader passano all'Exploration Reviewer; ogni boundary Confirmer passa al
-self-checkpoint dello stesso modello e non al Reviewer. Il Worker passa al proprio
-checkpoint dopo ogni uscita o boundary: il verdict terminale viene serializzato senza tool,
+I boundary Reader passano al self-checkpoint dello stesso Reader; ogni boundary Confirmer passa al
+self-checkpoint dello stesso modello e non al Reader. Il Worker passa al proprio
+checkpoint quando manca un esito conclusivo al boundary; gli esiti conclusivi si applicano direttamente,
 mentre `continue` riprende la stessa history append-only entro l'envelope iniziale.
 Il Reader conserva invece la stessa history nella stessa area, aggiungendo
-una direttiva Reviewer o un esito downstream una sola volta. Apre una nuova epoch al
-pivot reale, alla chiusura area o alla pressione di contesto. I retry Reader conservano la history
-soltanto al primo tentativo e usano Reviewer/fallback deterministico prima del secondo.
+il checkpoint e la conferma di acquisizione di ogni prodotto una sola volta. Apre una nuova epoch al
+pivot reale, alla chiusura area o alla pressione di contesto. Il recupero da output troncato conserva la history se entra nel contesto; la riparazione
+di un payload completo usa soltanto il payload e il contesto minimo.
 se l'orchestratore termina l'agente o cambia scope, la conversazione successiva è invece
 nuova per definizione. Per il Confirmer `candidate_handoff` o `lead_closure` blocca sulla
 stessa conversazione il tipo del verdetto terminale tool-free; `stop_lead` non è esposto al
 modello. Se dopo `continue` il cap non finanzia un'altra tranche, il ledger conserva il
-finding come suspected con lifecycle `reviewer_stopped` per compatibilità dello stato
+finding come suspected con stop statico conservativo per compatibilità dello stato
 persistito, senza attribuire al budget un verdetto tecnico. L'esaurimento del solo output
 terminale conserva raw output e lead
 suspected come `terminal_output_exhausted`, mentre gli errori infrastrutturali distinti
@@ -1701,8 +1670,7 @@ Il verdetto è separato da `completed`, `inconclusive`, `failed_technical`, `pen
 Un errore non crea un pass: `decision=null`, proposta conservata nella proiezione
 provvisoria. PHP e Python verificano adjudication prima del dispatch, anche
 quando ricostruiscono la coda dalle canoniche. Enrichment non completati restano
-in attesa; gli assignment approvati continuano. Il vecchio novelty Reviewer non
-viene invocato sulle stesse proposte. Reader-only conserva la produzione grezza
+in attesa; gli assignment approvati continuano. Reader-only conserva la produzione grezza
 prima del postprocessing; nessun handoff dichiarato deduplicato con fase incompleta.
 
 `reader-normalize` e `reader-evaluate`/wrapper PHP supportano `--resume-failed`:
@@ -1940,13 +1908,12 @@ confronta ogni proposta con il rappresentante del gruppo. Gli originali restano
 persistiti; un block deterministico collega il duplicato al rappresentante e
 non avvia un nuovo Confirmer. Recon, task ed enrichment non usano questa regola.
 Le modalità `deterministic`, `llm` e `off` sono esplicite; `llm` conserva il
-deduper semantico esistente con budget autonomo. La novelty review inferenziale
-delle lead è bypassata in modalità deterministic/off. Nel Reader globale i child
+deduper semantico esistente con budget autonomo. Nel Reader globale i child
 generano lead raw; il coordinatore applica un solo indice deterministico al
 corpus aggregato prima dell'handoff. Il normalizzatore deterministico opera
 offline, senza provider, token o EP di deduplica.
 Il runtime predefinito punta all'immagine separata
-`lailaps-pentest-agent:deduper-deterministic-p0-20261002-v2`; l'override
+`lailaps-pentest-agent:unified-lead-20261006`; l'override
 `PENTEST_AGENT_IMAGE` resta disponibile. Il vecchio tag `dev` non viene
 sovrascritto da questa consegna.
 
@@ -1986,3 +1953,49 @@ L'inventario privato delle sessioni include anche gli handle creati a runtime;
 i nomi di cookie/header indicano materiale riutilizzabile, senza certificare
 che la sessione sia ancora autenticata. Note e log sono persistiti nell'outcome
 della run; cookie jar e conversazioni non vengono importati da run distinte.
+
+
+### Consegna dei tool e budget Recon
+
+Gli output acquisiti rimangono nella LRU RAM da 32 MiB, senza persistenza dei body
+su disco. Ogni preview contiene un identificatore, l'esito di esecuzione e lo stato
+di consegna (`complete`, `partial`, `omitted`); debug e reference estese rimangono
+nella cache. Un corpo semanticamente vuoto e un corpo omesso per budget sono distinti.
+I comandi mantengono stdout e stderr separati e i metadati di esecuzione al livello
+del risultato. Acquisizione incompleta ed eviction vengono dichiarate separatamente.
+
+Le preview individuali hanno un massimo indipendente dal profilo di contesto di
+12.000 token, envelope incluso. Il ProcessHistory applica il cap aggregato di
+48.000 token al batch completo: riserva prima tutti gli esiti minimi, ripartisce
+equamente il resto in ordine di tool call e redistribuisce le quote non utilizzate.
+L'ordine di completamento delle chiamate concorrenti non decide l'ammissione.
+Lo spazio realmente residuo nella history riduce ulteriormente il cap; se necessario,
+i body vecchi vengono ridotti a stub recuperabili, preservando le coppie call/result.
+Le proiezioni ripetute della stessa history non duplicano la contabilizzazione.
+
+`inspect_tool_output` e' disponibile anche nella Recon categoriale. Gli output Recon
+sono autorizzati soltanto nell'episodio/categoria che li ha prodotti; lo scope viene
+generato dall'orchestratore, senza dipendere dall'esistenza di area o lead. I risultati
+di recupero sono paginati e partecipano al cap di presentazione senza essere ricacheati.
+Le source reference canoniche vengono registrate all'acquisizione; le osservazioni
+di codice e i locator Recon vengono aggiornati sulla preview finale e sul recupero.
+Un dato ricevuto da un binding Python non equivale a una lettura del modello.
+
+Recon usa il profilo operativo da 256.000 token (override espliciti rispettati),
+clampato alla capacita' della route modello/provider e al cap dell'input completo.
+Il resolver condiviso sottrae overhead, riserva di risposta e safety margin; la
+capacita' history e' quindi inferiore alla finestra configurata. Global Recon dispone
+di 32.000 token di completamento, 48 richieste investigative e 160.000 EP cumulativi;
+Category Recon di 24.000 token, 16 richieste e 80.000 EP. Il cap economico della run
+resta separato. A plafond esaurito si conclude l'episodio: una richiesta terminale
+senza tool e fino a tre retry di validazione, ammessi anche con consumo solo pending.
+I limiti investigativi e terminali sono cumulativi nell'episodio, anche attraverso
+retry tecnici che aprono un nuovo run Pydantic AI. L'eccezione non autorizza un
+nuovo episodio e l'usage pending viene saldato una volta.
+Recon mantiene la chiusura alla pressione di contesto, con riduzione deterministica
+dei body e preflight terminale, senza compaction LLM ordinaria aggiuntiva.
+
+Il log budget separa richieste investigative/terminali, input/output del modello,
+history/capacita', output tool presentati, plafond Recon, residuo Reader e residuo
+globale assoluto. La telemetria degli output registra soltanto dimensioni, stato,
+motivo di riduzione, disponibilita' e scope, senza nuovi dump dei body.

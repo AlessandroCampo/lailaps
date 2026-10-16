@@ -12,14 +12,14 @@ it('propagates global pipeline configuration through both launch routes', functi
     $run->type = $type;
     $run->parameters = [
         'global' => true, 'reader_checkpoint_strategy' => 'reader_checkpoint',
-        'reader_concurrency' => 3, 'confirmer_concurrency' => 2, 'worker_concurrency' => 1,
+        'reader_concurrency' => 3, 'lead_concurrency' => 2, 'lead_model' => 'acme/lead',
         'reader_points' => 123000, 'worker_points' => 1000000, 'ttl' => 1800,
         'preset' => $type === 'audit' ? 'dvwa' : null,
         'benchmark_id' => $type === 'benchmark' ? 'bookstack' : null,
     ];
     expect((new AuditCommandBuilder)->build($run))->toContain(
         '--global', '--reader-checkpoint-strategy=reader_checkpoint',
-        '--reader-concurrency=3', '--confirmer-concurrency=2', '--worker-concurrency=1',
+        '--reader-concurrency=3', '--lead-concurrency=2', '--lead-model=acme/lead',
         '--reader-points=123000', '--worker-points=1000000',
     );
 })->with(['audit', 'benchmark']);
@@ -208,7 +208,7 @@ it('routes the Gitea and MLflow presets through their unbiased benchmarks', func
         ->not->toContain('--category=');
 })->with(['gitea', 'mlflow']);
 
-it('propagates the exploration reviewer model override', function (): void {
+it('uses only the Reader self-checkpoint contract', function (): void {
     $run = new AuditRun;
     $run->audit_id = 'audit-reviewer';
     $run->type = 'audit';
@@ -225,7 +225,7 @@ it('propagates the exploration reviewer model override', function (): void {
     ];
 
     expect((new AuditCommandBuilder)->build($run))
-        ->toContain('--reviewer-model=reviewer/test')
+        ->not->toContain('--reviewer-model=reviewer/test')
         ->toContain('--reader-checkpoint-strategy=reader_checkpoint');
 });
 

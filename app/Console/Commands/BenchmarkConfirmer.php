@@ -30,14 +30,21 @@ final class BenchmarkConfirmer extends Command
         {--path= : Path target; default targets/<target-id>}
         {--category= : Limita alla benchmark category}
         {--confirmer-model= : Modello Confirmer}
+        {--unified-lead : Verifica statica e dinamica nella stessa sessione}
+        {--isolated-leads : Controllo unificato con sandbox separata per lead}
+        {--lead-concurrency=2 : Investigatori concorrenti nel replay globale}
+        {--lead-model= : Modello unico; default Worker configurato}
+        {--replay-manifest= : Manifest evaluator congelato con subject ReaderLead separati}
+        {--scope=* : Scope del replay manifest; ripetibile}
+        {--runtime-preflight : Prepara il target e verifica fixture senza modelli}
         {--dataset= : Dataset congelato; se assente usa gli artifact validi dal DB}
-        {--envelope-points=350000 : Hard cap per singola decisione}
+        {--envelope-points= : Cap totale; default 350000 statico, 3000000 unificato}
         {--repetitions=1 : Ripetizioni per lead, da 1 a 20}
         {--preflight-only : Validate the selected canonical leads without starting Confirmer}
         {--tool-output : Mostra output tool compatti}
         {--test : Ricostruisce immagine agente}';
 
-    protected $description = 'Valuta Confirmer su ReaderLead frozen o valide nel DB, senza Worker';
+    protected $description = 'Valuta ReaderLead frozen o valide nel DB con Confirmer o investigatore unificato';
 
     public function handle(
         BenchmarkCatalog $catalog,
@@ -71,14 +78,23 @@ final class BenchmarkConfirmer extends Command
         if ($descriptor === null) {
             throw new InvalidArgumentException("Descriptor benchmark assente: {$projectKey}");
         }
-        $envelope = $this->option('envelope-points');
-        if (! is_numeric($envelope) || (float) $envelope <= 0) {
+        $globalReplay = $this->option('unified-lead') && $this->option('replay-manifest') && ! $this->option('isolated-leads');
+        if ($this->option('isolated-leads') && ! $this->option('unified-lead')) {
+            throw new InvalidArgumentException('--isolated-leads richiede --unified-lead.');
+        }
+        if ($this->option('unified-lead')) {
+            \App\Services\Pentest\GlobalPipelineOptions::validate($this->options());
+        }
+        $envelope = $this->option('envelope-points') ?: ($globalReplay ? 100000000 : ($this->option('unified-lead') ? 3000000 : 350000));
+        if (! is_numeric($envelope) || ! is_finite((float) $envelope) || (float) $envelope <= 0) {
             throw new InvalidArgumentException('--envelope-points deve essere positivo.');
         }
         $manifests = $catalog->forTarget($projectKey);
-        $artifacts = $this->option('dedup-run')
+        $artifacts = $this->option('replay-manifest')
+            ? $this->replayArtifacts($registry, $projectKey, $source, (string) data_get($descriptor->data, 'source.commit'))
+            : ($this->option('dedup-run')
             ? $deduperArtifacts->promoted($projectKey, (string) $this->option('dedup-run'))
-            : $this->artifacts($subjectSelector, $projectKey);
+            : $this->artifacts($subjectSelector, $projectKey));
         if ($canonicalIds !== []) {
             $availableIds = $artifacts->map(fn ($row): string => (string) data_get($row->metrics, 'canonical_id'))->all();
             $missingIds = array_diff($canonicalIds, $availableIds);
@@ -140,7 +156,8 @@ final class BenchmarkConfirmer extends Command
 
             return self::SUCCESS;
         }
-        if ($this->option('preflight-only')) {
+        $context = $globalReplay ? $this->replayContext() : null;
+        if ($this->option('preflight-only') && ! $this->option('runtime-preflight')) {
             $this->line(json_encode(['count' => $artifacts->count(),
                 'canonical_ids' => $artifacts->map(fn ($row) => data_get($row->metrics, 'canonical_id'))->values()->all(),
                 'categories' => $artifacts->countBy('category')->all(),
@@ -150,7 +167,11 @@ final class BenchmarkConfirmer extends Command
         }
         $repetitions = max(1, min(20, (int) $this->option('repetitions')));
         $failed = false;
-        foreach ($artifacts as $leadArtifact) {
+        $batchStarted = microtime(true);
+        $batchId = (string) \Illuminate\Support\Str::ulid();
+        $groups = $globalReplay ? [$artifacts] : $artifacts->map(fn ($artifact) => new Collection([$artifact]));
+        foreach ($groups as $leadGroup) {
+            $leadArtifact = $leadGroup->first();
             foreach (range(1, $repetitions) as $repetition) {
                 $location = $storage->create($projectKey, ['confirmer-'.$leadArtifact->category]);
                 $runId = $location['run_id'];
@@ -163,8 +184,30 @@ final class BenchmarkConfirmer extends Command
                     $descriptor,
                 );
                 File::ensureDirectoryExists($workDirectory);
+                $runtimeSource = $agentSource;
+                $runtimeOverlay = dirname($descriptor->path).DIRECTORY_SEPARATOR.'runtime';
+                if ($this->option('unified-lead') && is_dir($runtimeOverlay)) {
+                    $runtimeSource = $workDirectory.'/runtime';
+                    if (! File::copyDirectory($source, $runtimeSource) || ! File::copyDirectory($runtimeOverlay, $runtimeSource)) {
+                        throw new InvalidArgumentException('Materializzazione runtime benchmark fallita.');
+                    }
+                }
+                $runtimeCompose = collect(['compose.yml', 'compose.yaml', 'docker-compose.yml', 'docker-compose.yaml'])
+                    ->first(fn ($name) => is_file($runtimeOverlay.'/'.$name) && is_file($runtimeSource.'/'.$name));
+                $probePath = $workDirectory.'/fixture-probes.json';
+                $fixtureProbes = collect($manifests)->flatMap(fn ($manifest) => $manifest->fixtureProbes())
+                    ->unique(fn ($probe) => json_encode($probe))->values()->all();
+                File::put($probePath, json_encode($fixtureProbes, JSON_THROW_ON_ERROR));
                 $subjectPath = $workDirectory.'/lead-subject.json';
-                File::put($subjectPath, json_encode($dataset->modelSubject($leadArtifact), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                $subject = $globalReplay ? [
+                    'schema' => 'lailaps.global-lead-replay-input', 'version' => 1,
+                    'project_key' => $projectKey, 'source_commit' => $descriptor->commit(),
+                    'recon' => $context['recon'],
+                    'subjects' => $leadGroup->map(fn ($artifact) => [
+                        ...$dataset->modelSubject($artifact), 'replay_scope' => data_get($artifact->metrics, 'replay_scope'),
+                    ])->values()->all(),
+                ] : $dataset->modelSubject($leadArtifact);
+                File::put($subjectPath, json_encode($subject, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
 
                 $oldDirectory = getenv('LAILAPS_RUN_DIRECTORY');
                 $oldRunId = getenv('LAILAPS_RUN_ID');
@@ -173,50 +216,73 @@ final class BenchmarkConfirmer extends Command
                 putenv('LAILAPS_RUN_DIRECTORY='.$directory);
                 putenv('LAILAPS_RUN_ID='.$runId);
                 putenv('LAILAPS_OUTCOME_FILE='.$storage->outcomePath($directory, $runId));
-                foreach ($descriptor->harnessEnvironment() as $name => $value) {
+                foreach ($descriptor->harnessEnvironment($runtimeSource) as $name => $value) {
                     $oldHarnessEnvironment[$name] = getenv($name);
                     putenv($name.'='.$value);
                 }
                 try {
                     $exit = Artisan::call('pentest:run', [
                         '--path' => $agentSource,
+                        '--runtime-path' => $runtimeSource,
+                        ...($runtimeCompose ? ['--compose' => $runtimeSource.'/'.$runtimeCompose] : []),
+                        '--fixture-probes' => $probePath,
+                        '--benchmark-target-id' => $projectKey,
+                        '--source-snapshot' => $descriptor->commit(),
                         '--audit-id' => $runId,
                         '--project-name' => $projectKey,
                         '--category' => [$this->auditCategory($manifests, $leadArtifact->category)],
                         '--lead-subject' => $subjectPath,
                         '--envelope-points' => $envelope,
                         '--confirmer-model' => $this->option('confirmer-model'),
+                        '--unified-lead' => (bool) $this->option('unified-lead'),
+                        '--lead-model' => $this->option('lead-model'),
+                        '--lead-concurrency' => $this->option('lead-concurrency'),
+                        '--preflight-only' => (bool) $this->option('runtime-preflight'),
                         '--tool-output' => (bool) $this->option('tool-output'),
                         '--keep' => false,
                         '--test' => (bool) $this->option('test'),
                         '--assume-authorized' => true,
                     ], $this->output);
+                    if ($this->option('runtime-preflight')) {
+                        $failed = $failed || $exit !== self::SUCCESS;
+                        continue;
+                    }
                     $outcome = $storage->outcome($directory, $runId);
                     $report = is_array($outcome['report'] ?? null) ? $outcome['report'] : [];
                     $technical = $technicalFailure->failed($report, $exit);
-                    $summary = $this->persistOutputs(
-                        $registry,
-                        $oracle,
-                        $leadArtifact,
-                        $report,
-                        $projectKey,
-                        $runId,
-                        $repetition,
-                        $technical,
-                        $technicalFailure->summary($report, $exit),
-                    );
-                    $storage->writeOutcome($directory, $runId, $report, $summary);
-                    $failed = $failed || $technical;
-                    $this->line(sprintf(
-                        '%s [%d/%d] decision=%s | correct=%s | punti=%.0f | %s',
-                        $leadArtifact->id,
-                        $repetition,
-                        $repetitions,
-                        $summary['decision'] ?? 'missing',
-                        $summary['correct'] === null ? 'unscored' : ($summary['correct'] ? 'yes' : 'no'),
-                        (float) ($summary['economic_points'] ?? 0),
-                        $technical ? 'TECHNICAL FAILURE' : 'valid',
-                    ));
+                    $summaries = [];
+                    foreach ($leadGroup as $leadArtifact) {
+                        $summary = $this->persistOutputs(
+                            $registry,
+                            $oracle,
+                            $leadArtifact,
+                            $report,
+                            $projectKey,
+                            $runId,
+                            $repetition,
+                            $technical,
+                            $technicalFailure->summary($report, $exit),
+                        );
+                        $summary['batch_id'] = $batchId;
+                        $summary['batch_elapsed_seconds'] = round(microtime(true) - $batchStarted, 3);
+                        $summaries[] = $summary;
+                        $failed = $failed || $technical;
+                        $this->line(sprintf(
+                            '%s [%d/%d] decision=%s | correct=%s | punti=%.0f | %s',
+                            $leadArtifact->id,
+                            $repetition,
+                            $repetitions,
+                            $summary['decision'] ?? 'missing',
+                            $summary['correct'] === null ? 'unscored' : ($summary['correct'] ? 'yes' : 'no'),
+                            (float) ($summary['economic_points'] ?? 0),
+                            $technical ? 'TECHNICAL FAILURE' : 'valid',
+                        ));
+                    }
+                    $storage->writeOutcome($directory, $runId, $report, $globalReplay ? [
+                        'lead_policy' => 'unified-v1', 'replay_mode' => 'global_pipeline',
+                        'batch_id' => $batchId, 'batch_elapsed_seconds' => round(microtime(true) - $batchStarted, 3),
+                        'technical_failure' => $technical, 'leads' => $summaries,
+                    ] : $summaries[0]);
                 } finally {
                     File::deleteDirectory($workDirectory);
                     $this->restoreEnv('LAILAPS_RUN_DIRECTORY', $oldDirectory);
@@ -230,6 +296,23 @@ final class BenchmarkConfirmer extends Command
         }
 
         return $failed ? self::FAILURE : self::SUCCESS;
+    }
+
+    private function replayContext(): array
+    {
+        $manifestPath = realpath((string) $this->option('replay-manifest'));
+        $manifest = json_decode(File::get($manifestPath), true, flags: JSON_THROW_ON_ERROR);
+        $path = realpath(dirname($manifestPath).'/'.($manifest['context_file'] ?? ''));
+        if ($path === false || ! is_file($path) || ! str_starts_with($path, dirname($manifestPath).DIRECTORY_SEPARATOR)
+            || hash_file('sha256', $path) !== ($manifest['context_sha256'] ?? null)) {
+            throw new InvalidArgumentException('Replay Recon context/checksum non valido; rigenerare il manifest.');
+        }
+        $context = json_decode(File::get($path), true, flags: JSON_THROW_ON_ERROR);
+        if (empty($context['recon']['areas']) || ($context['recon']['status'] ?? null) !== 'ready') {
+            throw new InvalidArgumentException('Replay richiede un Recon frozen ready.');
+        }
+
+        return $context;
     }
 
     /** @return Collection<int, BenchmarkStageArtifact> */
@@ -246,6 +329,73 @@ final class BenchmarkConfirmer extends Command
             dataset: $this->option('dataset') ? (string) $this->option('dataset') : null,
             frozenLabels: ['benchmark_positive', 'novel_valid', 'false_positive'],
         );
+    }
+
+    private function replayArtifacts(BenchmarkStageArtifactRegistry $registry, string $project, string $source, string $commit): Collection
+    {
+        if ($this->option('dataset') || $this->option('artifact') !== [] || $this->option('dedup-run') || $this->option('dedup-artifact')) {
+            throw new InvalidArgumentException('--replay-manifest non si combina con altri selettori.');
+        }
+        $path = realpath((string) $this->option('replay-manifest'));
+        if ($path === false) {
+            throw new InvalidArgumentException('Replay manifest inesistente.');
+        }
+        $manifest = json_decode(File::get($path), true, flags: JSON_THROW_ON_ERROR);
+        if (($manifest['schema'] ?? null) !== 'lailaps.unified-replay' || ($manifest['project_key'] ?? null) !== $project || ($manifest['source_commit'] ?? null) !== $commit) {
+            throw new InvalidArgumentException('Replay project/source incompatibile con il catalogo.');
+        }
+        $selected = (array) $this->option('scope');
+        $entries = (array) ($manifest['leads'] ?? []);
+        if ($entries === [] || count(array_unique(array_column($entries, 'scope'))) !== count($entries)
+            || count(array_unique(array_column($entries, 'reader_output_id'))) !== count($entries)) {
+            throw new InvalidArgumentException('Replay lineage non univoca.');
+        }
+        if ($selected !== [] && array_diff($selected, array_column($entries, 'scope')) !== []) {
+            throw new InvalidArgumentException('Scope replay sconosciuto.');
+        }
+        $artifacts = new Collection;
+        foreach ($entries as $entry) {
+            if ($selected !== [] && ! in_array($entry['scope'], $selected, true)) {
+                continue;
+            }
+            $subjectPath = realpath(dirname($path).'/'.$entry['subject_file']);
+            if ($subjectPath === false || ! str_starts_with($subjectPath, dirname($path).DIRECTORY_SEPARATOR) || hash_file('sha256', $subjectPath) !== $entry['subject_sha256']) {
+                throw new InvalidArgumentException('Replay subject/checksum non valido.');
+            }
+            $subject = json_decode(File::get($subjectPath), true, flags: JSON_THROW_ON_ERROR);
+            if (($subject['schema'] ?? null) !== 'lailaps.benchmark-stage-input' || ($subject['version'] ?? null) !== 1
+                || ($subject['role'] ?? null) !== 'reader' || ($subject['source_commit'] ?? null) !== $commit || empty($subject['source_refs'])) {
+                throw new InvalidArgumentException('Replay richiede ReaderLead e source refs pinned.');
+            }
+            foreach ($subject['source_refs'] as $ref) {
+                $file = realpath($source.'/'.$ref['file']);
+                if ($file === false || ! str_starts_with(str_replace('\\', '/', $file), $source.'/')) {
+                    throw new InvalidArgumentException('Replay source ref fuori perimetro.');
+                }
+                $lines = preg_split('/\r\n|\n|\r/', File::get($file));
+                if ($ref['start_line'] < 1 || $ref['end_line'] < $ref['start_line'] || $ref['end_line'] > count($lines)) {
+                    throw new InvalidArgumentException('Replay source range non valido.');
+                }
+                $snippet = implode("\n", array_slice($lines, $ref['start_line'] - 1, $ref['end_line'] - $ref['start_line'] + 1));
+                if (hash('sha256', $snippet) !== ($ref['sha256'] ?? null)) {
+                    throw new InvalidArgumentException('Replay source hash mismatch.');
+                }
+            }
+            $signature = hash('sha256', $manifest['baseline_sha256'].$entry['reader_output_id'].$entry['subject_sha256']);
+            $artifact = BenchmarkStageArtifact::query()->where('configuration_signature', $signature)->first();
+            $artifact ??= $registry->record([
+                'project_key' => $project, 'category' => $subject['category'], 'source_commit' => $commit,
+                'role' => 'reader', 'output_type' => 'ReaderLead', 'status' => 'valid',
+                'configuration_signature' => $signature, 'run_id' => $manifest['baseline_run_id'],
+                'payload' => ['output' => $subject['output'], 'source_refs' => $subject['source_refs']],
+                'metrics' => ['replay_scope' => $entry['scope'], 'origin_reader_output_id' => $entry['reader_output_id'],
+                    'origin_area_id' => $subject['origin_area_id'] ?? null,
+                    'baseline_sha256' => $manifest['baseline_sha256'], 'dedup_complete' => true],
+            ]);
+            $artifacts->push($artifact);
+        }
+
+        return $artifacts;
     }
 
     /** @param list<BenchmarkManifest> $manifests */
@@ -300,6 +450,9 @@ final class BenchmarkConfirmer extends Command
     /** @param list<BenchmarkManifest> $manifests */
     private function auditCategory(array $manifests, string $benchmarkCategory): string
     {
+        if ($benchmarkCategory === 'global') {
+            return 'Global security surfaces';
+        }
         foreach ($manifests as $manifest) {
             if ($manifest->benchmarkCategory() === $benchmarkCategory
                 || strtolower($manifest->categoryId()) === strtolower($benchmarkCategory)) {
@@ -325,8 +478,15 @@ final class BenchmarkConfirmer extends Command
         bool $technical,
         ?string $technicalError,
     ): array {
+        $replayEntry = collect((array) ($report['global_lead_replay']['leads'] ?? []))
+            ->firstWhere('artifact_id', $leadArtifact->id);
+        $finding = $replayEntry['finding'] ?? null;
+        $globalReplay = isset($report['global_lead_replay']);
         $outputs = collect((array) ($report['structured_outputs'] ?? []))
-            ->filter(fn ($row): bool => is_array($row) && ($row['role'] ?? null) === 'confirmer')
+            ->filter(fn ($row): bool => is_array($row) && in_array($row['role'] ?? null,
+                $this->option('unified-lead') ? ['confirmer', 'worker'] : ['confirmer'], true))
+            ->filter(fn ($row): bool => ! $globalReplay || ($finding !== null
+                && data_get($row, 'payload.lead_id', $row['lead_id'] ?? null) === $finding['lead_id']))
             ->values();
         $oracle = (array) data_get($leadArtifact->metrics, 'oracle', []);
         $decision = null;
@@ -335,7 +495,7 @@ final class BenchmarkConfirmer extends Command
             $decision = (string) ($output['output_type'] ?? 'unknown');
             $evaluation = $oracle === [] ? ['classification_correct' => null, 'quality_score' => null, 'scorable' => false]
                 : $oracleEvaluator->evaluate($oracle, $decision, (array) ($output['payload'] ?? []));
-            if ($technical && $oracle !== []) {
+            if ($technical && $oracle !== [] && ! $this->option('unified-lead')) {
                 $evaluation['classification_correct'] = false;
                 $evaluation['quality_score'] = 0.0;
             }
@@ -347,10 +507,10 @@ final class BenchmarkConfirmer extends Command
                 'parent_artifact_id' => $leadArtifact->id,
                 'run_id' => $runId,
                 'repetition' => $repetition,
-                'role' => 'confirmer',
+                'role' => $output['role'],
                 'output_type' => $decision,
-                'model' => data_get($report, 'telemetry.role_usage.confirmer.model'),
-                'status' => $technical ? 'technical_failure' : 'valid',
+                'model' => data_get($report, 'telemetry.role_usage.'.$output['role'].'.model'),
+                'status' => $technical && ! $this->option('unified-lead') ? 'technical_failure' : 'valid',
                 'accepted' => (bool) ($output['accepted'] ?? true),
                 'payload' => [
                     'output' => (array) ($output['payload'] ?? []),
@@ -360,6 +520,8 @@ final class BenchmarkConfirmer extends Command
                 'usage' => (array) ($output['usage'] ?? []),
                 'metrics' => [
                     ...$evaluation,
+                    'lead_policy' => $this->option('unified-lead') ? 'unified-v1' : 'confirmer-only',
+                    'execution_technical_failure' => $technical,
                     'economic_points' => (float) data_get($output, 'usage.economic_points', 0),
                 ],
                 'label' => $correct ? $leadArtifact->label : 'unresolved',
@@ -389,7 +551,23 @@ final class BenchmarkConfirmer extends Command
                 'technical_error' => $technicalError,
             ]);
         }
-        $points = (float) data_get($report, 'telemetry.role_usage.confirmer.economic_points', 0);
+        if (! $globalReplay) {
+            $finding = collect([...(array) ($report['confirmed'] ?? []), ...(array) ($report['suspected'] ?? []), ...(array) ($report['rejected_inconclusive'] ?? [])])->first();
+        }
+        if ($this->option('unified-lead')) {
+            $registry->record([
+                'project_key' => $projectKey, 'category' => $leadArtifact->category,
+                'source_commit' => $leadArtifact->source_commit, 'parent_artifact_id' => $leadArtifact->id,
+                'run_id' => $runId, 'repetition' => $repetition, 'role' => 'worker',
+                'output_type' => 'UnifiedLeadRun', 'status' => $technical ? 'technical_failure' : 'valid',
+                'payload' => ['finding' => $finding], 'usage' => $report['telemetry'] ?? [],
+                'metrics' => ['lead_policy' => 'unified-v1', 'static_validation' => (bool) data_get($finding, 'milestones.statically_validated'),
+                    'replay_scope' => data_get($leadArtifact->metrics, 'replay_scope')],
+                'technical_error' => $technicalError,
+            ]);
+        }
+        $points = (float) ($globalReplay ? ($report['telemetry']['lead_usage'][$finding['lead_id'] ?? '']['economic_points'] ?? 0)
+            : data_get($report, 'telemetry.economic_points_used', 0));
 
         return [
             'schema' => 'lailaps.confirmer-stage-result',
@@ -401,6 +579,10 @@ final class BenchmarkConfirmer extends Command
             'decision' => $decision,
             'correct' => $correct,
             'economic_points' => $points,
+            'lead_policy' => $this->option('unified-lead') ? 'unified-v1' : 'confirmer-only',
+            'static_validation' => (bool) data_get($finding, 'milestones.statically_validated'),
+            'finding' => $this->option('unified-lead') ? $finding : null,
+            'replay_scope' => data_get($leadArtifact->metrics, 'replay_scope'),
         ];
     }
 

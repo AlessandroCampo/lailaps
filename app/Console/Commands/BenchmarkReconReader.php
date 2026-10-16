@@ -24,8 +24,7 @@ final class BenchmarkReconReader extends Command
         {--path= : Sorgente; default targets/<target-id>}
         {--recon-model= : Modello Recon}
         {--reader-model= : Modello Reader}
-        {--reviewer-model= : Reviewer operativo}
-        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+        {--reader-checkpoint-strategy=reader_checkpoint : Self-checkpoint Reader}
         {--budget-category= : Preset condiviso della discovery}
         {--reuse-sandbox= : Audit ID di una sandbox Lailaps pronta da collegare}
         {--repetitions=1 : Run congiunte indipendenti, da 1 a 20}
@@ -71,9 +70,9 @@ final class BenchmarkReconReader extends Command
             throw new InvalidArgumentException('Timeout positivo e repetitions fra 1 e 20 richiesti.');
         }
         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
-                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader-checkpoint-strategy deve essere reader_checkpoint.'
             );
         }
 
@@ -118,7 +117,7 @@ final class BenchmarkReconReader extends Command
                         '--target-container-id', $sandbox->containerId,
                     );
                 }
-                foreach (['recon-model', 'reader-model', 'reviewer-model', 'budget-category'] as $option) {
+                foreach (['recon-model', 'reader-model', 'budget-category'] as $option) {
                     if ($this->option($option)) {
                         array_push($args, '--'.$option, (string) $this->option($option));
                     }

@@ -84,9 +84,7 @@ test('web runs persist global surface mode and depth', function () {
     expect($run->parameters['global'])->toBeTrue()
         ->and($run->parameters['reader_checkpoint_strategy'])->toBe('reader_checkpoint')
         ->and($run->parameters['reader_concurrency'])->toBe(4)
-        ->and($run->parameters['confirmer_concurrency'])->toBe(4)
-        ->and($run->parameters['worker_concurrency'])->toBe(2)
-        ->and($run->parameters['reviewer_model'])->toBeNull()
+        ->and($run->parameters['lead_concurrency'])->toBe(2)
         ->and($run->parameters['depth'])->toBe(2)
         ->and($run->parameters['categories'])->toBe([]);
 });
@@ -113,7 +111,7 @@ test('web global runs reject Reviewer policy and invalid pipeline grants', funct
         'type' => 'benchmark', 'benchmark_id' => 'bookstack', 'global' => true, 'ttl' => 1800,
         'reader_checkpoint_strategy' => 'reviewer', 'reviewer_model' => 'legacy/reviewer',
         'reader_concurrency' => 5, 'worker_points' => 0,
-    ])->assertSessionHasErrors(['reader_checkpoint_strategy', 'reviewer_model', 'reader_concurrency', 'worker_points']);
+    ])->assertSessionHasErrors(['reader_checkpoint_strategy', 'reader_concurrency', 'worker_points']);
     Queue::assertNothingPushed();
 });
 

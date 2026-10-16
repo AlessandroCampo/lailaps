@@ -31,7 +31,6 @@ final class BenchmarkRecon extends Command
         {--category= : Benchmark category o OWASP id; incompatibile con --global}
         {--recon-model= : Modello usato da Recon}
         {--reader-model= : Alias deprecato di --recon-model}
-        {--reviewer-model= : Modello Reviewer configurato nel processo}
         {--reuse-sandbox= : Audit ID di una sandbox Lailaps pronta da collegare}
         {--repetitions= : Ripetizioni; default 3 global, 1 categoriale, massimo 20}
         {--timeout=1200 : Timeout della singola Recon in secondi}
@@ -356,9 +355,6 @@ final class BenchmarkRecon extends Command
         }
         if ($reconModel !== null && $reconModel !== '') {
             array_push($args, '--recon-model', $reconModel);
-        }
-        if ($this->option('reviewer-model')) {
-            array_push($args, '--reviewer-model', (string) $this->option('reviewer-model'));
         }
         $args[] = '--tool-output';
 

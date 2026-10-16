@@ -30,12 +30,15 @@ final class BenchmarkRun extends Command
         {--assume-authorized=true : Conferma autorizzazione per target non locale}
         {--model= : Solo --global: modello predefinito per tutti i ruoli}
         {--recon-model= : Modello OpenRouter per Global Recon e Category Recon}
+        {--recon-run= : Con --global riusa la Recon di una run precedente, senza eseguirla}
+        {--recon-artifact= : Con --global riusa un artifact CategoryRecon validato}
         {--reader-model= : Modello OpenRouter per il Reader}
-        {--reviewer-model= : Modello OpenRouter per l Exploration Reviewer}
-        {--reader-checkpoint-strategy= : Default globale reader_checkpoint; filtrato reviewer}
+        {--reader-checkpoint-strategy= : Self-checkpoint Reader}
         {--reader-concurrency=4 : Reader globali concorrenti, da 1 a 4}
-        {--confirmer-concurrency=4 : Confirmer globali concorrenti}
-        {--worker-concurrency=2 : Worker globali concorrenti}
+        {--confirmer-concurrency= : Legacy; globale usa lead-concurrency}
+        {--worker-concurrency= : Legacy; globale usa lead-concurrency}
+        {--lead-concurrency=2 : Investigatori unificati concorrenti}
+        {--lead-model= : Modello unico statico e dinamico}
         {--reader-points= : Cap EP aggregato Reader globale}
         {--worker-points= : Envelope EP per Worker globale; default 1000000}
         {--confirmer-model= : Modello OpenRouter per il Confirmer}
@@ -59,19 +62,28 @@ final class BenchmarkRun extends Command
         BenchmarkResultAggregator $aggregator,
         RunStorage $storage,
     ): int {
+        foreach (['recon-run', 'recon-artifact'] as $selector) {
+            if ($this->input->hasParameterOption('--'.$selector) && trim((string) $this->option($selector)) === '') {
+                throw new InvalidArgumentException("--{$selector} richiede un ID esplicito.");
+            }
+        }
+        if (($this->option('recon-run') || $this->option('recon-artifact'))
+            && (! $this->option('global') || ($this->option('recon-run') && $this->option('recon-artifact')))) {
+            throw new InvalidArgumentException('recon-run e recon-artifact richiedono --global e sono mutuamente esclusivi.');
+        }
         if ($this->option('global')) {
             \App\Services\Pentest\GlobalPipelineOptions::validate($this->options());
         }
         if ((int) $this->option('depth') < 1) {
             throw new InvalidArgumentException('--depth deve essere almeno 1.');
         }
-        $readerCheckpointStrategy = $this->option('reader-checkpoint-strategy') ?: ($this->option('global') ? 'reader_checkpoint' : 'reviewer');
+        $readerCheckpointStrategy = $this->option('reader-checkpoint-strategy') ?: 'reader_checkpoint';
         if ($this->option('global') && $readerCheckpointStrategy !== 'reader_checkpoint') {
             throw new InvalidArgumentException('--global richiede reader_checkpoint.');
         }
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
-                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader-checkpoint-strategy deve essere reader_checkpoint.'
             );
         }
         $targetId = (string) $this->argument('target-id');
@@ -151,6 +163,18 @@ final class BenchmarkRun extends Command
                 data_get($manifests[0]->data, 'source.commit')
                 ?: data_get($manifests[0]->data, 'source.snapshot')
             );
+            $reconFixture = null;
+            if ($this->option('recon-run') || $this->option('recon-artifact')) {
+                $recon = app(\App\Services\Pentest\BenchmarkReconInput::class)->resolve(
+                    $targetId, $sourceSnapshot, $this->option('recon-artifact'), $this->option('recon-run'),
+                );
+                $reconFixture = $workDirectory.'/recon-fixture.json';
+                File::put($reconFixture, json_encode($recon, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                $message = 'Recon riusata: '.($this->option('recon-run') ?: $this->option('recon-artifact'))
+                    .' | aree: '.count($recon['output']['areas']).' | chiamate Recon: 0';
+                $this->info($message);
+                $this->appendRunLog($storage, $directory, $runId, $message."\n");
+            }
             $runtimeOverlay = $descriptor === null ? null : dirname($descriptor->path).DIRECTORY_SEPARATOR.'runtime';
             $runtimeSource = null;
             if (is_dir((string) $runtimeOverlay)) {
@@ -177,6 +201,7 @@ final class BenchmarkRun extends Command
                 $runtimeSource,
                 $sourceSnapshot,
                 $this->runtimeComposeFile($runtimeOverlay, $runtimeSource),
+                $reconFixture,
             );
             if ($global) {
                 $exit = Artisan::call('pentest:run', $parameters, $this->output);
@@ -348,6 +373,7 @@ final class BenchmarkRun extends Command
         ?string $runtimeSource,
         string $sourceSnapshot,
         ?string $runtimeCompose = null,
+        ?string $reconFixture = null,
     ): array {
         $parameters = [
             '--path' => $agentSource,
@@ -359,7 +385,6 @@ final class BenchmarkRun extends Command
             '--model' => $this->option('model'),
             '--recon-model' => $this->option('recon-model'),
             '--reader-model' => $this->option('reader-model'),
-            '--reviewer-model' => $this->option('reviewer-model'),
             '--reader-checkpoint-strategy' => $this->option('reader-checkpoint-strategy'),
             '--confirmer-model' => $this->option('confirmer-model'),
             '--worker-model' => $this->option('worker-model'),
@@ -378,8 +403,11 @@ final class BenchmarkRun extends Command
         }
         if ($global) {
             $parameters['--global'] = true;
+            if ($reconFixture !== null) {
+                $parameters['--recon-fixture'] = $reconFixture;
+            }
             $parameters['--reader-checkpoint-strategy'] = $this->option('reader-checkpoint-strategy') ?: 'reader_checkpoint';
-            foreach (['reader-concurrency', 'confirmer-concurrency', 'worker-concurrency', 'reader-points', 'worker-points'] as $name) {
+            foreach (['reader-concurrency', 'lead-concurrency', 'lead-model', 'reader-points', 'worker-points'] as $name) {
                 if ($this->option($name) !== null && $this->option($name) !== '') {
                     $parameters['--'.$name] = (string) $this->option($name);
                 }

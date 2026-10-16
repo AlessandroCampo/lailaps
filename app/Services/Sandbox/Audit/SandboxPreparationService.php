@@ -15,7 +15,7 @@ final class SandboxPreparationService
 {
     public function __construct(private readonly DockerClient $docker) {}
 
-    public function prepare(SandboxDTO $sandbox, AuditProfile $profile): void
+    public function prepare(SandboxDTO $sandbox, AuditProfile $profile, array $variables = []): void
     {
         if (! $profile->hasPreparation()) {
             return;
@@ -28,8 +28,6 @@ final class SandboxPreparationService
             'http_errors' => false,
             'timeout' => 10,
         ]);
-        $variables = [];
-
         foreach ($profile->setup as $index => $step) {
             $this->runStep($client, $sandbox, $step, $variables, "setup[{$index}]");
         }
@@ -139,6 +137,9 @@ final class SandboxPreparationService
                 throw new InvalidArgumentException("{$label}: target_exec richiede argv come lista non vuota di stringhe.");
             }
 
+            $argv = array_map(fn (string $argument): string => $this->expand(
+                ['argument' => $argument], $variables, $label,
+            )['argument'], $argv);
             $exitCode = $this->docker->execContainer($sandbox->containerId, $argv);
             $expected = (int) ($step['expected_exit_code'] ?? 0);
             if ($exitCode !== $expected) {

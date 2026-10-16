@@ -1,9 +1,11 @@
 FROM mcr.microsoft.com/playwright:v1.55.0-noble
 
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY server.mjs runtime.mjs target-proxy.mjs ./
+COPY server.mjs runtime.mjs target-proxy.mjs code-session.mjs browser-host.mjs ./
 
 ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \

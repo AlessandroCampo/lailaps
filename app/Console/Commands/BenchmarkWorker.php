@@ -170,7 +170,7 @@ final class BenchmarkWorker extends Command
                         $signature = hash('sha256', json_encode($comparison, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
                         $summary = $this->persist(
                             $registry, $oracle, $candidate, $episode, $runId, $repetition,
-                            $technical, $technicalFailure->summary($episode, $episodeExit), $signature, $comparison,
+                            $technical, $technicalFailure->summary($episode, $episodeExit), $signature, $comparison, $directory,
                         );
                         $summaries[] = ['artifact_id' => $candidate->id, ...$summary];
                         $failed = $failed || $technical;
@@ -275,11 +275,11 @@ final class BenchmarkWorker extends Command
     }
 
     /** @return array{model: string, reasoning_effort: string} */
-    private function persist(BenchmarkStageArtifactRegistry $registry, WorkerBenchmarkOracle $oracleEvaluator, BenchmarkStageArtifact $candidate, array $report, string $runId, int $repetition, bool $technical, ?string $technicalError, string $signature, array $comparison): array
+    private function persist(BenchmarkStageArtifactRegistry $registry, WorkerBenchmarkOracle $oracleEvaluator, BenchmarkStageArtifact $candidate, array $report, string $runId, int $repetition, bool $technical, ?string $technicalError, string $signature, array $comparison, string $directory): array
     {
         $workerOutput = collect((array) ($report['structured_outputs'] ?? []))->last(
             fn ($row): bool => is_array($row) && ($row['role'] ?? null) === 'worker'
-                && in_array($row['output_type'] ?? null, ['ConfirmedDecision', 'RejectedDecision', 'BlockedDecision', 'SuspectedDecision'], true)
+                && in_array($row['output_type'] ?? null, ['InvestigatorOutput', 'ConfirmedDecision', 'RejectedDecision', 'BlockedDecision', 'SuspectedDecision'], true)
         );
         $decisionType = is_array($workerOutput) ? (string) ($workerOutput['output_type'] ?? '') : null;
         $decision = is_array($workerOutput) ? (array) ($workerOutput['payload'] ?? []) : null;
@@ -287,7 +287,24 @@ final class BenchmarkWorker extends Command
         $technicalError = $technical ? ($evidence['stop_reason'] ?? $technicalError) : null;
         $applied = is_array($workerOutput) && ($workerOutput['accepted'] ?? ($evidence['decision_applied'] ?? false)) === true;
         $termination = (string) ($report['termination_reason'] ?? 'missing_report');
+        // Read acquired results for oracle terms without copying the journal into the report.
+        $journal = data_get($evidence, 'tool_trace.journal');
+        if (is_string($journal) && basename($journal) === $journal) {
+            $path = rtrim($directory, '/\\').DIRECTORY_SEPARATOR.$journal;
+            if (is_file($path)) {
+                $evidence['tool_results'] = [];
+                foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+                    $row = json_decode($line, true);
+                    if (is_array($row) && in_array($row['type'] ?? null, ['result', 'output'], true)
+                        && data_get($row, 'scope.lead_id') === ($evidence['lead_id'] ?? null)
+                        && array_key_exists('result', $row)) {
+                        $evidence['tool_results'][] = $row['result'];
+                    }
+                }
+            }
+        }
         $evaluation = $oracleEvaluator->evaluate((array) data_get($candidate->metrics, 'oracle', []), $decisionType, $decision, $evidence, $termination, $technical);
+        unset($evidence['tool_results']);
         $evaluation['stop_cause'] = $evidence['stop_cause'] ?? null;
         $evaluation['stop_phase'] = $evidence['stop_phase'] ?? null;
         $evaluation['output_validation'] = (array) data_get($report, 'telemetry.output_validation_by_role.worker', []);

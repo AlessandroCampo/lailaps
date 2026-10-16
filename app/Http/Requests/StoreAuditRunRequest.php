@@ -31,6 +31,8 @@ class StoreAuditRunRequest extends FormRequest
             'authorized' => ['boolean'],
             'global' => ['boolean'],
             'reader_concurrency' => ['nullable', 'integer', 'between:1,4'],
+            'lead_concurrency' => ['nullable', 'integer', 'min:1'],
+            'lead_model' => ['nullable', 'string', 'max:255'],
             'confirmer_concurrency' => ['nullable', 'integer', 'min:1'],
             'worker_concurrency' => ['nullable', 'integer', 'min:1'],
             'reader_points' => ['nullable', 'numeric', 'gt:0'],
@@ -39,9 +41,8 @@ class StoreAuditRunRequest extends FormRequest
             'categories' => ['array', 'max:2'],
             'categories.*' => ['string', 'max:160', 'distinct'],
             'reader_model' => ['nullable', 'string', 'max:255'],
-            'reviewer_model' => ['nullable', 'string', 'max:255'],
             'reader_checkpoint_strategy' => [
-                'nullable', Rule::in(['reviewer', 'reader_checkpoint']),
+                'nullable', Rule::in(['reader_checkpoint']),
             ],
             'confirmer_model' => ['nullable', 'string', 'max:255'],
             'worker_model' => ['nullable', 'string', 'max:255'],
@@ -66,8 +67,13 @@ class StoreAuditRunRequest extends FormRequest
             if ($this->boolean('global') && $this->filled('reader_checkpoint_strategy') && $this->input('reader_checkpoint_strategy') !== 'reader_checkpoint') {
                 $validator->errors()->add('reader_checkpoint_strategy', 'La run globale richiede reader_checkpoint.');
             }
-            if ($this->boolean('global') && $this->filled('reviewer_model')) {
-                $validator->errors()->add('reviewer_model', 'La run globale non prevede Reviewer.');
+            if ($this->boolean('global')) {
+                $selected = $this->input('lead_model') ?: $this->input('worker_model');
+                foreach (['confirmer_model', 'worker_model'] as $field) {
+                    if ($selected && $this->filled($field) && $this->input($field) !== $selected) {
+                        $validator->errors()->add($field, 'La run globale richiede un solo modello per lead.');
+                    }
+                }
             }
             if ((string) $this->input('type') === 'benchmark') {
                 if (! $this->filled('benchmark_id')) {
@@ -102,8 +108,8 @@ class StoreAuditRunRequest extends FormRequest
         $normalized = array_replace([
             'preset' => null, 'path' => null, 'target_mode' => 'sandbox', 'url' => null,
             'db' => null, 'health_path' => null, 'skip_health' => false, 'authorized' => false,
-            'global' => false, 'depth' => 1, 'categories' => [], 'reader_model' => null, 'reviewer_model' => null,
-            'reader_checkpoint_strategy' => 'reviewer',
+            'global' => false, 'depth' => 1, 'categories' => [], 'reader_model' => null,
+            'reader_checkpoint_strategy' => 'reader_checkpoint',
             'confirmer_model' => null,
             'worker_model' => null, 'image' => null, 'dockerfile' => null, 'compose' => null,
             'mount' => null, 'port' => null, 'service' => null, 'ttl' => 9000,
@@ -112,10 +118,8 @@ class StoreAuditRunRequest extends FormRequest
 
         if ($normalized['global']) {
             $normalized['reader_checkpoint_strategy'] = 'reader_checkpoint';
-            $normalized['reviewer_model'] = null;
             $normalized['reader_concurrency'] ??= 4;
-            $normalized['confirmer_concurrency'] ??= 4;
-            $normalized['worker_concurrency'] ??= 2;
+            $normalized['lead_concurrency'] ??= 2;
             $normalized['categories'] = [];
         }
 

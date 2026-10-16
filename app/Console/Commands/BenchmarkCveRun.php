@@ -33,7 +33,7 @@ final class BenchmarkCveRun extends Command
         {--no-test : Disabilita rebuild e reasoning diagnostico dell’agente}
         {--test : Ricostruisce l’immagine dell’agente}';
 
-    protected $description = 'Conferma una singola CVE benchmark senza Recon, Reader o Reviewer';
+    protected $description = 'Conferma una singola CVE benchmark senza Recon, Reader';
 
     public function handle(
         BenchmarkCatalog $catalog,

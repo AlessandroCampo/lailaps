@@ -14,7 +14,7 @@ final class AppTest extends Command
                             {--test : Mantiene la modalità test (attiva per default)}
                             {--no-test : Disabilita la modalità test}
                             {--ttl=9000 : Durata massima della sandbox in secondi}
-                            {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+                            {--reader-checkpoint-strategy=reader_checkpoint : Self-checkpoint Reader}
                             {--keep=true : Non smontare la sandbox a fine run}';
 
     protected $description = 'Esegue il pentest sul progetto selezionato usando pentest:run';
@@ -45,9 +45,9 @@ final class AppTest extends Command
     {
         $project = (string) $this->argument('project');
         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
-                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader-checkpoint-strategy deve essere reader_checkpoint.'
             );
         }
 

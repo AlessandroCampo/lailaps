@@ -19,7 +19,7 @@ final class BenchmarkExperimentRun extends Command
 {
     protected $signature = 'benchmark:experiment:run
         {--config= : JSON o YAML della matrice}
-        {--reader-checkpoint-strategy= : Override reviewer oppure reader_checkpoint}
+        {--reader-checkpoint-strategy= : Self-checkpoint Reader}
         {--foreground : Esegue le run sequenzialmente mostrando il transcript live, senza queue worker}
         {--allow-dirty : Consente una run marcata non riproducibile}';
 
@@ -47,11 +47,11 @@ final class BenchmarkExperimentRun extends Command
         }
         $readerCheckpointStrategy = (string) (
             $this->option('reader-checkpoint-strategy')
-            ?: ($definition['reader_checkpoint_strategy'] ?? 'reviewer')
+            ?: ($definition['reader_checkpoint_strategy'] ?? 'reader_checkpoint')
         );
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new \InvalidArgumentException(
-                'reader_checkpoint_strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader_checkpoint_strategy deve essere reader_checkpoint.'
             );
         }
         $modelMatrix = $this->modelMatrix($definition);
@@ -91,7 +91,6 @@ final class BenchmarkExperimentRun extends Command
                         'type' => 'benchmark', 'benchmark_id' => $targetId,
                         'categories' => $categories,
                         'reader_model' => $models['reader'] ?? null,
-                        'reviewer_model' => $models['reviewer'] ?? null,
                         'reader_checkpoint_strategy' => $readerCheckpointStrategy,
                         'worker_model' => $models['worker'] ?? null,
                         'confirmer_model' => $models['confirmer'] ?? null,
@@ -168,14 +167,14 @@ final class BenchmarkExperimentRun extends Command
         $role = strtolower(trim((string) ($definition['subject_role'] ?? '')));
         $subjectModels = $definition['subject_models'] ?? null;
         $controls = $definition['control_models'] ?? null;
-        if (! in_array($role, ['recon', 'reader', 'reviewer', 'confirmer', 'worker'], true)
+        if (! in_array($role, ['recon', 'reader', 'confirmer', 'worker'], true)
             || ! is_array($subjectModels) || $subjectModels === [] || ! is_array($controls)) {
             throw new \InvalidArgumentException(
                 'Usa models oppure subject_role + subject_models + control_models.',
             );
         }
         $parameterRole = $role === 'recon' ? 'reader' : $role;
-        $requiredControls = array_values(array_diff(['reader', 'reviewer', 'confirmer', 'worker'], [$parameterRole]));
+        $requiredControls = array_values(array_diff(['reader', 'confirmer', 'worker'], [$parameterRole]));
         foreach ($requiredControls as $requiredRole) {
             if (! is_string($controls[$requiredRole] ?? null) || trim((string) $controls[$requiredRole]) === '') {
                 throw new \InvalidArgumentException("control_models deve fissare il ruolo {$requiredRole}.");

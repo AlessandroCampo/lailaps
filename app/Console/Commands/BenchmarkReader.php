@@ -24,8 +24,7 @@ final class BenchmarkReader extends Command
         {--category= : Benchmark category o OWASP id}
         {--recon-artifact= : Artifact Recon; default golden del progetto/categoria}
         {--reader-model= : Modello Reader}
-        {--reviewer-model= : Reviewer operativo fisso}
-        {--reader-checkpoint-strategy=reviewer : reviewer oppure reader_checkpoint}
+        {--reader-checkpoint-strategy=reader_checkpoint : Self-checkpoint Reader}
         {--budget-category= : Preset economico; default identico alla run configurata}
         {--repetitions=3 : Ripetizioni, da 1 a 20}
         {--tool-output : Mostra output tool compatti}';
@@ -58,9 +57,9 @@ final class BenchmarkReader extends Command
             throw new InvalidArgumentException('Artifact Recon non compatibile con il progetto richiesto.');
         }
         $readerCheckpointStrategy = (string) $this->option('reader-checkpoint-strategy');
-        if (! in_array($readerCheckpointStrategy, ['reviewer', 'reader_checkpoint'], true)) {
+        if (! in_array($readerCheckpointStrategy, ['reader_checkpoint'], true)) {
             throw new InvalidArgumentException(
-                'reader-checkpoint-strategy deve essere reviewer oppure reader_checkpoint.'
+                'reader-checkpoint-strategy deve essere reader_checkpoint.'
             );
         }
 
@@ -104,9 +103,6 @@ final class BenchmarkReader extends Command
                 }
                 if ($this->option('reader-model')) {
                     array_push($args, '--reader-model', (string) $this->option('reader-model'));
-                }
-                if ($this->option('reviewer-model')) {
-                    array_push($args, '--reviewer-model', (string) $this->option('reviewer-model'));
                 }
                 if ($this->option('tool-output')) {
                     $args[] = '--tool-output';
@@ -218,12 +214,11 @@ final class BenchmarkReader extends Command
                 'coverage' => $report['coverage'] ?? null,
                 'parent_recon_artifact_id' => $recon->id,
                 'reader_checkpoint_strategy' => data_get(
-                    $report, 'reader_checkpoint_strategy', 'reviewer'
+                    $report, 'reader_checkpoint_strategy', 'reader_checkpoint'
                 ),
             ],
             'usage' => [
                 'reader' => (array) data_get($report, 'telemetry.role_usage.reader', []),
-                'reviewer' => (array) data_get($report, 'telemetry.role_usage.reviewer', []),
             ],
             'technical_error' => $technicalError,
             'metrics' => [

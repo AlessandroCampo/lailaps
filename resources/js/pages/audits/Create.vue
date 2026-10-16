@@ -31,14 +31,13 @@ const form = useForm({
     authorized: false,
     global: false,
     reader_concurrency: 4,
-    confirmer_concurrency: 4,
-    worker_concurrency: 2,
+    lead_concurrency: 2,
+    lead_model: '',
     reader_points: '' as string | number,
     worker_points: '' as string | number,
     depth: 1,
     categories: [''] as string[],
     reader_model: '',
-    reviewer_model: '',
     confirmer_model: '',
     worker_model: '',
     image: '',
@@ -71,7 +70,9 @@ const submit = () =>
     form
         .transform((data) => ({
             ...data,
-            reviewer_model: data.global ? '' : data.reviewer_model,
+            confirmer_model: data.global ? '' : data.confirmer_model,
+            worker_model: data.global ? '' : data.worker_model,
+            lead_model: data.global ? data.lead_model : '',
             categories: data.global ? [] : data.categories.filter(Boolean),
         }))
         .post('/audits');
@@ -320,7 +321,7 @@ const submit = () =>
                                 placeholder="Default configurato"
                             />
                         </div>
-                        <div>
+                        <div v-if="!form.global">
                             <Label>Worker model</Label
                             ><Input
                                 v-model="form.worker_model"
@@ -328,15 +329,8 @@ const submit = () =>
                                 placeholder="Default configurato"
                             />
                         </div>
+
                         <div v-if="!form.global">
-                            <Label>Exploration Reviewer model</Label
-                            ><Input
-                                v-model="form.reviewer_model"
-                                class="mt-2"
-                                placeholder="Default: Reader model"
-                            />
-                        </div>
-                        <div>
                             <Label>Confirmer model</Label
                             ><Input
                                 v-model="form.confirmer_model"
@@ -362,26 +356,23 @@ const submit = () =>
                             />
                         </div>
                         <div>
-                            <Label>Confirmer contemporanei</Label
+                            <Label>Investigatori contemporanei</Label
                             ><Input
-                                v-model="form.confirmer_concurrency"
+                                v-model="form.lead_concurrency"
                                 type="number"
                                 min="1"
                                 class="mt-2"
                             /><InputError
-                                :message="form.errors.confirmer_concurrency"
+                                :message="form.errors.lead_concurrency"
                             />
                         </div>
                         <div>
-                            <Label>Worker contemporanei</Label
+                            <Label>Modello investigatore</Label
                             ><Input
-                                v-model="form.worker_concurrency"
-                                type="number"
-                                min="1"
+                                v-model="form.lead_model"
+                                placeholder="Default Worker configurato"
                                 class="mt-2"
-                            /><InputError
-                                :message="form.errors.worker_concurrency"
-                            />
+                            /><InputError :message="form.errors.lead_model" />
                         </div>
                         <div>
                             <Label>Cap Reader (EP totali)</Label

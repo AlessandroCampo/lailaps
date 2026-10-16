@@ -58,7 +58,6 @@ final class AuditCommandBuilder
             $this->value($command, 'db', $p['db'] ?? null);
             $this->value($command, 'health-path', $p['health_path'] ?? null);
             $this->value($command, 'reader-model', $p['reader_model'] ?? null);
-            $this->value($command, 'reviewer-model', $p['reviewer_model'] ?? null);
             $this->value(
                 $command,
                 'reader-checkpoint-strategy',
@@ -112,7 +111,6 @@ final class AuditCommandBuilder
         $this->value($argv, 'compose', $p['compose'] ?? null);
         $this->value($argv, 'audit-profile', $p['audit_profile'] ?? null);
         $this->value($argv, 'reader-model', $p['reader_model'] ?? null);
-        $this->value($argv, 'reviewer-model', $p['reviewer_model'] ?? null);
         $this->value(
             $argv,
             'reader-checkpoint-strategy',
@@ -150,7 +148,7 @@ final class AuditCommandBuilder
     /** @param list<string> $argv @param array<string, mixed> $parameters */
     private function globalPipelineOptions(array &$argv, array $parameters): void
     {
-        foreach (['reader-concurrency', 'confirmer-concurrency', 'worker-concurrency', 'reader-points', 'worker-points'] as $name) {
+        foreach (['reader-concurrency', 'lead-concurrency', 'lead-model', 'reader-points', 'worker-points'] as $name) {
             $this->value($argv, $name, $parameters[str_replace('-', '_', $name)] ?? null);
         }
     }
