@@ -5,11 +5,19 @@
 Verificare se un catalogo di primitive generali permette di mantenere la qualità
 dell'audit riducendo complessità, errori operativi, token e costo di esecuzione.
 
-Branch proposto: `minimal-tools`. Sul branch vive soltanto minimal: nessun profilo
+Branch implementato: `minimal`. Sul branch vive soltanto minimal: nessun profilo
 `classic`, feature flag, doppia registrazione o fallback agli strumenti rimossi.
 La versione precedente rimane recuperabile tramite un riferimento Git e un'immagine
-immutabile conservati per la baseline. Questo documento è un piano: non crea il
-branch, non modifica il runtime e non avvia benchmark.
+conservata per riferimento. P0-S/A/B/C/D sono implementati; le verifiche locali e i
+limiti sono registrati in `plans/minimal-implementation-20261016.md`. La matrice con
+modelli rimane da eseguire esplicitamente: questo documento non ne attesta gli esiti.
+
+Riferimenti: `08a0f5a` fissa lo stato iniziale; `3435bb3` fissa il catalogo precedente
+con SQL già esteso. L'immagine storica conservata non è stata ricostruita da questi
+commit: per il confronto controllato occorre costruire l'immagine da `3435bb3` e
+congelare gli input elencati sotto. Le rimozioni A-D sono consegnate insieme nel
+commit finale, quindi la separazione per rischio sotto rimane una guida di analisi,
+non una serie di benchmark o commit intermedi già disponibili.
 
 Il criterio di eliminazione è la sostituibilità semplice, anche per tool molto usati.
 L'inutilizzo è un indizio aggiuntivo, non il criterio principale.
@@ -35,7 +43,7 @@ non committate e sorgenti nuovi necessari al browser e all'investigatore unifica
 - Congelare target/source commit e contenuto effettivo del checkout, fixture,
   configurazione dei ruoli, provider, budget, concorrenza e input di benchmark.
   Registrare i digest delle immagini, non soltanto tag che possono essere sovrascritti.
-- Creare `minimal-tools` dal punto fissato. Tutte le modifiche successive implementano
+- Creare `minimal` dal punto fissato. Tutte le modifiche successive implementano
   direttamente la nuova versione, senza selettori di toolset.
 - Implementare e verificare localmente P0-S, il singolo tool SQL descritto sotto,
   prima di ridurre il catalogo. Fissare questo commit e la relativa immagine come

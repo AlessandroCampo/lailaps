@@ -1,6 +1,53 @@
 # Architettura del loop agentico di Lailaps
 
-## Branch minimal: SQL sui record (P0-S)
+## Runtime del branch minimal (P0-S, A, B, C, D)
+
+Questo è l'unico catalogo operativo del branch; le descrizioni storiche di tool e
+backend sottostanti non ne abilitano versioni alternative. Non esistono profili
+classic/minimal o fallback ai tool eliminati.
+
+| Ruolo | Primitive |
+|---|---|
+| Recon | `read_file`, `run_workspace_command`, `inspect_tool_output`, note; comandi target/probe quando disponibili |
+| Reader | Come Recon, più `read_source_ref` |
+| Investigator | Lettura sorgente/reference, shell workspace, runtime/probe, unico `query_database`, recupero output/storia e note; nella fase dinamica unico `http_call`, reset sessione e browser a codice |
+
+`run_workspace_command` sostituisce directory, ricerca testuale, programmi PTC e
+trasformazioni specializzate. Ogni chiamata usa un container effimero senza rete,
+credenziali o socket Docker, source read-only e `/tmp` nuovo; il processo agente
+fidato mantiene l'accesso Docker per creare e rimuovere il toolbox. Bash, ripgrep,
+Python, lxml/cssselect e cryptography sono già nell'immagine. Una run CLI richiede
+un audit id e il toolbox: l'assenza della shell non degrada silenziosamente la discovery.
+
+`inspect_tool_output` è il punto di recupero di preview e risultati persistiti della
+lead. Il catalogo include anche gli output Investigator espulsi dalla LRU e recuperabili
+dal journal. `run_workspace_command(output_ids=[...])` materializza soltanto gli output
+autorizzati richiesti, redatti, come file root-owned read-only sotto
+`/tmp/lailaps-inputs/<sha256(output_id)[:16]>.txt`. I file spariscono con il container;
+non esiste un secondo archivio durevole o accesso alla directory grezza della run.
+Eviction senza archivio e acquisizione incompleta rimangono esplicite. I metadati dei
+file vengono restituiti in un breve testo piatto; lo stdout non crea prove HTTP o
+source reference. Le citazioni decisive usano ancora `read_file`/`read_source_ref`.
+
+Gli inventari `surface-signals` e `source-references` sono recuperabili dallo stesso
+accesso e analizzabili con script. Il primo conserva stato/errori di Semgrep; il
+secondo espone soltanto reference autorizzate per area o lead. Semgrep resta un sensore
+precomputato, senza obbligo di quote o checklist per il modello.
+
+`http_call` ingloba JSON object/array anche vuoti, form-urlencoded, raw e multipart
+con file testuali/base64. Actor, cookie, policy di rete e journal restano autorevoli;
+`auth_request_id`/`auth_selector` associano un token di una risposta dello stesso actor
+senza copiarlo nel prompt. Tutti gli header e il body acquisito restano recuperabili
+anche quando la preview è ridotta o filtrata. Il browser e le sue sessioni restano
+separati e invariati. Le scritture SQL e gli esperimenti runtime non sostituiscono
+la prova ottenuta tramite l'applicazione.
+
+Grafo, call path, data flow e Phpactor non sono tool del modello. Il bootstrap CBM
+restituisce sempre disabled e il servizio data-flow non viene inizializzato; vecchie
+impostazioni non ripristinano questi percorsi. L'immagine non installa CBM, Java, Joern
+o Phpactor. Note, storia investigativa, budget, checkpoint e deduper restano invariati.
+
+### Tool SQL unico
 
 `query_database` è un unico tool per letture e INSERT/UPDATE/DELETE della sandbox.
 Il guard analizza una sola istruzione nel dialetto selezionato, incluse CTE,
