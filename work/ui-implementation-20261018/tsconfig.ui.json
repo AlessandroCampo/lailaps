@@ -1,0 +1,21 @@
+{
+  "include": [],
+  "extends": "/home/alessandro/projects/lailaps-2/tsconfig.json",
+  "files": [
+    "/home/alessandro/projects/lailaps-2/resources/js/pages/projects/Show.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/pages/projects/scans/Show.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/pages/projects/scans/Finding.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/pages/projects/scans/Report.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/ScanSummary.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/ScanStatus.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/ScanBudget.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/ScanCounts.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/SeverityBadge.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/FindingList.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/components/projects/CodePreview.vue",
+    "/home/alessandro/projects/lailaps-2/resources/js/composables/useScanLive.ts",
+    "/home/alessandro/projects/lailaps-2/resources/js/lib/scans.ts",
+    "/home/alessandro/projects/lailaps-2/resources/js/lib/highlight.ts",
+    "/home/alessandro/projects/lailaps-2/resources/js/types/scan.ts"
+  ]
+}

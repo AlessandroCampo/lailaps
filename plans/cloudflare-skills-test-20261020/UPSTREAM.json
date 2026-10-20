@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-20",
+  "cloudflare_repository": "https://github.com/cloudflare/security-audit-skill",
+  "cloudflare_commit": "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025-2026 Cloudflare, Inc.",
+  "license_file": "LICENSE.cloudflare",
+  "license_sha256": "e598e694aa506650c7192d5ea3be0e50aca0d356ea00551c53429f0b01eb6391",
+  "sources": [
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "02ca887aca84de8ae137f1891bd2f0a54f28d3fa6da92a27f54734382b3381a2",
+      "path": "skills/security-audit/RECONNAISSANCE.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/RECONNAISSANCE.md"
+    },
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "71c121decea1322c47c718f6e110f1a892980bb4266bd7ac55ef043a213ade09",
+      "path": "skills/security-audit/HUNTING.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/HUNTING.md"
+    },
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "3ee4f00c6e8c9dcf6dd02dd5ac2a4ceb322e2085f3e9fbe79cf0c6330bc7ef83",
+      "path": "skills/security-audit/ATTACK-CLASSES.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/ATTACK-CLASSES.md"
+    },
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "4f3066dffa23c5635859187be9b96c32f2aff29a688186b91ff0c63e47d62b5c",
+      "path": "skills/security-audit/WEB-PROTOCOL-AND-AUTH.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/WEB-PROTOCOL-AND-AUTH.md"
+    },
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "613f6b98f86083e045525c5b60154ffdab122bac35f1e05eb17488e6e453370c",
+      "path": "skills/security-audit/CLIENT-SIDE.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/CLIENT-SIDE.md"
+    },
+    {
+      "disposition": "adapted; do not import whole document as runtime instructions",
+      "sha256": "b892470cb89bb31f33403e050d4bdfbe2cdaef940ade1496fa65e32b2e129449",
+      "path": "skills/security-audit/VALIDATION-AND-REPORTING.md",
+      "url": "https://github.com/cloudflare/security-audit-skill/blob/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8/skills/security-audit/VALIDATION-AND-REPORTING.md"
+    }
+  ],
+  "adaptations": {
+    "skills/investigator/SKILL.md": [
+      "HUNTING.md",
+      "VALIDATION-AND-REPORTING.md"
+    ],
+    "skills/references/attack-perspectives.md": [
+      "ATTACK-CLASSES.md",
+      "HUNTING.md"
+    ],
+    "skills/references/web-and-browser.md": [
+      "WEB-PROTOCOL-AND-AUTH.md",
+      "CLIENT-SIDE.md"
+    ],
+    "skills/recon-planner/SKILL.md": [
+      "RECONNAISSANCE.md",
+      "HUNTING.md"
+    ],
+    "skills/reader/SKILL.md": [
+      "HUNTING.md",
+      "ATTACK-CLASSES.md"
+    ]
+  },
+  "adaptation_policy": "Role-specific rewrites for Lailaps. No upstream agent topology, ledger/schema, verdict gates or new execution permissions. No runtime loading implemented by this delivery.",
+  "deepseek_reference_commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "lailaps_head": "1d1cb1516c1036fa61b7cf693815a3622f8f2567",
+  "lailaps_original_branch": "minimal",
+  "lailaps_delivery_branch": "codex/cloudflare-skills-test",
+  "lailaps_dirty_worktree": true,
+  "lailaps_inspected_files": [
+    {
+      "path": "agent/pentest-agent/src/pentest_agent/triple_agent.py",
+      "sha256": "b2050627583075b654474638569afe7ef8e7283811eddd8e9cce09de760df271"
+    },
+    {
+      "path": "agent/pentest-agent/src/pentest_agent/models.py",
+      "sha256": "f46aadff1a1e97527d9ff3c48b44081c9386861db67ade4b060e11e78cf089b9"
+    },
+    {
+      "path": "agent/pentest-agent/src/pentest_agent/deps.py",
+      "sha256": "af69444ba7fff06745046dbcb96fab02f0abc552c8edcc908b727b896473d375"
+    },
+    {
+      "path": "agent/pentest-agent/src/pentest_agent/global_pipeline.py",
+      "sha256": "6fe3ed9c0612dc785c841b951dcb1e19c717a74f092262840df36ada60cdbbcc"
+    },
+    {
+      "path": "agent/pentest-agent/src/pentest_agent/codebase_memory/bootstrap.py",
+      "sha256": "2302aea5b098db4c7a425fdc099d13e66b32859e720fea03d0073553b0a1ca9a"
+    },
+    {
+      "path": "app/Jobs/RunPreparation.php",
+      "sha256": "da107d42bc5a11ef70281c391310b18648cdc5f98414ff0b7ed139f829c65786"
+    },
+    {
+      "path": "app/Services/Pentest/BenchmarkReconInput.php",
+      "sha256": "0c0d516b91ac9c4dd4549a9b276f63d200580936627133d7896a6eefaf074fff"
+    }
+  ],
+  "lailaps_baseline_code_commit": "46160f362053c612d9e6a1b8d456b6e98fd4ca2c",
+  "current_scope": "P0 Recon + Reader pilot; Investigator skill prepared for conditional P1"
+}

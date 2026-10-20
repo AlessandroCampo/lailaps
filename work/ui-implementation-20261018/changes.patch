@@ -1,0 +1,4089 @@
+--- a/app/Actions/CreateAuditRunAction.php
++++ b/app/Actions/CreateAuditRunAction.php
+@@ -15,6 +15,28 @@
+ 
+ class CreateAuditRunAction
+ {
++    public function blockingReason(?ProjectSource $source): ?string
++    {
++        if ($source === null || $source->trashed() || $source->status !== ProjectSourceStatus::READY) {
++            return 'Upload a ready source before starting a scan.';
++        }
++        $lab = $source->readyLab()->first();
++        if ($lab === null) {
++            return 'The project must be prepared before scanning.';
++        }
++        if (AuditRun::where('lab_id', $lab->id)->where(function ($query) {
++            $query->whereIn('status', [AuditRunStatus::PENDING, AuditRunStatus::RUNNING])
++                ->orWhere(fn ($finishing) => $finishing->whereNotNull('started_at')->whereNull('finished_at'));
++        })->exists()) {
++            return 'A scan is already queued or running.';
++        }
++        if (! $source->usableArtifacts()->where('type', ProjectArtifactType::RECON)->exists()) {
++            return 'Project preparation has not completed.';
++        }
++
++        return null;
++    }
++
+     public function handle(ProjectSource $source, array $configs): AuditRun
+     {
+         return DB::transaction(function () use ($source, $configs) {
+@@ -33,8 +55,8 @@
+             if ($lab->status !== LabStatus::READY) {
+                 throw ValidationException::withMessages(['source' => 'The lab is not ready.']);
+             }
+-            if (AuditRun::where('lab_id', $lab->id)->whereIn('status', [AuditRunStatus::PENDING, AuditRunStatus::RUNNING])->exists()) {
+-                throw ValidationException::withMessages(['audit_run' => 'An audit is already queued or running for this lab.']);
++            if ($reason = $this->blockingReason($source)) {
++                throw ValidationException::withMessages(['audit_run' => $reason]);
+             }
+ 
+             $artifacts = $source->usableArtifacts()->get();
+--- a/app/Actions/CreateAuditRunLeadAction.php
++++ b/app/Actions/CreateAuditRunLeadAction.php
+@@ -11,9 +11,9 @@
+ 
+ class CreateAuditRunLeadAction
+ {
+-    public function handle(AuditRun $run, LeadOutcome $lead): AuditRunLead
++    public function handle(AuditRun $run, LeadOutcome $lead, bool $provisional = false): AuditRunLead
+     {
+-        return DB::transaction(function () use ($run, $lead) {
++        return DB::transaction(function () use ($run, $lead, $provisional) {
+ 
+             $area = $lead->areaKey === null ? null : $run->areas()
+                 ->where('pass_key', $lead->passId ?? 'pass-001')
+@@ -23,16 +23,22 @@
+                 throw new RuntimeException('No run area matches lead '.$lead->id.'.');
+             }
+ 
++            $payload = $lead->toArray();
++            if ($provisional && $lead->status === 'suspected' && in_array($lead->lifecycleStatus, ['lead', 'refining', 'candidate', 'confirming'], true)) {
++                $payload['status'] = 'running';
++            }
++
+             return $run->leads()->updateOrCreate(
+                 [
+                     'lead_key' => $lead->id,
+                 ],
+                 [
+                     'audit_run_area_id' => $area?->id,
+-                    'status' => AuditRunLeadStatus::from($lead->status),
++                    'is_current' => true,
++                    'status' => AuditRunLeadStatus::from($payload['status']),
+                     'title' => $lead->title,
+                     'severity' => $lead->severity,
+-                    'payload' => $lead->toArray(),
++                    'payload' => $payload,
+                 ]
+             );
+         });
+--- a/app/Actions/RunAuditAction.php
++++ b/app/Actions/RunAuditAction.php
+@@ -77,6 +77,7 @@
+         $emit('out', 'Audit run: '.$auditRun->id."\n");
+ 
+         try {
++            $outcomes->phase($auditRun, 'Preparing scan');
+             $prepared = $projects->prepareAuditRunWorkspace($auditRun, $sandbox);
+             $doctorPaths = $prepared['doctor_paths'];
+             $manifest = $prepared['manifest'];
+@@ -134,6 +135,8 @@
+             }
+ 
+             $emit('out', "Starting Python audit.\n");
++            $outcomes->phase($auditRun, 'Investigating project');
++            $checkpointErrorReported = false;
+             $result = $docker->runAudit(
+                 self::IMAGE,
+                 $prepared['paths'],
+@@ -149,6 +152,17 @@
+                     }
+                     $emit($type, $text);
+                 },
++                tick: function () use ($auditRun, $outcomes, &$checkpointErrorReported): void {
++                    try {
++                        $outcomes->captureCheckpoint($auditRun);
++                        $checkpointErrorReported = false;
++                    } catch (Throwable $error) {
++                        if (! $checkpointErrorReported) {
++                            report($error);
++                            $checkpointErrorReported = true;
++                        }
++                    }
++                },
+             );
+ 
+             $outcomePath = $auditRun->path().'/output/outcome.json';
+@@ -166,7 +180,7 @@
+             }
+ 
+             if ($result->failed() || ($outcome['run_status'] ?? null) === 'failed') {
+-                if (($outcome['run_status'] ?? null) === 'failed') {
++                if (($outcome['run_status'] ?? null) === 'failed' && is_array($outcome['report'] ?? null)) {
+                     $runOutcome = RunOutcome::fromArray($outcome);
+                 }
+                 throw new RuntimeException('Python audit failed (exit code '.$result->exitCode().'): '.($outcome['run_reason'] ?? mb_substr($result->errorOutput(), -8_000)));
+@@ -194,6 +208,11 @@
+             }
+             $diagnostic = $sandbox->redact(mb_substr($diagnostic, -40_000), $redactions);
+         } finally {
++            try {
++                $outcomes->phase($auditRun, 'Finalizing scan');
++            } catch (Throwable $progressError) {
++                report($progressError);
++            }
+             if ($runtime !== null) {
+                 try {
+                     $sandbox->destroy($runtime, $prepared['doctor_paths']['artifacts'], (string) $auditRun->id);
+@@ -231,6 +250,11 @@
+         }
+ 
+         $auditRun->update(['finished_at' => now()]);
++        try {
++            $outcomes->phase($auditRun, $importFailed ? 'Results could not be finalized' : ($status === AuditRunStatus::FAILED ? 'Scan failed' : ($status === AuditRunStatus::PARTIAL ? 'Scan finished with partial results' : 'Scan completed')));
++        } catch (Throwable $progressError) {
++            report($progressError);
++        }
+         $emit('out', 'Audit status: '.$status->value."\n");
+         $emit('out', 'Output directory: '.$storage->path($auditRun->path().'/output')."\n");
+         if ($status === AuditRunStatus::FAILED || $cleanupFailed || $importFailed) {
+--- a/app/Http/Controllers/AuditRunController.php
++++ b/app/Http/Controllers/AuditRunController.php
+@@ -7,16 +7,133 @@
+ use App\Enums\AuditRunStatus;
+ use App\Jobs\RunAudit;
+ use App\Models\AuditRun;
++use App\Models\AuditRunLead;
+ use App\Models\Project;
+ use App\Models\ProjectSource;
++use App\Services\AuditRunPresenter;
+ use App\Services\OutcomeService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\RedirectResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Support\Arr;
++use Inertia\Inertia;
++use Inertia\Response;
++use Symfony\Component\HttpFoundation\StreamedResponse;
+ use Throwable;
+ 
+ class AuditRunController extends Controller
+ {
++    private function authorizeRun(Request $request, Project $project, AuditRun $run): void
++    {
++        abort_unless($project->user_id === $request->user()->id && $run->project_id === $project->id, 404);
++    }
++
++    public function show(Request $request, Project $project, AuditRun $run, AuditRunPresenter $presenter): Response
++    {
++        $this->authorizeRun($request, $project, $run);
++
++        return Inertia::render('projects/scans/Show', [
++            'project' => $project->only(['id', 'name', 'created_at']),
++            ...$presenter->snapshot($run, $request),
++        ]);
++    }
++
++    public function finding(Request $request, Project $project, AuditRun $run, AuditRunLead $lead, OutcomeService $outcomes, AuditRunPresenter $presenter): Response
++    {
++        $this->authorizeRun($request, $project, $run);
++        abort_unless($lead->audit_run_id === $run->id && $lead->is_current && in_array($lead->status->value, [...AuditRunPresenter::FINDING_STATUSES, 'running'], true), 404);
++        $payload = $outcomes->presentStoredLead($run, $lead);
++
++        return Inertia::render('projects/scans/Finding', [
++            'project' => $project->only(['id', 'name', 'created_at']),
++            'run' => $presenter->summary($run, $request),
++            'finding' => [
++                ...Arr::only($payload, ['title', 'status', 'severity', 'confidence', 'description', 'conclusion', 'reason', 'recommendation', 'category', 'cwe_ids', 'locations']),
++                'id' => $lead->id,
++                'evidence' => ['http_transactions' => array_map(fn ($transaction): array => Arr::except($transaction, ['request_id', 'response_id']), $payload['evidence']['http_transactions'])],
++            ],
++        ]);
++    }
++
++    public function report(Request $request, Project $project, AuditRun $run, AuditRunPresenter $presenter): Response
++    {
++        $this->authorizeRun($request, $project, $run);
++        $summary = $presenter->summary($run, $request);
++
++        return Inertia::render('projects/scans/Report', [
++            'project' => $project->only(['id', 'name', 'created_at']),
++            'run' => $summary,
++            'report' => $summary['has_report'] ? $presenter->report($run) : null,
++        ]);
++    }
++
++    public function download(Request $request, Project $project, AuditRun $run, AuditRunPresenter $presenter): \Symfony\Component\HttpFoundation\Response
++    {
++        $this->authorizeRun($request, $project, $run);
++        $format = $request->query('format', 'json');
++        abort_unless(in_array($format, ['json', 'markdown'], true), 422);
++        $summary = $presenter->summary($run, $request);
++        abort_unless($summary['has_report'], 409, 'The report is not available.');
++        $report = ['project' => $project->name, 'scan' => $summary, ...$presenter->report($run)];
++        if ($format === 'json') {
++            $body = json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
++        } else {
++            $body = '# '.str_replace(["\r", "\n"], ' ', $project->name)."\n\nStatus: ".$summary['status']."\n\n";
++            foreach ($report['findings'] as $finding) {
++                $body .= '## '.str_replace(["\r", "\n"], ' ', $finding['title'])."\n\n".$finding['status'].' · '.($finding['severity'] ?? 'Not assessed')."\n\n";
++                foreach (['description', 'conclusion', 'reason', 'recommendation'] as $field) {
++                    if (! empty($finding[$field])) {
++                        $body .= ucfirst($field).":\n\n".$finding[$field]."\n\n";
++                    }
++                }
++            }
++            $body .= "## Scope and limitations\n\nSource uploaded: ".($summary['source']['uploaded_at'] ?? 'Not recorded')."\n\nCoverage: ".match ($report['coverage_complete']) {
++                true => 'Reported complete', false => 'Incomplete', default => 'Not recorded'
++            }."\n\n## Usage\n\n".json_encode($report['usage'], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n";
++        }
++
++        return response($body)->withHeaders([
++            'Content-Type' => $format === 'json' ? 'application/json' : 'text/markdown; charset=UTF-8',
++            'Content-Disposition' => 'attachment; filename="lailaps-report.'.($format === 'json' ? 'json' : 'md').'"',
++            'Cache-Control' => 'private, no-store',
++            'X-Content-Type-Options' => 'nosniff',
++        ]);
++    }
++
++    public function events(Request $request, Project $project, AuditRun $run, AuditRunPresenter $presenter): StreamedResponse
++    {
++        $this->authorizeRun($request, $project, $run);
++        $request->session()->save();
++
++        return response()->stream(function () use ($request, $run, $presenter): void {
++            $last = $request->header('Last-Event-ID');
++            $deadline = microtime(true) + 25;
++            echo "retry: 2000\n\n";
++            do {
++                $current = AuditRun::find($run->id);
++                if ($current === null || connection_aborted()) {
++                    break;
++                }
++                $cursor = $current->progress_version.'-'.$current->status->value.'-'.($current->finished_at?->getTimestamp() ?? 0);
++                if ($cursor !== $last) {
++                    $snapshot = $presenter->snapshot($current, $request, ! $request->boolean('summary'));
++                    echo 'id: '.$cursor."\n".'data: '.json_encode($snapshot, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE)."\n\n";
++                    $last = $cursor;
++                } else {
++                    echo ": heartbeat\n\n";
++                }
++                if (ob_get_level() > 0) {
++                    ob_flush();
++                }
++                flush();
++                if ($current->finished_at !== null || (isset($snapshot) && ! $snapshot['run']['active'])) {
++                    break;
++                }
++                usleep(1_000_000);
++            } while (microtime(true) < $deadline);
++        }, 200, ['Content-Type' => 'text/event-stream', 'Cache-Control' => 'private, no-store', 'X-Accel-Buffering' => 'no']);
++    }
++
+     public function progress(Request $request, AuditRun $auditRun, OutcomeService $outcomes): JsonResponse
+     {
+         abort_unless(Project::whereKey($auditRun->project_id)->where('user_id', $request->user()->id)->exists(), 404);
+@@ -40,6 +157,6 @@
+             throw $error;
+         }
+ 
+-        return to_route('projects.show', $project);
++        return to_route('projects.scans.show', ['project' => $project, 'run' => $run]);
+     }
+ }
+--- a/app/Http/Controllers/ProjectController.php
++++ b/app/Http/Controllers/ProjectController.php
+@@ -2,8 +2,8 @@
+ 
+ namespace App\Http\Controllers;
+ 
++use App\Actions\CreateAuditRunAction;
+ use App\Actions\CreateProjectAction;
+-use App\Enums\AuditRunLeadStatus;
+ use App\Enums\LabStatus;
+ use App\Enums\ProjectArtifactStatus;
+ use App\Enums\ProjectArtifactType;
+@@ -56,13 +56,13 @@
+             'message' => 'Project created.',
+         ]);
+ 
+-        return to_route('projects.show', ['project' => $project, 'step' => 'environment']);
++        return to_route('projects.show', $project);
+     }
+ 
+     /**
+      * Display the specified resource.
+      */
+-    public function show(Request $request, Project $project): Response
++    public function show(Request $request, Project $project, CreateAuditRunAction $createRun): Response
+     {
+         abort_unless($project->user_id === $request->user()->id, 404);
+ 
+@@ -96,27 +96,20 @@
+             }
+         }
+ 
+-        $runs = $project->auditRuns()
+-            ->select(['id', 'project_source_id', 'status', 'created_at', 'started_at', 'finished_at', 'outcome->coverage_complete as coverage_complete'])
+-            ->selectRaw('outcome IS NOT NULL AS has_report')
+-            ->with('source:id,source_type,uploaded_at')
+-            ->withCount([
+-                'leads as confirmed_count' => fn ($query) => $query->where('status', AuditRunLeadStatus::CONFIRMED),
+-                'leads as suspected_count' => fn ($query) => $query->where('status', AuditRunLeadStatus::SUSPECTED),
+-                'leads as inconclusive_count' => fn ($query) => $query->where('status', AuditRunLeadStatus::INCONCLUSIVE),
+-                'leads as blocked_count' => fn ($query) => $query->where('status', AuditRunLeadStatus::BLOCKED),
+-            ])
++        $runs = $project->auditRuns()->summary()
+             ->latest('created_at')->orderByDesc('id')->get()
+             ->map(fn (AuditRun $run): array => (new AuditRunResource($run))->resolve($request));
+ 
++        $blockedReason = $createRun->blockingReason($source);
+ 
+         return Inertia::render('projects/Show', [
+             'project' => $project->only(['id', 'name', 'created_at']),
+             'source' => $source?->only([
+                 'id', 'source_type', 'status', 'error', 'uploaded_at', 'created_at',
+             ]),
+-            'step' => $request->query('step') === 'environment' ? 'environment' : 'source',
+             'preparation_status' => $preparationStatus,
++            'can_start_scan' => $blockedReason === null,
++            'scan_blocked_reason' => $blockedReason,
+             'runs' => [
+                 'latest' => $runs->first(),
+                 'history' => $runs->skip(1)->values()->all(),
+--- a/app/Http/Controllers/ProjectSourceController.php
++++ b/app/Http/Controllers/ProjectSourceController.php
+@@ -2,8 +2,10 @@
+ 
+ namespace App\Http\Controllers;
+ 
++use App\Actions\CreateLabAction;
+ use App\Actions\CreateProjectSourceAction;
+ use App\Enums\LabStatus;
++use App\Enums\ProjectSourceStatus;
+ use App\Enums\ProjectSourceType;
+ use App\Jobs\LabSetup;
+ use App\Jobs\PrepareProjectAnalysis;
+@@ -53,17 +55,20 @@
+         ]);
+     }
+ 
+-    public function retrySetup(Request $request, Project $project, ProjectSource $source): RedirectResponse
++    public function retrySetup(Request $request, Project $project, ProjectSource $source, CreateLabAction $createLab): RedirectResponse
+     {
+         abort_unless(
+             $project->user_id === $request->user()->id && $source->project_id === $project->id,
+             404,
+         );
+ 
+-        $lab = $source->lab;
+-        abort_unless($lab, 404);
+-
+-        DB::transaction(function () use ($source, $lab): void {
++        DB::transaction(function () use ($project, $source, $createLab): void {
++            $source = $project->sources()->whereKey($source->id)->lockForUpdate()->firstOrFail();
++            abort_unless($source->status === ProjectSourceStatus::READY, 409, 'The source is not ready for preparation.');
++            $lab = $source->lab()->latest('id')->first() ?? $createLab->handle($source);
++            if (in_array($lab->status, [LabStatus::RUNNING, LabStatus::PENDING], true) && ! $lab->wasRecentlyCreated) {
++                return;
++            }
+             if (in_array($lab->status, [LabStatus::FAILED, LabStatus::UNAVAILABLE], true)) {
+                 $lab->update(['status' => LabStatus::PENDING]);
+             }
+@@ -72,7 +77,7 @@
+             PrepareProjectAnalysis::dispatch($source->id)->afterCommit();
+         });
+ 
+-        return to_route('projects.show', ['project' => $project, 'step' => 'environment']);
++        return to_route('projects.show', $project);
+ 
+     }
+ }
+--- a/app/Http/Resources/AuditRunResource.php
++++ b/app/Http/Resources/AuditRunResource.php
+@@ -15,10 +15,15 @@
+             'inconclusive' => (int) $this->inconclusive_count,
+             'blocked' => (int) $this->blocked_count,
+         ];
++        $available = $this->has_report || $this->checkpoint_at !== null;
++        $finalizing = $this->finished_at === null && in_array($this->status->value, ['completed', 'partial', 'failed'], true) && $this->started_at !== null;
++        $usage = $this->progress['usage'] ?? $this->summary_usage ?? [];
+ 
+         return [
+             'id' => $this->id,
+             'status' => $this->status->value,
++            'finalizing' => $finalizing,
++            'active' => in_array($this->status->value, ['pending', 'running'], true) || $finalizing,
+             'created_at' => $this->created_at?->toISOString(),
+             'started_at' => $this->started_at?->toISOString(),
+             'finished_at' => $this->finished_at?->toISOString(),
+@@ -28,14 +33,21 @@
+                 'source_type' => $this->source->source_type->value,
+                 'uploaded_at' => $this->source->uploaded_at?->toISOString(),
+             ],
+-            'has_report' => (bool) $this->has_report,
++            'has_report' => ! $finalizing && ($this->has_report || ($this->finished_at !== null && $this->checkpoint_at !== null)),
++            'report_partial' => ! $this->has_report || in_array($this->status->value, ['partial', 'failed'], true),
++            'has_results' => (bool) $available,
++            'checkpoint_at' => $this->checkpoint_at?->toISOString(),
++            'version' => (int) $this->progress_version,
++            'activity' => $this->progress['current_activity'] ?? null,
++            'usage' => $usage,
+             'coverage_complete' => match ($this->coverage_complete) {
+                 'true', true => true,
+                 'false', false => false,
+-                default => null,
++                default => $this->progress['coverage_complete'] ?? null,
+             },
+-            'findings_count' => $this->has_report ? array_sum($counts) : null,
+-            'lead_counts' => $this->has_report ? $counts : null,
++            'findings_count' => $available ? array_sum($counts) : null,
++            'lead_counts' => $available ? $counts : null,
++            'investigating_count' => $available ? (int) $this->running_count : null,
+         ];
+     }
+ }
+--- a/app/Jobs/RunAudit.php
++++ b/app/Jobs/RunAudit.php
+@@ -29,11 +29,11 @@
+     public function failed(?Throwable $error): void
+     {
+         AuditRun::whereKey($this->auditRunId)
+-            ->whereIn('status', [AuditRunStatus::PENDING, AuditRunStatus::RUNNING])
++            ->whereNull('finished_at')
+             ->update([
+                 'status' => AuditRunStatus::FAILED,
+                 'finished_at' => now(),
+-                'error' => 'The audit job failed or timed out before publishing a terminal outcome.',
++                'error' => 'The audit job failed or timed out before finalization completed.',
+             ]);
+     }
+ }
+--- a/app/Models/AuditRun.php
++++ b/app/Models/AuditRun.php
+@@ -4,6 +4,7 @@
+ 
+ use App\DTOs\AuditRun\RunOutcome;
+ use App\Enums\AuditRunStatus;
++use Illuminate\Database\Eloquent\Builder;
+ use Illuminate\Database\Eloquent\Concerns\HasUlids;
+ use Illuminate\Database\Eloquent\Model;
+ use Illuminate\Database\Eloquent\Relations\BelongsTo;
+@@ -22,6 +23,9 @@
+         return [
+             'configs' => 'array',
+             'outcome' => 'array',
++            'progress' => 'array',
++            'checkpoint_at' => 'datetime',
++            'summary_usage' => 'array',
+             'status' => AuditRunStatus::class,
+             'started_at' => 'datetime',
+             'finished_at' => 'datetime',
+@@ -31,6 +35,16 @@
+     public function path(): string
+     {
+         return $this->project_id.'/runs/'.$this->id;
++    }
++
++    public function scopeSummary(Builder $query): Builder
++    {
++        return $query->select(['audit_runs.id', 'project_id', 'project_source_id', 'status', 'created_at', 'updated_at', 'started_at', 'finished_at', 'progress', 'progress_version', 'checkpoint_at', 'outcome->coverage_complete as coverage_complete', 'outcome->usage as summary_usage'])
++            ->selectRaw('outcome IS NOT NULL AS has_report')
++            ->with('source:id,source_type,uploaded_at')
++            ->withCount(collect(['confirmed', 'suspected', 'blocked', 'inconclusive', 'running'])->mapWithKeys(
++                fn (string $status): array => ['leads as '.$status.'_count' => fn ($leads) => $leads->where('is_current', true)->where('status', $status)],
++            )->all());
+     }
+ 
+     public function getOutcome(): ?array
+--- a/app/Services/AuditRunPresenter.php
++++ b/app/Services/AuditRunPresenter.php
+@@ -0,0 +1,57 @@
++<?php
++
++namespace App\Services;
++
++use App\Http\Resources\AuditRunResource;
++use App\Models\AuditRun;
++use Illuminate\Http\Request;
++use Illuminate\Support\Arr;
++
++final class AuditRunPresenter
++{
++    public const array FINDING_STATUSES = ['confirmed', 'suspected', 'blocked', 'inconclusive'];
++
++    public function summary(AuditRun $run, Request $request): array
++    {
++        $summary = AuditRun::summary()->findOrFail($run->id);
++
++        return (new AuditRunResource($summary))->resolve($request);
++    }
++
++    public function snapshot(AuditRun $run, Request $request, bool $withDetails = true): array
++    {
++        $summary = $this->summary($run, $request);
++        $leads = $withDetails ? $run->leads()->where('is_current', true)
++            ->whereIn('status', [...self::FINDING_STATUSES, 'running'])
++            ->orderBy('created_at')->orderBy('id')->get() : collect();
++
++        return [
++            'run' => $summary,
++            'findings' => $leads->map(fn ($lead): array => [
++                'id' => $lead->id,
++                'title' => $lead->title,
++                'status' => $lead->status->value,
++                'severity' => $lead->severity,
++                'location' => data_get($lead->payload, 'locations.0.file'),
++            ])->values()->all(),
++            'activity' => $withDetails ? array_reverse($run->progress['activity'] ?? []) : [],
++        ];
++    }
++
++    public function report(AuditRun $run): array
++    {
++        $payload = $run->outcome ?? [];
++
++        return [
++            'findings' => $run->leads()->where('is_current', true)->whereIn('status', [...self::FINDING_STATUSES, 'running'])
++                ->orderBy('created_at')->orderBy('id')->get()->map(fn ($lead): array => [
++                    ...Arr::only($lead->payload ?? [], ['title', 'status', 'severity', 'confidence', 'description', 'conclusion', 'reason', 'recommendation', 'category', 'cwe_ids', 'locations']),
++                    'id' => $lead->id,
++                ])->all(),
++            'coverage_complete' => $payload['coverage_complete'] ?? $run->progress['coverage_complete'] ?? null,
++            'usage' => $payload['usage'] ?? $run->progress['usage'] ?? [],
++            'rejected_leads' => data_get($payload, 'summary.rejected_leads', $run->progress['rejected_leads'] ?? 0),
++            'deferred_leads' => data_get($payload, 'summary.deferred_leads', $run->progress['deferred_leads'] ?? 0),
++        ];
++    }
++}
+--- a/app/Services/DockerService.php
++++ b/app/Services/DockerService.php
+@@ -175,7 +175,7 @@
+         );
+     }
+ 
+-    public function runAudit(string $image, array $paths, string $network, ?callable $output = null): ProcessResult
++    public function runAudit(string $image, array $paths, string $network, ?callable $output = null, ?callable $tick = null): ProcessResult
+     {
+         $key = config('agent.openrouter_api_key');
+ 
+@@ -210,6 +210,7 @@
+             ],
+             secrets: ['OPENROUTER_API_KEY' => $key],
+             output: $output,
++            tick: $tick,
+         );
+     }
+ 
+@@ -224,6 +225,7 @@
+         array $dockerOptions = [],
+         array $secrets = [],
+         ?callable $output = null,
++        ?callable $tick = null,
+     ): ProcessResult {
+         $containerName = 'lailaps-run-'.Str::uuid();
+ 
+@@ -248,11 +250,35 @@
+ 
+         array_push($arguments, '--user', $user ?? posix_geteuid().':'.posix_getegid());
+ 
++        $process = null;
+         try {
+-            return Process::timeout($timeout)
+-                ->env($secrets)
+-                ->run([...$arguments, ...$dockerOptions, $image, ...$command], $output);
++            $pending = Process::timeout($timeout)->env($secrets);
++            $commandLine = [...$arguments, ...$dockerOptions, $image, ...$command];
++            if ($tick === null) {
++                return $pending->run($commandLine, $output);
++            }
++            $process = $pending->start($commandLine, $output);
++            $nextCheckpoint = 0;
++            while ($process->running()) {
++                $process->ensureNotTimedOut();
++                if (hrtime(true) >= $nextCheckpoint) {
++                    $tick();
++                    $nextCheckpoint = hrtime(true) + 2_000_000_000;
++                }
++                usleep(200_000);
++            }
++            $result = $process->wait();
++            $tick();
++
++            return $result;
+         } catch (Throwable $error) {
++            try {
++                if ($process !== null && $process->running()) {
++                    $process->stop(1);
++                }
++            } catch (Throwable $stopError) {
++                report($stopError);
++            }
+             try {
+                 $this->removeContainer($containerName);
+             } catch (Throwable $cleanupError) {
+--- a/app/Services/OutcomeService.php
++++ b/app/Services/OutcomeService.php
+@@ -8,6 +8,7 @@
+ use App\DTOs\AuditRun\RunOutcome;
+ use App\Enums\AuditRunStatus;
+ use App\Models\AuditRun;
++use App\Models\AuditRunLead;
+ use Carbon\CarbonImmutable;
+ use Illuminate\Support\Arr;
+ use Illuminate\Support\Facades\DB;
+@@ -29,7 +30,8 @@
+ 
+     public function progress(AuditRun $run): array
+     {
+-        $active = in_array($run->status, [AuditRunStatus::PENDING, AuditRunStatus::RUNNING], true);
++        $active = in_array($run->status, [AuditRunStatus::PENDING, AuditRunStatus::RUNNING], true)
++            || ($run->started_at !== null && $run->finished_at === null);
+         $response = [
+             'run_id' => $run->id,
+             'status' => $run->status->value,
+@@ -43,8 +45,26 @@
+             'snapshot' => null,
+         ];
+ 
+-        if (! $active && $run->outcome !== null) {
+-            $payload = $run->outcome;
++        if ($run->outcome !== null || $run->checkpoint_at !== null) {
++            $leads = $run->outcome === null ? $run->leads()->where('is_current', true)->get()
++                ->reject(fn ($lead) => ($lead->payload['lifecycle_status'] ?? null) === 'not_admitted') : collect();
++            $areas = $run->outcome === null ? $run->areas()->get() : collect();
++            $payload = $run->outcome ?? [
++                'run_id' => (string) $run->id,
++                'project_source_id' => $run->project_source_id,
++                'source_hash' => $run->source?->content_hash,
++                'status' => $run->status->value,
++                'coverage_complete' => $run->progress['coverage_complete'] ?? null,
++                'summary' => [
++                    'areas' => $areas->countBy(fn ($area) => $area->status->value)->all(),
++                    'leads' => $leads->countBy(fn ($lead) => $lead->status->value)->all(),
++                    'deferred_leads' => $run->progress['deferred_leads'] ?? 0,
++                    'rejected_leads' => $run->progress['rejected_leads'] ?? 0,
++                ],
++                'usage' => $run->progress['usage'] ?? [],
++                'areas' => $areas->map(fn ($area) => $area->payload['outcome'] ?? [])->values()->all(),
++                'leads' => $leads->map(fn ($lead) => $lead->payload)->values()->all(),
++            ];
+             $response['snapshot_source'] = 'database';
+             $response['snapshot_updated_at'] = $run->updated_at?->toISOString();
+         } else {
+@@ -121,10 +141,116 @@
+             foreach ([...$outcome->leads, ...$outcome->deferredLeads] as $lead) {
+                 $this->createLead->handle($run, $lead);
+             }
++            $keys = array_map(fn (LeadOutcome $lead): string => $lead->id, [...$outcome->leads, ...$outcome->deferredLeads]);
++            $run->leads()->whereNotIn('lead_key', $keys)->update(['is_current' => false]);
++            $this->updateProgress($run, $outcome, 'Results saved');
+             $run->update(['outcome' => $outcome->toArray()]);
+ 
+             return $run;
+         });
++    }
++
++    public function captureCheckpoint(AuditRun $run): bool
++    {
++        $raw = $run->getOutcome();
++        if (! is_array($raw['report'] ?? null) || ($raw['run_id'] ?? null) !== (string) $run->id) {
++            return false;
++        }
++        foreach (['project_source_id' => $run->project_source_id, 'source_hash' => $run->source->content_hash] as $key => $expected) {
++            if (isset($raw[$key]) && $raw[$key] !== $expected) {
++                throw new RuntimeException('The checkpoint does not belong to this run and source.');
++            }
++        }
++        $hash = hash('sha256', json_encode($raw['report'], JSON_THROW_ON_ERROR));
++        if ($run->checkpoint_hash === $hash) {
++            return false;
++        }
++        $outcome = RunOutcome::fromArray([
++            ...$raw,
++            'schema_version' => 1,
++            'run_id' => (string) $run->id,
++            'project_source_id' => $run->project_source_id,
++            'source_hash' => $run->source->content_hash,
++            'run_status' => 'running',
++        ]);
++
++        return DB::transaction(function () use ($run, $outcome, $hash): bool {
++            $locked = AuditRun::whereKey($run->id)->lockForUpdate()->firstOrFail();
++            if ($locked->checkpoint_hash === $hash || $locked->finished_at !== null || $locked->outcome !== null) {
++                return false;
++            }
++            $locked->loadMissing(['source', 'artifacts.reconAreas']);
++            $this->assertIdentity($locked, $outcome);
++            foreach ($outcome->inputArtifacts as $type => $id) {
++                if ($id !== null && ! $locked->artifacts->contains(fn ($artifact): bool => $artifact->type->value === $type && $artifact->id === $id)) {
++                    throw new RuntimeException('The checkpoint references an artifact outside this run.');
++                }
++            }
++            foreach ($outcome->areas as $area) {
++                $this->createArea->handle($locked, $area);
++            }
++            $events = [];
++            foreach ([...$outcome->leads, ...$outcome->deferredLeads] as $lead) {
++                $old = $locked->leads()->where('lead_key', $lead->id)->value('status');
++                $stored = $this->createLead->handle($locked, $lead, provisional: true);
++                if ($old !== $stored->status->value && $lead->lifecycleStatus !== 'not_admitted') {
++                    $events[] = ['title' => $lead->title, 'status' => $stored->status->value];
++                }
++            }
++            $this->updateProgress($locked, $outcome, null, $events);
++            $locked->update(['checkpoint_hash' => $hash, 'checkpoint_at' => now()]);
++            $run->refresh();
++
++            return true;
++        });
++    }
++
++    public function phase(AuditRun $run, string $label): void
++    {
++        DB::transaction(function () use ($run, $label): void {
++            $locked = AuditRun::whereKey($run->id)->lockForUpdate()->firstOrFail();
++            $progress = $locked->progress ?? [];
++            $activity = $progress['activity'] ?? [];
++            $activity[] = ['title' => $label, 'status' => null, 'at' => now()->toISOString()];
++            $locked->update([
++                'progress' => [...$progress, 'current_activity' => $label, 'activity' => array_slice($activity, -100)],
++                'progress_version' => $locked->progress_version + 1,
++            ]);
++            $run->refresh();
++        });
++    }
++
++    private function updateProgress(AuditRun $run, RunOutcome $outcome, ?string $label = null, array $events = []): void
++    {
++        $progress = $run->progress ?? [];
++        $activity = $progress['activity'] ?? [];
++        if ($label !== null) {
++            $events[] = ['title' => $label, 'status' => null];
++        }
++        foreach ($events as $event) {
++            $activity[] = [...$event, 'at' => now()->toISOString()];
++        }
++        $run->update([
++            'progress' => [
++                ...$progress,
++                'usage' => [...($progress['usage'] ?? []), ...$outcome->usage],
++                'coverage_complete' => $outcome->coverageComplete,
++                'rejected_leads' => $outcome->rejectedLeadsCount,
++                'deferred_leads' => count($outcome->deferredLeads),
++                'current_activity' => $label ?? $progress['current_activity'] ?? 'Investigating project',
++                'activity' => array_slice($activity, -100),
++            ],
++            'progress_version' => $run->progress_version + 1,
++        ]);
++    }
++
++    public function presentStoredLead(AuditRun $run, AuditRunLead $lead): array
++    {
++        if ($lead->audit_run_id !== $run->id) {
++            throw new RuntimeException('The finding does not belong to this run.');
++        }
++
++        return $this->enrichPayload($run, $lead->payload, $this->readRawOutcome($run));
+     }
+ 
+     private function assertIdentity(AuditRun $run, RunOutcome $outcome): void
+@@ -159,7 +285,11 @@
+ 
+     private function enrichLead(AuditRun $run, LeadOutcome $lead, ?array $raw): array
+     {
+-        $payload = $lead->toArray();
++        return $this->enrichPayload($run, $lead->toArray(), $raw);
++    }
++
++    private function enrichPayload(AuditRun $run, array $payload, ?array $raw): array
++    {
+         $contents = [];
+         $sourceRoot = $run->source === null ? null : Storage::disk('projects')->path($run->source->sourcePath());
+         foreach ($payload['locations'] as &$location) {
+@@ -168,13 +298,13 @@
+         unset($location);
+ 
+         $report = $raw['report'] ?? [];
+-        if ($lead->passId !== null) {
+-            $pass = collect($report['passes'] ?? [])->firstWhere('pass_id', $lead->passId);
++        if (($payload['pass_id'] ?? null) !== null) {
++            $pass = collect($report['passes'] ?? [])->firstWhere('pass_id', $payload['pass_id']);
+             $report = $pass['report'] ?? [];
+         }
+         $transactions = data_get($report, 'evidence_ledger.http_transactions', []);
+         $payload['evidence']['http_transactions'] = [];
+-        foreach ($lead->evidence['http_refs'] ?? [] as $reference) {
++        foreach ($payload['evidence']['http_refs'] ?? [] as $reference) {
+             $transaction = collect($transactions)->first(fn (array $row): bool => ($row['request_id'] ?? null) === ($reference['request_id'] ?? null)
+                 && ($row['response_id'] ?? null) === ($reference['response_id'] ?? null));
+             if ($transaction === null) {
+--- a/resources/css/app.css
++++ b/resources/css/app.css
+@@ -137,6 +137,55 @@
+     }
+     .technical-value {
+         @apply font-mono text-xs leading-5;
++        overflow-wrap: anywhere;
++    }
++}
++
++.scan-budget {
++    appearance: none;
++    overflow: hidden;
++    border-radius: var(--radius);
++    background: var(--secondary);
++    color: var(--foreground);
++}
++.scan-budget::-webkit-progress-bar {
++    background: var(--secondary);
++}
++.scan-budget::-webkit-progress-value {
++    background: var(--foreground);
++}
++.scan-budget::-moz-progress-bar {
++    background: var(--foreground);
++}
++
++@media print {
++    :root,
++    .dark {
++        color-scheme: light;
++        --background: #fff;
++        --foreground: #171717;
++        --muted-foreground: #666;
++        --border: #e6e6e6;
++        --secondary: #f2f2f2;
++        --success: #18794e;
++        --warning: #915930;
++        --info: #0068d6;
++        --destructive: #c00;
++    }
++    body {
++        color: #171717;
++        background: white;
++    }
++    header:has(nav),
++    [data-slot='toaster'] {
++        display: none !important;
++    }
++    .scan-report {
++        max-width: none;
++        padding: 0;
++    }
++    .scan-report article {
++        break-inside: avoid;
+     }
+ }
+ 
+--- a/resources/js/components/projects/CodePreview.vue
++++ b/resources/js/components/projects/CodePreview.vue
+@@ -0,0 +1,59 @@
++<script setup lang="ts">
++import { ref, watch } from 'vue';
++import type { ThemedToken } from 'shiki/core';
++import { useClipboard } from '@vueuse/core';
++import { Check, Copy } from '@lucide/vue';
++import { Button } from '@/components/ui/button';
++import { useAppearance } from '@/composables/useAppearance';
++const props = withDefaults(
++    defineProps<{ content: string; file?: string; startLine?: number }>(),
++    { file: '', startLine: 1 },
++);
++const { resolvedAppearance } = useAppearance();
++const { copy, copied, isSupported } = useClipboard();
++const tokens = ref<ThemedToken[][] | null>(null);
++watch(
++    () => [props.content, props.file, resolvedAppearance.value],
++    async (_, __, cleanup) => {
++        let cancelled = false;
++        cleanup(() => (cancelled = true));
++        tokens.value = null;
++        try {
++            const { highlight } = await import('@/lib/highlight');
++            const result = await highlight(
++                props.content,
++                props.file,
++                resolvedAppearance.value === 'dark',
++            );
++            if (!cancelled) tokens.value = result;
++        } catch {
++            if (!cancelled) tokens.value = null;
++        }
++    },
++    { immediate: true },
++);
++</script>
++<template>
++    <div class="min-w-0 overflow-hidden rounded-lg border bg-muted/30">
++        <div
++            class="flex min-h-10 items-center justify-between gap-3 border-b px-3"
++        >
++            <span class="technical-value text-xs text-muted-foreground">{{
++                file || 'Evidence excerpt'
++            }}</span
++            ><Button
++                v-if="isSupported"
++                variant="ghost"
++                size="icon"
++                :aria-label="copied ? 'Copied' : 'Copy code'"
++                @click="copy(content)"
++                ><Check v-if="copied" /><Copy v-else
++            /></Button>
++        </div>
++        <pre
++            tabindex="0"
++            :aria-label="file ? `Code from ${file}` : 'Evidence excerpt'"
++            class="max-h-96 overflow-auto py-3 font-mono text-xs leading-6"
++        ><code v-if="tokens"><span v-for="(line, i) in tokens" :key="i" class="block px-4"><span class="mr-5 inline-block min-w-6 text-right text-muted-foreground select-none" aria-hidden="true">{{ startLine + i }}</span><span v-for="(token, j) in line" :key="j" :style="{ color: token.color }">{{ token.content }}</span>{{ line.length ? '' : ' ' }}</span></code><code v-else class="block px-4">{{ content }}</code></pre>
++    </div>
++</template>
+--- a/resources/js/components/projects/FindingList.vue
++++ b/resources/js/components/projects/FindingList.vue
+@@ -0,0 +1,106 @@
++<script setup lang="ts">
++import { Link } from '@inertiajs/vue3';
++import { computed } from 'vue';
++import { ArrowRight, Search } from '@lucide/vue';
++import { Input } from '@/components/ui/input';
++import { finding } from '@/routes/projects/scans';
++import { verdicts, labels } from '@/lib/scans';
++import type { FindingSummary } from '@/types/scan';
++import ScanStatus from './ScanStatus.vue';
++import SeverityBadge from './SeverityBadge.vue';
++const props = defineProps<{
++    projectId: string;
++    runId: string;
++    findings: FindingSummary[];
++    available: boolean;
++    active: boolean;
++}>();
++const filter = defineModel<string>('filter', { default: 'all' });
++const search = defineModel<string>('search', { default: '' });
++const filtered = computed(() =>
++    props.findings.filter(
++        (item) =>
++            (filter.value === 'all' || item.status === filter.value) &&
++            `${item.title} ${item.location || ''}`
++                .toLowerCase()
++                .includes(search.value.toLowerCase()),
++    ),
++);
++</script>
++<template>
++    <div class="space-y-4">
++        <div class="flex flex-wrap gap-3">
++            <div class="relative min-w-44 flex-1">
++                <Search
++                    class="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
++                /><Input
++                    v-model="search"
++                    aria-label="Search findings"
++                    placeholder="Search findings…"
++                    class="pl-9"
++                />
++            </div>
++            <select
++                v-model="filter"
++                aria-label="Filter findings by status"
++                class="h-9 rounded-md border bg-background px-3 text-sm"
++            >
++                <option value="all">All statuses</option>
++                <option
++                    v-for="status in [...verdicts, 'running']"
++                    :key="status"
++                    :value="status"
++                >
++                    {{
++                        status === 'running' ? 'Investigating' : labels[status]
++                    }}
++                </option>
++            </select>
++        </div>
++        <div v-if="filtered.length" class="divide-y rounded-lg border">
++            <Link
++                v-for="item in filtered"
++                :key="item.id"
++                :href="
++                    finding(
++                        { project: projectId, run: runId, lead: item.id },
++                        { query: { status: filter, search } },
++                    )
++                "
++                class="flex items-center gap-4 p-4 transition-colors hover:bg-accent"
++                ><div class="min-w-0 flex-1 space-y-2">
++                    <p class="text-sm font-medium break-words">
++                        {{ item.title }}
++                    </p>
++                    <div class="flex flex-wrap items-center gap-2">
++                        <ScanStatus
++                            :status="item.status"
++                            finding
++                            :interrupted="!active"
++                        /><SeverityBadge :severity="item.severity" />
++                    </div>
++                    <p
++                        v-if="item.location"
++                        class="technical-value text-xs text-muted-foreground"
++                    >
++                        {{ item.location }}
++                    </p>
++                </div>
++                <ArrowRight class="size-4 shrink-0 text-muted-foreground"
++            /></Link>
++        </div>
++        <div v-else class="rounded-lg border px-6 py-16 text-center">
++            <h3 class="font-medium">
++                {{
++                    search || filter !== 'all'
++                        ? 'No matching findings'
++                        : !available
++                          ? 'Waiting for the first results'
++                          : active
++                            ? 'No findings yet'
++                            : 'No findings recorded'
++                }}
++            </h3>
++        </div>
++    </div>
++</template>
+--- a/resources/js/components/projects/ScanBudget.vue
++++ b/resources/js/components/projects/ScanBudget.vue
+@@ -0,0 +1,26 @@
++<script setup lang="ts">
++import { computed } from 'vue';
++import { budget } from '@/lib/scans';
++import type { Usage } from '@/types/scan';
++const props = defineProps<{ usage: Usage }>();
++const used = computed(() => budget(props.usage));
++</script>
++
++<template>
++    <div v-if="used !== null" class="space-y-2">
++        <div class="flex justify-between gap-4 text-xs">
++            <span class="text-muted-foreground">Budget used</span
++            ><span class="tabular-nums">{{ used }}%</span>
++        </div>
++        <progress
++            class="scan-budget h-1.5 w-full overflow-hidden rounded bg-secondary"
++            :value="Math.min(100, used)"
++            max="100"
++            aria-label="Budget consumed"
++        />
++        <p class="metadata tabular-nums">
++            {{ usage.points_used?.toLocaleString('en-US') }} /
++            {{ usage.point_limit?.toLocaleString('en-US') }} EP
++        </p>
++    </div>
++</template>
+--- a/resources/js/components/projects/ScanCounts.vue
++++ b/resources/js/components/projects/ScanCounts.vue
+@@ -0,0 +1,36 @@
++<script setup lang="ts">
++import { labels, verdicts } from '@/lib/scans';
++import type { LeadCounts } from '@/types/scan';
++defineProps<{ counts: LeadCounts | null; compact?: boolean }>();
++</script>
++
++<template>
++    <div
++        v-if="counts"
++        :class="
++            compact
++                ? 'gap-5 border-t pt-5'
++                : 'divide-border overflow-hidden rounded-lg border bg-card'
++        "
++        class="grid grid-cols-2 sm:grid-cols-4"
++        aria-label="Finding counts"
++    >
++        <div
++            v-for="status in verdicts"
++            :key="status"
++            :class="
++                compact
++                    ? 'flex items-center gap-3'
++                    : 'space-y-2 border-b p-5 last:border-r-0 even:border-l sm:border-r sm:border-b-0'
++            "
++        >
++            <span class="metadata">{{ labels[status] }}</span>
++            <span
++                :class="compact ? 'text-sm' : 'block text-2xl'"
++                class="font-medium tabular-nums"
++                >{{ counts[status] }}</span
++            >
++        </div>
++    </div>
++    <p v-else class="metadata">Findings not available yet</p>
++</template>
+--- a/resources/js/components/projects/ScanStatus.vue
++++ b/resources/js/components/projects/ScanStatus.vue
+@@ -0,0 +1,49 @@
++<script setup lang="ts">
++import { computed } from 'vue';
++import { Check, LoaderCircle } from '@lucide/vue';
++import { Badge } from '@/components/ui/badge';
++import { labels } from '@/lib/scans';
++const props = defineProps<{
++    status: string;
++    finalizing?: boolean;
++    finding?: boolean;
++    interrupted?: boolean;
++}>();
++const variant = computed(() =>
++    props.finalizing || ['running', 'pending'].includes(props.status)
++        ? 'info'
++        : ['partial', 'suspected', 'blocked', 'inconclusive'].includes(
++                props.status,
++            )
++          ? 'warning'
++          : props.status === 'failed'
++            ? 'destructive'
++            : props.status === 'completed'
++              ? 'success'
++              : 'secondary',
++);
++</script>
++
++<template>
++    <Badge :variant="variant">
++        <LoaderCircle
++            v-if="(status === 'running' && !interrupted) || finalizing"
++            class="size-3 animate-spin"
++            aria-hidden="true"
++        />
++        <Check
++            v-else-if="status === 'confirmed' || status === 'completed'"
++            class="size-3"
++            aria-hidden="true"
++        />
++        {{
++            finalizing
++                ? 'Finalizing'
++                : finding && status === 'running'
++                  ? interrupted
++                      ? 'Unfinished'
++                      : 'Investigating'
++                  : labels[status] || status
++        }}
++    </Badge>
++</template>
+--- a/resources/js/components/projects/ScanSummary.vue
++++ b/resources/js/components/projects/ScanSummary.vue
+@@ -0,0 +1,91 @@
++<script setup lang="ts">
++import { Link } from '@inertiajs/vue3';
++import { useNow } from '@vueuse/core';
++import { ArrowRight } from '@lucide/vue';
++import { Button } from '@/components/ui/button';
++import { Card, CardContent } from '@/components/ui/card';
++import ScanStatus from './ScanStatus.vue';
++import ScanCounts from './ScanCounts.vue';
++import ScanBudget from './ScanBudget.vue';
++import { date, duration, elapsed } from '@/lib/scans';
++import { show, report } from '@/routes/projects/scans';
++import type { Scan } from '@/types/scan';
++defineProps<{ projectId: string; run: Scan; reconnecting?: boolean }>();
++const now = useNow({ interval: 1000 });
++</script>
++
++<template>
++    <Card>
++        <CardContent class="space-y-6">
++            <div class="flex flex-wrap items-center justify-between gap-3">
++                <div class="flex items-center gap-3">
++                    <h2 class="section-title">
++                        {{ run.active ? 'Current scan' : 'Latest scan' }}
++                    </h2>
++                    <ScanStatus
++                        :status="run.status"
++                        :finalizing="run.finalizing"
++                    />
++                </div>
++                <span class="metadata tabular-nums"
++                    >{{
++                        run.started_at
++                            ? duration(elapsed(run, now))
++                            : 'Waiting to start'
++                    }}{{ run.active && run.started_at ? ' elapsed' : '' }}</span
++                >
++            </div>
++            <div class="flex flex-wrap items-center justify-between gap-4">
++                <div class="space-y-1">
++                    <h3 class="text-lg font-medium">
++                        {{
++                            run.active
++                                ? run.activity ||
++                                  (run.status === 'pending'
++                                      ? 'Waiting to start'
++                                      : 'Scan in progress')
++                                : date(run.created_at, true)
++                        }}
++                    </h3>
++                    <p v-if="run.active && run.checkpoint_at" class="metadata">
++                        Latest update · {{ date(run.checkpoint_at, true) }}
++                    </p>
++                </div>
++                <Button as-child
++                    ><Link
++                        :href="
++                            show(
++                                { project: projectId, run: run.id },
++                                {
++                                    query: {
++                                        tab: run.active
++                                            ? 'activity'
++                                            : 'findings',
++                                    },
++                                },
++                            )
++                        "
++                        >{{ run.active ? 'View scan' : 'View results'
++                        }}<ArrowRight /></Link
++                ></Button>
++            </div>
++            <ScanBudget v-if="run.active" :usage="run.usage" class="max-w-sm" />
++            <p v-if="reconnecting" role="status" class="text-xs text-warning">
++                Reconnecting · showing the last saved update
++            </p>
++            <ScanCounts :counts="run.lead_counts" compact />
++            <div
++                v-if="run.has_report"
++                class="flex flex-wrap items-center justify-between gap-3"
++            >
++                <Button variant="outline" size="sm" as-child
++                    ><Link :href="report({ project: projectId, run: run.id })"
++                        >View report</Link
++                    ></Button
++                ><span class="metadata"
++                    >{{ run.findings_count }} findings · this scan</span
++                >
++            </div>
++        </CardContent>
++    </Card>
++</template>
+--- a/resources/js/components/projects/SeverityBadge.vue
++++ b/resources/js/components/projects/SeverityBadge.vue
+@@ -0,0 +1,26 @@
++<script setup lang="ts">
++import { computed } from 'vue';
++const props = defineProps<{ severity: string | null }>();
++const tone = computed(() =>
++    ['critical', 'high'].includes(props.severity?.toLowerCase() || '')
++        ? 'text-destructive'
++        : props.severity?.toLowerCase() === 'medium'
++          ? 'text-warning'
++          : 'text-muted-foreground',
++);
++</script>
++
++<template>
++    <span
++        v-if="severity"
++        :class="tone"
++        class="inline-flex items-center gap-2 text-xs"
++    >
++        <span
++            class="size-1.5 shrink-0 rounded-sm bg-current"
++            aria-hidden="true"
++        />
++        <span class="capitalize">{{ severity }}</span>
++    </span>
++    <span v-else class="metadata">Not assessed</span>
++</template>
+--- a/resources/js/composables/useScanLive.ts
++++ b/resources/js/composables/useScanLive.ts
+@@ -0,0 +1,59 @@
++import { onBeforeUnmount, ref, watch } from 'vue';
++import { events } from '@/routes/projects/scans';
++import type { Scan, ScanSnapshot } from '@/types/scan';
++
++export function useScanLive(
++    projectId: () => string,
++    run: () => Scan | null,
++    update: (snapshot: ScanSnapshot) => void,
++    summary = false,
++) {
++    const connection = ref<
++        'idle' | 'connecting' | 'connected' | 'reconnecting'
++    >('idle');
++    let stream: EventSource | null = null;
++    let errorTimer: ReturnType<typeof setTimeout> | undefined;
++
++    function close() {
++        stream?.close();
++        stream = null;
++        clearTimeout(errorTimer);
++    }
++
++    watch(
++        () => [run()?.id, run()?.active] as const,
++        ([id, active]) => {
++            close();
++            if (!id || !active || typeof window === 'undefined') {
++                connection.value = 'idle';
++                return;
++            }
++            connection.value = 'connecting';
++            stream = new EventSource(
++                events.url(
++                    { project: projectId(), run: id },
++                    { query: { summary } },
++                ),
++            );
++            stream.onopen = () => {
++                clearTimeout(errorTimer);
++                connection.value = 'connected';
++            };
++            stream.onmessage = (event) => {
++                clearTimeout(errorTimer);
++                connection.value = 'connected';
++                update(JSON.parse(event.data) as ScanSnapshot);
++            };
++            stream.onerror = () => {
++                clearTimeout(errorTimer);
++                errorTimer = setTimeout(() => {
++                    connection.value = 'reconnecting';
++                }, 2500);
++            };
++        },
++        { immediate: true },
++    );
++
++    onBeforeUnmount(close);
++    return { connection };
++}
+--- a/resources/js/lib/highlight.ts
++++ b/resources/js/lib/highlight.ts
+@@ -0,0 +1,45 @@
++import { createHighlighterCore } from 'shiki/core';
++import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
++const highlighter = createHighlighterCore({
++    engine: createJavaScriptRegexEngine(),
++    themes: [
++        import('shiki/themes/github-light.mjs'),
++        import('shiki/themes/github-dark.mjs'),
++    ],
++    langs: [],
++});
++const languages = {
++    php: () => import('shiki/langs/php.mjs'),
++    javascript: () => import('shiki/langs/javascript.mjs'),
++    typescript: () => import('shiki/langs/typescript.mjs'),
++    python: () => import('shiki/langs/python.mjs'),
++    json: () => import('shiki/langs/json.mjs'),
++    html: () => import('shiki/langs/html.mjs'),
++    css: () => import('shiki/langs/css.mjs'),
++    sql: () => import('shiki/langs/sql.mjs'),
++};
++export async function highlight(content: string, file: string, dark: boolean) {
++    const ext = file.split('.').pop()?.toLowerCase() || '';
++    const aliases: Record<string, keyof typeof languages> = {
++        php: 'php',
++        js: 'javascript',
++        jsx: 'javascript',
++        mjs: 'javascript',
++        ts: 'typescript',
++        tsx: 'typescript',
++        py: 'python',
++        json: 'json',
++        html: 'html',
++        vue: 'html',
++        css: 'css',
++        sql: 'sql',
++    };
++    const language = aliases[ext];
++    if (!language) return null;
++    const instance = await highlighter;
++    await instance.loadLanguage(languages[language]());
++    return instance.codeToTokens(content, {
++        lang: language,
++        theme: dark ? 'github-dark' : 'github-light',
++    }).tokens;
++}
+--- a/resources/js/lib/scans.ts
++++ b/resources/js/lib/scans.ts
+@@ -0,0 +1,57 @@
++import type { Scan, Usage } from '@/types/scan';
++
++export const verdicts = [
++    'confirmed',
++    'suspected',
++    'blocked',
++    'inconclusive',
++] as const;
++export const labels: Record<string, string> = {
++    pending: 'Queued',
++    running: 'Running',
++    completed: 'Completed',
++    partial: 'Partial',
++    failed: 'Failed',
++    confirmed: 'Confirmed',
++    suspected: 'Suspected',
++    blocked: 'Blocked',
++    inconclusive: 'Inconclusive',
++};
++
++export function date(value: string | null, time = false): string {
++    return value
++        ? new Date(value).toLocaleString(
++              'en-US',
++              time
++                  ? { dateStyle: 'medium', timeStyle: 'short' }
++                  : { dateStyle: 'medium' },
++          )
++        : 'Not recorded';
++}
++
++export function duration(seconds: number | null): string {
++    if (seconds === null) return '—';
++    const value = Math.max(0, Math.floor(seconds));
++    const hours = Math.floor(value / 3600);
++    const minutes = Math.floor((value % 3600) / 60);
++    return `${hours ? `${hours}h ` : ''}${minutes}m ${value % 60}s`;
++}
++
++export function elapsed(run: Scan, now: Date): number | null {
++    return run.active && run.started_at
++        ? Math.max(
++              0,
++              (now.getTime() - new Date(run.started_at).getTime()) / 1000,
++          )
++        : run.duration_seconds;
++}
++
++export function budget(usage: Usage): number | null {
++    if (
++        typeof usage.points_used !== 'number' ||
++        typeof usage.point_limit !== 'number' ||
++        usage.point_limit <= 0
++    )
++        return null;
++    return Math.round((usage.points_used / usage.point_limit) * 100);
++}
+--- a/resources/js/pages/projects/Show.vue
++++ b/resources/js/pages/projects/Show.vue
+@@ -1,334 +1,267 @@
+ <script setup lang="ts">
+ import { Head, Link, router, useForm, usePoll } from '@inertiajs/vue3';
++import { computed, ref, watch } from 'vue';
+ import {
+     AlertCircle,
++    FileArchive,
++    Radar,
++    Upload,
+     ArrowRight,
+-    CircleCheck,
+-    FileArchive,
+-    FlaskConical,
+-    RefreshCw,
+-    Upload,
+-    Radar,
+-    FolderArchive
+ } from '@lucide/vue';
+-import { ref, watch } from 'vue';
+-import InputError from '@/components/InputError.vue';
+-import SourceStatus from '@/components/projects/SourceStatus.vue';
+ import SourceUpload from '@/components/projects/SourceUpload.vue';
+-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
++import ScanSummary from '@/components/projects/ScanSummary.vue';
++import ScanStatus from '@/components/projects/ScanStatus.vue';
++import { Badge } from '@/components/ui/badge';
+ import { Button } from '@/components/ui/button';
+-import { Badge } from '@/components/ui/badge';
+-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
++import { Card, CardContent } from '@/components/ui/card';
++import {
++    Dialog,
++    DialogContent,
++    DialogHeader,
++    DialogTitle,
++    DialogDescription,
++    DialogFooter,
++} from '@/components/ui/dialog';
+ import { Spinner } from '@/components/ui/spinner';
+-import { index, show as showProject } from '@/routes/projects';
+-import { show, store, retry_setup } from '@/routes/projects/sources';
++import { useScanLive } from '@/composables/useScanLive';
++import { date } from '@/lib/scans';
++import { index } from '@/routes/projects';
++import { store, retry_setup } from '@/routes/projects/sources';
++import { store as startScan } from '@/routes/projects/sources/audit_runs';
++import { show as showScan } from '@/routes/projects/scans';
+ import type {
+-    ProjectPreparationStatus,
+     Project,
+     ProjectSource,
++    ProjectPreparationStatus,
+ } from '@/types/project';
++import type { Scan } from '@/types/scan';
+ 
+ const props = defineProps<{
+     project: Project;
+     source: ProjectSource | null;
+-    step: 'source' | 'environment';
+     preparation_status: ProjectPreparationStatus | null;
++    can_start_scan: boolean;
++    scan_blocked_reason: string | null;
++    runs: { latest: Scan | null; history: Scan[] };
+ }>();
+-const form = useForm<{ source_type: string; source: File | null }>({
++const latest = ref(props.runs.latest);
++watch(
++    () => props.runs.latest,
++    (value) => (latest.value = value),
++);
++const { connection } = useScanLive(
++    () => props.project.id,
++    () => latest.value,
++    (snapshot) => {
++        const wasActive = latest.value?.active;
++        latest.value = snapshot.run;
++        if (wasActive && !snapshot.run.active)
++            router.reload({ only: ['can_start_scan', 'scan_blocked_reason'] });
++    },
++    true,
++);
++const readiness = computed(() =>
++    props.source?.status === 'failed' || props.preparation_status === 'failed'
++        ? 'Not ready'
++        : props.source?.status === 'pending' ||
++            props.source?.status === 'importing' ||
++            props.preparation_status === 'running'
++          ? 'Preparing'
++          : props.preparation_status === 'ready'
++            ? 'Ready'
++            : 'Not ready',
++);
++const { start, stop } = usePoll(
++    3000,
++    {
++        only: [
++            'source',
++            'preparation_status',
++            'can_start_scan',
++            'scan_blocked_reason',
++        ],
++    },
++    { autoStart: false },
++);
++watch(readiness, (state) => (state === 'Preparing' ? start() : stop()), {
++    immediate: true,
++});
++const uploadOpen = ref(false);
++const uploading = useForm<{ source_type: string; source: File | null }>({
+     source_type: 'zip',
+     source: null,
+ });
+-const submitError = ref('');
+-const refreshing = ref(false);
+-const { start: startPolling, stop: stopPolling } = usePoll(
+-    3000,
+-    { only: ['source', 'preparation_status'] },
+-    { autoStart: false },
+-);
+-
+-watch(
+-    () => [props.step, props.preparation_status],
+-    () => {
+-        if (
+-            props.step === 'environment' &&
+-            props.preparation_status === 'running'
+-        ) {
+-            startPolling();
+-        } else {
+-            stopPolling();
+-        }
+-    },
+-    { immediate: true },
+-);
+-
+-function submit() {
+-    submitError.value = '';
+-    form.post(store.url(props.project.id), {
++const scanForm = useForm({});
++const prepareForm = useForm({});
++const error = ref('');
++function upload() {
++    error.value = '';
++    uploading.post(store.url(props.project.id), {
+         forceFormData: true,
+         preserveScroll: true,
+-        onSuccess: () => form.reset(),
++        onSuccess: () => {
++            uploadOpen.value = false;
++            uploading.reset();
++        },
+         onHttpException: (response) => {
+-            submitError.value =
++            error.value =
+                 response.status === 413
+                     ? 'The file exceeds the server upload limit.'
+-                    : 'Unable to upload the source. Please try again.';
++                    : 'Unable to upload the source.';
+             return false;
+         },
+     });
+ }
+-
+-function retry() {
+-   
+-    router.post(retry_setup.url([props.project.id, props.source.id]));
++function scan() {
++    if (!props.source || !props.can_start_scan || scanForm.processing) return;
++    scanForm.post(
++        startScan.url({ project: props.project.id, source: props.source.id }),
++    );
+ }
+-
+-function refresh() {
+-    refreshing.value = true;
+-    router.reload({
+-        only: ['source', 'preparation_status'],
+-        onFinish: () => (refreshing.value = false),
+-    });
++function prepare() {
++    if (props.source)
++        prepareForm.post(
++            retry_setup.url({
++                project: props.project.id,
++                source: props.source.id,
++            }),
++            { preserveScroll: true },
++        );
+ }
+ </script>
+ 
+ <template>
+     <Head :title="project.name" />
+     <div class="page-container space-y-8">
+-        <Link
+-            :href="index()"
+-            class="text-sm break-words text-muted-foreground hover:text-foreground"
++        <Link :href="index()" class="metadata hover:text-foreground"
+             >Projects /
+             <span class="text-foreground">{{ project.name }}</span></Link
+         >
+         <header class="flex flex-wrap items-start justify-between gap-4">
+-            <div class="min-w-0 space-y-2">
++            <div class="min-w-0 space-y-3">
+                 <h1 class="page-title break-words">{{ project.name }}</h1>
++                <Badge
++                    :variant="
++                        readiness === 'Ready'
++                            ? 'success'
++                            : readiness === 'Preparing'
++                              ? 'info'
++                              : 'warning'
++                    "
++                    ><Spinner v-if="readiness === 'Preparing'" />{{
++                        readiness
++                    }}</Badge
++                >
+             </div>
+-            <div class="flex justify-end gap-4">
+-                <Button
+-                    variant="outline"
+-                    :disabled="refreshing"
+-                    @click="refresh"
+-                    ><RefreshCw :class="{ 'animate-spin': refreshing }" />
+-                    Refresh</Button
+-                >
+-                <Button
+-                    :disabled="refreshing"
+-                    @click="refresh"
+-                    ><Radar />
+-                    Start scan</Button
++            <div class="flex flex-wrap gap-2">
++                <Button variant="outline" @click="uploadOpen = true"
++                    ><Upload />{{
++                        source ? 'Upload new version' : 'Upload source'
++                    }}</Button
++                ><Button
++                    v-if="latest"
++                    :disabled="!can_start_scan || scanForm.processing"
++                    @click="scan"
++                    ><Spinner v-if="scanForm.processing" /><Radar v-else />Start
++                    scan</Button
+                 >
+             </div>
+         </header>
+-        <nav
+-            aria-label="Project steps"
+-            class="flex flex-wrap gap-2 border-b pb-4"
++        <nav aria-label="Project navigation" class="border-b pb-3">
++            <span class="text-sm font-medium">Overview</span>
++        </nav>
++        <p
++            v-for="(message, i) in [
++                ...Object.values(scanForm.errors),
++                ...Object.values(prepareForm.errors),
++            ]"
++            :key="i"
++            role="alert"
++            class="text-sm text-destructive"
+         >
+-            <Button
+-                :variant="step === 'source' ? 'secondary' : 'ghost'"
+-                as-child
+-            >
+-                <Link
+-                    :href="
+-                        showProject(project.id, { query: { step: 'source' } })
+-                    "
+-                    :aria-current="step === 'source' ? 'step' : undefined"
+-                >
+-                    <FileArchive /> Source
+-                </Link>
+-            </Button>
+-            <Button
+-                :variant="step === 'environment' ? 'secondary' : 'ghost'"
+-                as-child
+-            >
+-                <Link
+-                    :href="
+-                        showProject(project.id, {
+-                            query: { step: 'environment' },
+-                        })
+-                    "
+-                    :aria-current="step === 'environment' ? 'step' : undefined"
+-                >
+-                    <FlaskConical /> Status
+-                </Link>
+-            </Button>
+-        </nav>
+-        <div
+-            class="grid items-start gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"
+-        >
+-            <div v-if="step === 'source'" class="space-y-6">
+-                <Card>
+-                    <CardHeader
+-                        ><CardTitle>Active source</CardTitle></CardHeader
+-                    >
+-                    <CardContent v-if="source" class="space-y-5">
+-                        <div
+-                            class="flex flex-wrap items-center justify-between gap-3"
++            {{ message }}
++        </p>
++        <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
++            <div class="min-w-0 space-y-8">
++                <ScanSummary
++                    v-if="latest"
++                    :project-id="project.id"
++                    :run="latest"
++                    :reconnecting="connection === 'reconnecting'"
++                />
++                <Card v-else
++                    ><CardContent
++                        class="flex min-h-80 flex-col items-center justify-center gap-5 text-center sm:min-h-96"
++                        ><div class="rounded-xl border p-4">
++                            <Radar class="size-8 text-muted-foreground" />
++                        </div>
++                        <h2 class="text-xl font-semibold">
++                            {{
++                                readiness === 'Preparing'
++                                    ? 'Preparing your project'
++                                    : 'Run your first scan'
++                            }}
++                        </h2>
++                        <p
++                            v-if="scan_blocked_reason"
++                            class="max-w-sm text-sm text-muted-foreground"
+                         >
+-                            <div class="flex items-center gap-3">
+-                                <FileArchive
+-                                    class="size-5 text-muted-foreground"
+-                                /><span class="font-medium">{{project.name}} - {{ source.id }}</span>
+-                            </div>
+-                            <SourceStatus :status="source.status" />
+-                        </div>
+-                        <dl class="space-y-3 border-t pt-5">
+-                            <div class="flex justify-between gap-4">
+-                                <dt class="text-muted-foreground">Type</dt>
+-                                <div class="flex gap-2">
+-                                    <FolderArchive :size="18" />
+-                                    <dd class="uppercase">
+-                                        {{ source.source_type }}
+-                                    </dd>
+-                                </div>
+-                            </div>
+-                            <div class="flex justify-between gap-4">
+-                                <dt class="text-muted-foreground">Created</dt>
+-                                <dd>
+-                                    {{
+-                                        new Date(
+-                                            source.created_at,
+-                                        ).toLocaleDateString('en-US', {
+-                                            dateStyle: 'medium',
+-                                        })
+-                                    }}
+-                                </dd>
+-                            </div>
+-                        </dl>
+-                        <Alert v-if="source.error" variant="destructive"
+-                            ><AlertCircle /><AlertTitle
+-                                >Import failed</AlertTitle
+-                            ><AlertDescription class="break-words">{{
+-                                source.error
+-                            }}</AlertDescription></Alert
+-                        >
+-                        <Button variant="outline" size="sm" as-child
+-                            ><Link :href="show([project.id, source.id])"
+-                                >View source <ArrowRight /></Link
+-                        ></Button>
+-                    </CardContent>
+-                    <CardContent
+-                        v-else
+-                        class="flex flex-col items-center gap-3 py-6 text-center"
+-                        ><FileArchive class="size-6 text-muted-foreground" />
+-                        <p class="font-medium">
+-                            No source uploaded
+-                        </p></CardContent
+-                    >
+-                </Card>
+-                <Card>
+-                    <CardHeader
+-                        ><CardTitle>{{
+-                            source ? 'Upload new source' : 'Upload source'
+-                        }}</CardTitle></CardHeader
+-                    >
+-                    <CardContent>
+-                        <form class="space-y-5" @submit.prevent="submit">
+-                            <Alert v-if="submitError" variant="destructive"
+-                                ><AlertCircle /><AlertTitle
+-                                    >Upload failed</AlertTitle
+-                                ><AlertDescription>{{
+-                                    submitError
+-                                }}</AlertDescription></Alert
+-                            >
+-                            <SourceUpload
+-                                v-model="form.source"
+-                                :disabled="form.processing"
+-                                :error="form.errors.source"
+-                            />
+-                            <InputError :message="form.errors.source_type" />
+-                            <div
+-                                v-if="form.progress"
+-                                role="status"
+-                                aria-live="polite"
+-                                class="space-y-2"
+-                            >
+-                                <p class="metadata">
+-                                    Uploading: {{ form.progress.percentage }}%
+-                                </p>
+-                                <progress
+-                                    :value="form.progress.percentage"
+-                                    max="100"
+-                                    class="h-1.5 w-full accent-foreground"
+-                                    aria-label="Upload progress"
+-                                />
+-                            </div>
+-                            <div class="flex justify-end border-t pt-5">
+-                                <Button
+-                                    type="submit"
+-                                    :disabled="form.processing || !form.source"
+-                                    ><Spinner v-if="form.processing" /><Upload
+-                                        v-else
+-                                    />
+-                                    {{
+-                                        form.processing
+-                                            ? 'Uploading…'
+-                                            : 'Upload source'
+-                                    }}</Button
+-                                >
+-                            </div>
+-                        </form>
+-                    </CardContent>
+-                </Card>
++                            {{ scan_blocked_reason }}
++                        </p>
++                        <Button
++                            :disabled="!can_start_scan || scanForm.processing"
++                            @click="scan"
++                            ><Spinner v-if="scanForm.processing" /><Radar
++                                v-else
++                            />Start scan</Button
++                        ></CardContent
++                    ></Card
++                >
++                <section v-if="runs.history.length" class="space-y-4">
++                    <h2 class="section-title">Previous scans</h2>
++                    <div class="divide-y rounded-lg border">
++                        <Link
++                            v-for="run in runs.history"
++                            :key="run.id"
++                            :href="
++                                showScan({ project: project.id, run: run.id })
++                            "
++                            class="flex flex-wrap items-center gap-4 p-4 text-sm transition-colors hover:bg-accent"
++                            ><ScanStatus
++                                :status="run.status"
++                                :finalizing="run.finalizing" /><span
++                                class="flex-1"
++                                >{{ date(run.created_at, true) }}</span
++                            ><span class="metadata">{{
++                                run.findings_count === null
++                                    ? 'Results not available'
++                                    : `${run.findings_count} findings`
++                            }}</span
++                            ><ArrowRight class="size-4"
++                        /></Link>
++                    </div>
++                </section>
+             </div>
+-            <div v-else class="min-w-0">
+-                <Card>
+-                    <CardHeader><CardTitle>Status</CardTitle></CardHeader>
+-                    <CardContent>
+-                        <div
+-                            v-if="preparation_status === 'ready'"
+-                            role="status"
+-                            aria-live="polite"
+-                            class="flex items-center gap-3"
+-                        >
+-                        
+-                            <CircleCheck
+-                                class="size-5 text-success"
+-                                aria-hidden="true"
+-                            />
+-                            <span>Ready</span>
+-                        </div>
+-                        <Alert
+-                            v-else-if="preparation_status === 'failed'"
+-                            variant="destructive"
+-                        >
+-                            <AlertCircle />
+-                            <AlertTitle>Setup failed</AlertTitle>
+-                            <AlertDescription
+-                                >Unable to prepare the
+-                                project.</AlertDescription
+-                            >
+-                            <Button size="sm" style="width: 150px" class="my-2" @click="retry">
+-                                Retry
+-                            </Button>
+-                        </Alert>
+-                        <div
+-                            v-else-if="preparation_status === 'running'"
+-                            role="status"
+-                            aria-live="polite"
+-                            class="flex items-center gap-3 text-muted-foreground"
+-                        >
+-                            <Spinner />
+-                            <span>Loading…</span>
+-                        </div>
+-                        <Badge v-else variant="secondary">Not prepared</Badge>
+-                    </CardContent>
+-                </Card>
+-            </div>
+-            <aside class="min-w-0 space-y-5 rounded-lg border bg-muted p-5">
++            <aside class="space-y-5 rounded-lg border p-5">
+                 <h2 class="section-title">Project details</h2>
+-                <dl class="space-y-4">
+-                    <div class="space-y-1">
+-                        <dt class="metadata">Name</dt>
+-                        <dd class="break-words">{{ project.name }}</dd>
+-                    </div>
++                <dl class="space-y-4 text-sm">
+                     <div class="space-y-1">
+                         <dt class="metadata">Created</dt>
++                        <dd>{{ date(project.created_at) }}</dd>
++                    </div>
++                    <div class="space-y-1">
++                        <dt class="metadata">Source</dt>
++                        <dd>
++                            {{ source ? 'ZIP archive' : 'No source uploaded' }}
++                        </dd>
++                    </div>
++                    <div v-if="source" class="space-y-1">
++                        <dt class="metadata">Uploaded</dt>
+                         <dd>
+                             {{
+-                                new Date(project.created_at).toLocaleDateString(
+-                                    'en-US',
+-                                    { dateStyle: 'medium' },
++                                date(
++                                    source.uploaded_at || source.created_at,
++                                    true,
+                                 )
+                             }}
+                         </dd>
+@@ -338,7 +271,78 @@
+                         <dd>Private</dd>
+                     </div>
+                 </dl>
++                <div
++                    v-if="readiness === 'Not ready'"
++                    class="space-y-3 border-t pt-4"
++                >
++                    <p class="flex gap-2 text-sm text-warning">
++                        <AlertCircle class="size-4 shrink-0" />{{
++                            source?.status === 'failed'
++                                ? 'Source import failed. Upload a new version.'
++                                : scan_blocked_reason ||
++                                  'Upload a source to prepare your project.'
++                        }}
++                    </p>
++                    <Button
++                        v-if="source?.status === 'ready'"
++                        variant="outline"
++                        :disabled="prepareForm.processing"
++                        @click="prepare"
++                        ><Spinner v-if="prepareForm.processing" />{{
++                            preparation_status === 'failed'
++                                ? 'Retry preparation'
++                                : 'Prepare project'
++                        }}</Button
++                    >
++                </div>
++                <p
++                    v-else-if="latest && scan_blocked_reason"
++                    class="border-t pt-4 text-sm text-muted-foreground"
++                >
++                    {{ scan_blocked_reason }}
++                </p>
+             </aside>
+         </div>
++        <Dialog v-model:open="uploadOpen"
++            ><DialogContent
++                ><DialogHeader
++                    ><DialogTitle>{{
++                        source ? 'Upload new version' : 'Upload source'
++                    }}</DialogTitle
++                    ><DialogDescription class="sr-only"
++                        >Upload a ZIP archive for this
++                        project.</DialogDescription
++                    ></DialogHeader
++                >
++                <form class="space-y-5" @submit.prevent="upload">
++                    <SourceUpload
++                        v-model="uploading.source"
++                        :disabled="uploading.processing"
++                        :error="uploading.errors.source"
++                    />
++                    <p
++                        v-if="error || uploading.errors.source_type"
++                        role="alert"
++                        class="text-sm text-destructive"
++                    >
++                        {{ error || uploading.errors.source_type }}
++                    </p>
++                    <p v-if="uploading.progress" role="status" class="metadata">
++                        Uploading · {{ uploading.progress.percentage }}%
++                    </p>
++                    <DialogFooter
++                        ><Button
++                            type="submit"
++                            :disabled="
++                                uploading.processing || !uploading.source
++                            "
++                            ><Spinner v-if="uploading.processing" /><FileArchive
++                                v-else
++                            />Upload</Button
++                        ></DialogFooter
++                    >
++                </form></DialogContent
++            ></Dialog
++        >
+     </div>
+ </template>
+--- a/resources/js/pages/projects/scans/Finding.vue
++++ b/resources/js/pages/projects/scans/Finding.vue
+@@ -0,0 +1,221 @@
++<script setup lang="ts">
++import { Head, Link } from '@inertiajs/vue3';
++import { show } from '@/routes/projects/scans';
++import ScanStatus from '@/components/projects/ScanStatus.vue';
++import SeverityBadge from '@/components/projects/SeverityBadge.vue';
++import CodePreview from '@/components/projects/CodePreview.vue';
++import type { Finding, Scan } from '@/types/scan';
++import type { Project } from '@/types/project';
++defineProps<{ project: Project; run: Scan; finding: Finding }>();
++const query =
++    typeof window !== 'undefined'
++        ? new URLSearchParams(window.location.search)
++        : new URLSearchParams();
++const filters = { status: query.get('status'), search: query.get('search') };
++</script>
++<template>
++    <Head :title="finding.title" />
++    <div class="page-container space-y-8">
++        <Link
++            :href="
++                show(
++                    { project: project.id, run: run.id },
++                    { query: { tab: 'findings', ...filters } },
++                )
++            "
++            class="metadata hover:text-foreground"
++            >{{ project.name }} / Scan /
++            <span class="text-foreground">Findings</span></Link
++        >
++        <header class="space-y-4">
++            <div class="flex flex-wrap gap-2">
++                <ScanStatus
++                    :status="finding.status"
++                    finding
++                    :interrupted="!run.active"
++                /><SeverityBadge :severity="finding.severity" />
++            </div>
++            <h1 class="page-title max-w-4xl break-words">
++                {{ finding.title }}
++            </h1>
++            <p
++                v-if="run.active"
++                role="status"
++                class="text-sm text-muted-foreground"
++            >
++                Investigation in progress · this finding may change.
++            </p>
++        </header>
++        <div class="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_260px]">
++            <div class="min-w-0 space-y-8">
++                <section
++                    v-for="field in [
++                        'description',
++                        'conclusion',
++                        'reason',
++                        'recommendation',
++                    ] as const"
++                    v-show="finding[field]"
++                    :key="field"
++                    class="space-y-3"
++                >
++                    <h2 class="section-title capitalize">{{ field }}</h2>
++                    <p
++                        class="text-sm leading-7 break-words whitespace-pre-wrap"
++                    >
++                        {{ finding[field] }}
++                    </p>
++                </section>
++                <section class="space-y-4">
++                    <h2 class="section-title">Source evidence</h2>
++                    <p
++                        v-if="!finding.locations?.length"
++                        class="text-sm text-muted-foreground"
++                    >
++                        No source locations recorded.
++                    </p>
++                    <div
++                        v-for="(location, i) in finding.locations"
++                        :key="i"
++                        class="min-w-0 space-y-2"
++                    >
++                        <CodePreview
++                            v-if="location.snippet?.available"
++                            :content="location.snippet.content || ''"
++                            :file="location.file"
++                            :start-line="location.snippet.start_line"
++                        />
++                        <div v-else class="rounded-lg border p-4">
++                            <p class="technical-value text-sm">
++                                {{ location.file
++                                }}<template v-if="location.line"
++                                    >:{{ location.line }}</template
++                                >
++                            </p>
++                            <p class="mt-2 text-sm text-muted-foreground">
++                                {{
++                                    location.snippet?.reason ||
++                                    'Source preview is not available.'
++                                }}
++                            </p>
++                        </div>
++                        <p v-if="location.snippet?.truncated" class="metadata">
++                            Excerpt truncated · lines
++                            {{ location.snippet.start_line }}–{{
++                                location.snippet.end_line
++                            }}
++                        </p>
++                    </div>
++                </section>
++                <section class="space-y-4">
++                    <h2 class="section-title">HTTP evidence</h2>
++                    <p
++                        v-if="!finding.evidence?.http_transactions?.length"
++                        class="text-sm text-muted-foreground"
++                    >
++                        No HTTP evidence recorded.
++                    </p>
++                    <div
++                        v-for="(transaction, i) in finding.evidence
++                            ?.http_transactions"
++                        :key="i"
++                        class="space-y-4 rounded-lg border p-4"
++                    >
++                        <div class="flex flex-wrap gap-3 text-sm">
++                            <span v-if="transaction.method" class="font-mono">{{
++                                transaction.method
++                            }}</span
++                            ><span
++                                v-if="transaction.path"
++                                class="technical-value flex-1"
++                                >{{ transaction.path }}</span
++                            ><span
++                                v-if="transaction.status"
++                                class="font-mono"
++                                >{{ transaction.status }}</span
++                            >
++                        </div>
++                        <p
++                            v-if="!transaction.available"
++                            class="text-sm text-muted-foreground"
++                        >
++                            {{
++                                transaction.reason ||
++                                'HTTP evidence is not available.'
++                            }}
++                        </p>
++                        <template v-else
++                            ><div
++                                v-if="transaction.request_excerpt"
++                                class="space-y-2"
++                            >
++                                <h3 class="metadata">Request</h3>
++                                <CodePreview
++                                    :content="transaction.request_excerpt"
++                                />
++                                <p
++                                    v-if="transaction.request_truncated"
++                                    class="metadata"
++                                >
++                                    Request excerpt truncated
++                                </p>
++                            </div>
++                            <div
++                                v-if="
++                                    transaction.body_excerpt ||
++                                    transaction.grep_excerpt
++                                "
++                                class="space-y-2"
++                            >
++                                <h3 class="metadata">Response</h3>
++                                <CodePreview
++                                    :content="
++                                        transaction.body_excerpt ||
++                                        transaction.grep_excerpt ||
++                                        ''
++                                    "
++                                />
++                                <p
++                                    v-if="
++                                        transaction.body_truncated ||
++                                        transaction.grep_truncated
++                                    "
++                                    class="metadata"
++                                >
++                                    Response excerpt truncated
++                                </p>
++                            </div></template
++                        >
++                    </div>
++                </section>
++            </div>
++            <aside class="space-y-4 rounded-lg border p-5">
++                <h2 class="section-title">Classification</h2>
++                <dl class="space-y-4 text-sm">
++                    <div>
++                        <dt class="metadata">Category</dt>
++                        <dd class="mt-1 break-words">
++                            {{ finding.category || 'Not recorded' }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">Confidence</dt>
++                        <dd class="mt-1">
++                            {{ finding.confidence ?? 'Not assessed' }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">CWE</dt>
++                        <dd class="mt-1 break-words">
++                            {{
++                                finding.cwe_ids?.length
++                                    ? finding.cwe_ids.join(', ')
++                                    : 'Not recorded'
++                            }}
++                        </dd>
++                    </div>
++                </dl>
++            </aside>
++        </div>
++    </div>
++</template>
+--- a/resources/js/pages/projects/scans/Report.vue
++++ b/resources/js/pages/projects/scans/Report.vue
+@@ -0,0 +1,216 @@
++<script setup lang="ts">
++import { Head, Link } from '@inertiajs/vue3';
++import { Download, Printer } from '@lucide/vue';
++import { Button } from '@/components/ui/button';
++import ScanStatus from '@/components/projects/ScanStatus.vue';
++import ScanCounts from '@/components/projects/ScanCounts.vue';
++import ScanBudget from '@/components/projects/ScanBudget.vue';
++import SeverityBadge from '@/components/projects/SeverityBadge.vue';
++import { show, finding, download } from '@/routes/projects/scans';
++import { date, duration } from '@/lib/scans';
++import type { Project } from '@/types/project';
++import type { Scan, ScanReport } from '@/types/scan';
++defineProps<{ project: Project; run: Scan; report: ScanReport | null }>();
++function print() {
++    window.print();
++}
++</script>
++<template>
++    <Head :title="`Report · ${project.name}`" />
++    <div class="page-container scan-report space-y-8">
++        <Link
++            :href="show({ project: project.id, run: run.id })"
++            class="metadata print:hidden"
++            >{{ project.name }} / Scan /
++            <span class="text-foreground">Report</span></Link
++        >
++        <header class="flex flex-wrap items-start justify-between gap-4">
++            <div class="space-y-3">
++                <h1 class="page-title">Security report</h1>
++                <p class="text-lg break-words">{{ project.name }}</p>
++                <div class="flex flex-wrap items-center gap-3">
++                    <ScanStatus
++                        :status="run.status"
++                        :finalizing="run.finalizing"
++                    /><span class="metadata">{{
++                        date(run.created_at, true)
++                    }}</span>
++                </div>
++            </div>
++            <div v-if="report" class="flex flex-wrap gap-2 print:hidden">
++                <Button variant="outline" @click="print"
++                    ><Printer />Print</Button
++                ><Button variant="outline" as-child
++                    ><a
++                        :href="
++                            download.url(
++                                { project: project.id, run: run.id },
++                                { query: { format: 'markdown' } },
++                            )
++                        "
++                        ><Download />Markdown</a
++                    ></Button
++                ><Button as-child
++                    ><a
++                        :href="
++                            download.url(
++                                { project: project.id, run: run.id },
++                                { query: { format: 'json' } },
++                            )
++                        "
++                        ><Download />JSON</a
++                    ></Button
++                >
++            </div>
++        </header>
++        <div v-if="!report" class="rounded-lg border p-12 text-center">
++            <h2 class="section-title">Report not available</h2>
++            <p class="mt-3 text-sm text-muted-foreground">
++                {{
++                    run.active
++                        ? 'The report will be available after the scan finishes.'
++                        : 'No report was saved for this scan.'
++                }}
++            </p>
++        </div>
++        <template v-else>
++            <p
++                v-if="run.report_partial"
++                role="status"
++                class="rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm"
++            >
++                Partial report · results are limited to the evidence saved by
++                this scan.
++            </p>
++            <ScanCounts :counts="run.lead_counts" />
++            <section class="space-y-4 rounded-lg border p-5">
++                <h2 class="section-title">Scope and limitations</h2>
++                <dl class="grid gap-5 text-sm sm:grid-cols-3">
++                    <div>
++                        <dt class="metadata">Source uploaded</dt>
++                        <dd class="mt-1">
++                            {{ date(run.source.uploaded_at, true) }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">Duration</dt>
++                        <dd class="mt-1">
++                            {{
++                                run.duration_seconds === null
++                                    ? 'Not recorded'
++                                    : duration(run.duration_seconds)
++                            }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">Coverage</dt>
++                        <dd class="mt-1">
++                            {{
++                                report.coverage_complete === true
++                                    ? 'Reported complete'
++                                    : report.coverage_complete === false
++                                      ? 'Incomplete'
++                                      : 'Not recorded'
++                            }}
++                        </dd>
++                    </div>
++                </dl>
++                <p class="text-sm text-muted-foreground">
++                    {{ report.rejected_leads }} rejected hypotheses ·
++                    {{ report.deferred_leads }} deferred hypotheses
++                </p>
++            </section>
++            <section class="space-y-5">
++                <h2 class="section-title">Findings</h2>
++                <p
++                    v-if="!report.findings.length"
++                    class="rounded-lg border p-8 text-center text-sm text-muted-foreground"
++                >
++                    No findings recorded.
++                </p>
++                <article
++                    v-for="item in report.findings"
++                    :key="item.id"
++                    class="space-y-5 rounded-lg border p-5"
++                >
++                    <div class="space-y-3">
++                        <div class="flex flex-wrap gap-2">
++                            <ScanStatus
++                                :status="item.status"
++                                finding
++                                :interrupted="!run.active"
++                            /><SeverityBadge :severity="item.severity" />
++                        </div>
++                        <h3 class="font-semibold break-words">
++                            <Link
++                                :href="
++                                    finding({
++                                        project: project.id,
++                                        run: run.id,
++                                        lead: item.id,
++                                    })
++                                "
++                                class="hover:underline"
++                                >{{ item.title }}</Link
++                            >
++                        </h3>
++                    </div>
++                    <div
++                        v-for="field in [
++                            'description',
++                            'conclusion',
++                            'reason',
++                            'recommendation',
++                        ] as const"
++                        v-show="item[field]"
++                        :key="field"
++                        class="space-y-2"
++                    >
++                        <h4 class="text-sm font-medium capitalize">
++                            {{ field }}
++                        </h4>
++                        <p
++                            class="text-sm leading-7 break-words whitespace-pre-wrap"
++                        >
++                            {{ item[field] }}
++                        </p>
++                    </div>
++                    <p
++                        v-for="(location, i) in item.locations"
++                        :key="i"
++                        class="technical-value text-xs text-muted-foreground"
++                    >
++                        {{ location.file
++                        }}<template v-if="location.line"
++                            >:{{ location.line }}</template
++                        >
++                    </p>
++                </article>
++            </section>
++            <section class="space-y-4 rounded-lg border p-5">
++                <h2 class="section-title">Usage</h2>
++                <ScanBudget :usage="report.usage" class="max-w-sm" />
++                <dl class="grid gap-4 text-sm sm:grid-cols-3">
++                    <div>
++                        <dt class="metadata">Model requests</dt>
++                        <dd class="mt-1 tabular-nums">
++                            {{ report.usage.model_requests ?? 'Not recorded' }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">Input tokens</dt>
++                        <dd class="mt-1 tabular-nums">
++                            {{ report.usage.input_tokens ?? 'Not recorded' }}
++                        </dd>
++                    </div>
++                    <div>
++                        <dt class="metadata">Output tokens</dt>
++                        <dd class="mt-1 tabular-nums">
++                            {{ report.usage.output_tokens ?? 'Not recorded' }}
++                        </dd>
++                    </div>
++                </dl>
++            </section>
++        </template>
++    </div>
++</template>
+--- a/resources/js/pages/projects/scans/Show.vue
++++ b/resources/js/pages/projects/scans/Show.vue
+@@ -0,0 +1,254 @@
++<script setup lang="ts">
++import { Head, Link, router } from '@inertiajs/vue3';
++import { computed, ref, watch } from 'vue';
++import { useNow } from '@vueuse/core';
++import { Circle, FileText } from '@lucide/vue';
++import { Button } from '@/components/ui/button';
++import { Card, CardContent } from '@/components/ui/card';
++import ScanStatus from '@/components/projects/ScanStatus.vue';
++import ScanCounts from '@/components/projects/ScanCounts.vue';
++import ScanBudget from '@/components/projects/ScanBudget.vue';
++import FindingList from '@/components/projects/FindingList.vue';
++import { useScanLive } from '@/composables/useScanLive';
++import { date, duration, elapsed } from '@/lib/scans';
++import { show as projectRoute } from '@/routes/projects';
++import { report as reportRoute } from '@/routes/projects/scans';
++import type { Project } from '@/types/project';
++import type { ScanSnapshot } from '@/types/scan';
++const props = defineProps<ScanSnapshot & { project: Project }>();
++const snapshot = ref<ScanSnapshot>({
++    run: props.run,
++    findings: props.findings,
++    activity: props.activity,
++});
++watch(
++    () => props.run,
++    () =>
++        (snapshot.value = {
++            run: props.run,
++            findings: props.findings,
++            activity: props.activity,
++        }),
++);
++const { connection } = useScanLive(
++    () => props.project.id,
++    () => snapshot.value.run,
++    (value) => (snapshot.value = value),
++);
++const run = computed(() => snapshot.value.run);
++const now = useNow({ interval: 1000 });
++const query =
++    typeof window !== 'undefined'
++        ? new URLSearchParams(window.location.search)
++        : new URLSearchParams();
++const tab = ref(
++    query.get('tab') === 'findings'
++        ? 'findings'
++        : query.get('tab') === 'activity' || props.run.active
++          ? 'activity'
++          : 'findings',
++);
++const filter = ref(query.get('status') || 'all');
++const search = ref(query.get('search') || '');
++watch([tab, filter, search], () => {
++    const url = new URL(window.location.href);
++    url.searchParams.set('tab', tab.value);
++    filter.value === 'all'
++        ? url.searchParams.delete('status')
++        : url.searchParams.set('status', filter.value);
++    search.value
++        ? url.searchParams.set('search', search.value)
++        : url.searchParams.delete('search');
++    router.replace({
++        url: `${url.pathname}${url.search}`,
++        props: (current) => ({ ...current, ...snapshot.value }),
++        preserveState: true,
++        preserveScroll: true,
++    });
++});
++</script>
++<template>
++    <Head :title="`Scan · ${project.name}`" />
++    <div class="page-container space-y-8">
++        <Link
++            :href="projectRoute(project.id)"
++            class="metadata hover:text-foreground"
++            >{{ project.name }} /
++            <span class="text-foreground">Scan</span></Link
++        >
++        <header class="flex flex-wrap items-start justify-between gap-4">
++            <div class="space-y-3">
++                <div class="flex flex-wrap items-center gap-3">
++                    <h1 class="page-title">Scan</h1>
++                    <ScanStatus
++                        :status="run.status"
++                        :finalizing="run.finalizing"
++                    />
++                </div>
++                <p class="metadata">{{ date(run.created_at, true) }}</p>
++            </div>
++            <Button v-if="run.has_report" as-child
++                ><Link :href="reportRoute({ project: project.id, run: run.id })"
++                    ><FileText />View report</Link
++                ></Button
++            >
++        </header>
++        <Card
++            ><CardContent class="space-y-6"
++                ><div class="flex flex-wrap items-start justify-between gap-5">
++                    <div class="space-y-2">
++                        <h2 class="section-title">
++                            {{
++                                run.activity ||
++                                (run.active
++                                    ? 'Waiting to start'
++                                    : 'Scan results')
++                            }}
++                        </h2>
++                        <p class="metadata tabular-nums">
++                            {{
++                                run.started_at
++                                    ? duration(elapsed(run, now))
++                                    : 'Not started'
++                            }}{{ run.active && run.started_at ? ' elapsed' : ''
++                            }}<template v-if="run.checkpoint_at">
++                                · Updated
++                                {{ date(run.checkpoint_at, true) }}</template
++                            >
++                        </p>
++                    </div>
++                    <ScanBudget :usage="run.usage" class="w-full sm:w-64" />
++                </div>
++                <ScanCounts :counts="run.lead_counts" />
++                <p v-if="run.investigating_count" class="metadata">
++                    {{ run.investigating_count }}
++                    {{
++                        run.active
++                            ? 'investigating'
++                            : 'unfinished investigations'
++                    }}
++                </p>
++                <p
++                    v-if="connection === 'reconnecting'"
++                    role="status"
++                    class="text-sm text-warning"
++                >
++                    Reconnecting · showing the last saved update
++                </p></CardContent
++            ></Card
++        >
++        <nav aria-label="Scan navigation" class="flex gap-6 border-b">
++            <button
++                v-for="item in ['activity', 'findings']"
++                :key="item"
++                type="button"
++                :aria-current="tab === item ? 'page' : undefined"
++                :class="[
++                    'border-b-2 px-1 pb-3 text-sm font-medium capitalize',
++                    tab === item
++                        ? 'border-foreground'
++                        : 'border-transparent text-muted-foreground hover:text-foreground',
++                ]"
++                @click="tab = item"
++            >
++                {{ item
++                }}<span
++                    v-if="item === 'findings' && run.findings_count !== null"
++                    class="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs tabular-nums"
++                    >{{ run.findings_count }}</span
++                >
++            </button>
++        </nav>
++        <FindingList
++            v-if="tab === 'findings'"
++            v-model:filter="filter"
++            v-model:search="search"
++            :project-id="project.id"
++            :run-id="run.id"
++            :findings="snapshot.findings"
++            :available="run.has_results"
++            :active="run.active"
++        />
++        <div
++            v-else
++            class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]"
++        >
++            <section class="space-y-4">
++                <h2 class="section-title">Activity</h2>
++                <ol
++                    v-if="snapshot.activity.length"
++                    class="divide-y rounded-lg border"
++                >
++                    <li
++                        v-for="(event, i) in snapshot.activity"
++                        :key="`${event.at}-${i}`"
++                        class="flex gap-3 p-4"
++                    >
++                        <Circle
++                            class="mt-1 size-3 shrink-0 text-muted-foreground"
++                        />
++                        <div class="min-w-0 flex-1 space-y-2">
++                            <p class="text-sm break-words">{{ event.title }}</p>
++                            <ScanStatus
++                                v-if="event.status"
++                                :status="event.status"
++                                finding
++                            />
++                        </div>
++                        <time class="metadata shrink-0">{{
++                            new Date(event.at).toLocaleTimeString('en-US', {
++                                hour: '2-digit',
++                                minute: '2-digit',
++                            })
++                        }}</time>
++                    </li>
++                </ol>
++                <div
++                    v-else
++                    class="rounded-lg border p-12 text-center text-sm text-muted-foreground"
++                >
++                    {{
++                        run.active
++                            ? 'Waiting for activity'
++                            : 'No activity recorded'
++                    }}
++                </div>
++            </section>
++            <section class="space-y-4">
++                <h2 class="section-title">Latest results</h2>
++                <div v-if="snapshot.findings.length" class="space-y-3">
++                    <p
++                        v-for="item in snapshot.findings.slice(-5).reverse()"
++                        :key="item.id"
++                        class="rounded-lg border p-4 text-sm"
++                    >
++                        <span class="mb-2 block break-words">{{
++                            item.title
++                        }}</span
++                        ><ScanStatus
++                            :status="item.status"
++                            finding
++                            :interrupted="!run.active"
++                        />
++                    </p>
++                    <Button
++                        variant="outline"
++                        class="w-full"
++                        @click="tab = 'findings'"
++                        >View all findings</Button
++                    >
++                </div>
++                <p
++                    v-else
++                    class="rounded-lg border p-5 text-sm text-muted-foreground"
++                >
++                    {{
++                        run.has_results
++                            ? 'No findings yet'
++                            : 'Waiting for the first results'
++                    }}
++                </p>
++            </section>
++        </div>
++    </div>
++</template>
+--- a/resources/js/types/scan.ts
++++ b/resources/js/types/scan.ts
+@@ -0,0 +1,108 @@
++export type RunStatus =
++    | 'pending'
++    | 'running'
++    | 'completed'
++    | 'partial'
++    | 'failed';
++export type FindingStatus =
++    | 'confirmed'
++    | 'suspected'
++    | 'blocked'
++    | 'inconclusive'
++    | 'running';
++export type LeadCounts = Record<Exclude<FindingStatus, 'running'>, number>;
++export type Usage = {
++    points_used?: number | null;
++    point_limit?: number | null;
++    model_requests?: number | null;
++    input_tokens?: number | null;
++    output_tokens?: number | null;
++    estimated_cost_usd?: number | null;
++    provider_cost_usd?: number | null;
++    cost_accounting_complete?: boolean | null;
++};
++export type Scan = {
++    id: string;
++    status: RunStatus;
++    finalizing: boolean;
++    active: boolean;
++    created_at: string;
++    started_at: string | null;
++    finished_at: string | null;
++    duration_seconds: number | null;
++    source: { id: string; source_type: string; uploaded_at: string | null };
++    has_report: boolean;
++    report_partial: boolean;
++    has_results: boolean;
++    checkpoint_at: string | null;
++    version: number;
++    activity: string | null;
++    usage: Usage;
++    coverage_complete: boolean | null;
++    findings_count: number | null;
++    lead_counts: LeadCounts | null;
++    investigating_count: number | null;
++};
++export type FindingSummary = {
++    id: string;
++    title: string;
++    status: FindingStatus;
++    severity: string | null;
++    location: string | null;
++};
++export type Snippet = {
++    available: boolean;
++    reason?: string;
++    content?: string;
++    start_line?: number;
++    end_line?: number;
++    truncated?: boolean;
++};
++export type SourceLocation = {
++    file: string;
++    line?: number;
++    end_line?: number;
++    snippet?: Snippet;
++};
++export type HttpEvidence = {
++    available: boolean;
++    reason?: string;
++    method?: string;
++    path?: string;
++    status?: number;
++    actor?: string | Record<string, unknown>;
++    request_excerpt?: string;
++    request_truncated?: boolean;
++    body_excerpt?: string;
++    body_truncated?: boolean;
++    grep_excerpt?: string;
++    grep_truncated?: boolean;
++};
++export type Finding = {
++    id: string;
++    title: string;
++    status: FindingStatus;
++    severity: string | null;
++    confidence?: string | null;
++    description?: string;
++    conclusion?: string | null;
++    reason?: string | null;
++    recommendation?: string | null;
++    category?: string | null;
++    cwe_ids?: string[];
++    locations?: SourceLocation[];
++    evidence?: { http_transactions: HttpEvidence[] };
++};
++export type Activity = { title: string; status: string | null; at: string };
++export type ScanSnapshot = {
++    run: Scan;
++    findings: FindingSummary[];
++    activity: Activity[];
++};
++export type ScanReport = {
++    findings: Finding[];
++    coverage_complete: boolean | null;
++    usage: Usage;
++    rejected_leads: number;
++    deferred_leads: number;
++};
+--- a/routes/web.php
++++ b/routes/web.php
+@@ -15,6 +15,11 @@
+     Route::post('projects/{project}/sources/{source}/retry-setup', [ProjectSourceController::class, 'retrySetup'])->name('projects.sources.retry_setup');
+     Route::post('projects/{project}/sources/{source}/audit-runs', [AuditRunController::class, 'store'])->name('projects.sources.audit_runs.store');
+     Route::get('audit-runs/{auditRun}/progress', [AuditRunController::class, 'progress'])->name('audit_runs.progress');
++    Route::get('projects/{project}/audit-runs/{run}', [AuditRunController::class, 'show'])->name('projects.scans.show');
++    Route::get('projects/{project}/audit-runs/{run}/events', [AuditRunController::class, 'events'])->name('projects.scans.events');
++    Route::get('projects/{project}/audit-runs/{run}/findings/{lead}', [AuditRunController::class, 'finding'])->name('projects.scans.finding');
++    Route::get('projects/{project}/audit-runs/{run}/report', [AuditRunController::class, 'report'])->name('projects.scans.report');
++    Route::get('projects/{project}/audit-runs/{run}/report/export', [AuditRunController::class, 'download'])->name('projects.scans.download');
+ });
+ 
+ require __DIR__.'/settings.php';
+--- a/database/migrations/2026_10_18_230000_add_progress_to_audit_runs_table.php
++++ b/database/migrations/2026_10_18_230000_add_progress_to_audit_runs_table.php
+@@ -0,0 +1,29 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    public function up(): void
++    {
++        Schema::table('audit_runs', function (Blueprint $table) {
++            $table->jsonb('progress')->nullable();
++            $table->string('checkpoint_hash', 64)->nullable();
++            $table->timestampTz('checkpoint_at')->nullable();
++            $table->unsignedBigInteger('progress_version')->default(0);
++        });
++        Schema::table('audit_run_leads', function (Blueprint $table) {
++            $table->boolean('is_current')->default(true);
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::table('audit_run_leads', fn (Blueprint $table) => $table->dropColumn('is_current'));
++        Schema::table('audit_runs', function (Blueprint $table) {
++            $table->dropColumn(['progress', 'checkpoint_hash', 'checkpoint_at', 'progress_version']);
++        });
++    }
++};
+--- a/docs/audit-execution.md
++++ b/docs/audit-execution.md
+@@ -70,7 +70,8 @@
+ Use the authenticated browser session and request JSON. The endpoint requires
+ verified email and ownership of the run's project; unauthorized or unknown run
+ IDs return 404. It performs no run, area or lead writes and never dispatches work.
+-The UI has not been modified.
++The product UI uses the database-backed SSE endpoint described in
++[ui-demo-implementation.md](ui-demo-implementation.md).
+ 
+ ```json
+ {
+@@ -81,7 +82,7 @@
+   "duration_seconds": 600,
+   "poll_after_seconds": 30,
+   "snapshot_state": "available",
+-  "snapshot_source": "filesystem",
++  "snapshot_source": "database",
+   "snapshot_updated_at": "2026-10-18T10:09:58.000000Z",
+   "snapshot": {
+     "status": "running",
+@@ -106,19 +107,20 @@
+ ```
+ 
+ Poll after 30 seconds while `poll_after_seconds` is non-null. A terminal database
+-status returns null to stop polling. The database run status is authoritative;
++status with a finish timestamp returns null to stop polling. The database run status is authoritative;
+ `snapshot.status` separately describes the retained checkpoint. A checkpoint is
+ provisional while the run is active, or whenever the checkpoint itself is still
+ pending/running, including after an interrupted run has been marked failed.
+ 
+-During execution, `OutcomeService::progress` reads the current atomically published
+-`output/outcome.json`, validates schema/run/source identity and normalizes it with
+-`RunOutcome`. The result contains compact area and published-lead lists, summary
++During execution, `OutcomeService::progress` prefers the acquired database checkpoint.
++Before acquisition it can read the atomic `output/outcome.json`, validate final-format
++schema/run/source identity and normalize it with `RunOutcome`. The result contains compact area and published-lead lists, summary
+ counts and normalized usage. It excludes detailed narratives, source paths/snippets,
+ tool journals, HTTP bodies and debug diagnostics. Deferred Reader proposals remain
+ a separate summary count; they are not counted as published findings. Each response
+-reflects that snapshot alone, so a withdrawn finding is not retained from earlier
+-polls. Missing telemetry remains absent rather than being invented.
++reflects the saved projection. Missing intermediate rows do not delete earlier
++acquisitions; the terminal import excludes withdrawn findings from current results.
++Missing telemetry remains absent rather than being invented.
+ 
+ `snapshot_state` is `waiting` before a usable checkpoint exists for an active run,
+ `available` for a valid snapshot, `unavailable` for an unreadable checkpoint or a
+@@ -132,8 +134,9 @@
+ database snapshot and reports `snapshot_source: database`, without requiring the
+ raw file. Otherwise it can still show the last file checkpoint. The update timestamp
+ is file modification time for filesystem snapshots and row update time for stored
+-snapshots; it is not a process heartbeat. Final persistence remains exclusively in
+-the existing execution/import path. No SSE or background synchronization is added.
++snapshots; it is not a process heartbeat. Acquisition/final persistence runs only in
++the execution/import path. This JSON endpoint remains read-only; a separate SSE route
++publishes committed database snapshots for the UI.
+ 
+ Offline checks used a copy of the real outcome, including a running checkpoint,
+ withdrawn lead, failed-run checkpoint, missing/invalid/foreign files and a stored
+@@ -143,7 +146,8 @@
+ 
+ ## Project show prop
+ 
+-The existing page receives one additional prop; no UI components have changed:
++The overview consumes compact latest/history props; this example omits the additional
++live fields (active/finalizing, usage, checkpoint/version and current activity):
+ 
+ ```json
+ {
+--- a/docs/design-system.md
++++ b/docs/design-system.md
+@@ -54,6 +54,28 @@
+ New ZIP uploads replace the active source according to the existing action.
+ Project edit/delete, source delete and GitHub import are outside this UI's scope.
+ 
++## Project and scan pages
++
++Project overview absorbs preparation into Ready / Preparing / Not ready. Do not
++add Source or Environment navigation. First scan uses a prominent empty state;
++source replacement uses the existing upload control inside an accessible Dialog.
++ScanSummary shares status, elapsed time, real budget usage and nullable result
++counts with the permanent scan detail. Budget consumed is not completion or ETA.
++Before acquisition, counts are unavailable rather than zero. Connection loss
++retains saved results and shows Reconnecting without changing the scan verdict.
++
++Scan detail has Activity and Findings navigation. Filter/search state stays in
++the URL; lead identities remain stable during live updates. Confirmed, Suspected,
++Blocked and Inconclusive are distinct outcomes. Investigating/Unfinished appear
++separately from final finding counts. Severity may be Not assessed.
++
++CodePreview lazily loads Shiki with GitHub light/dark syntax palettes and selected
++language grammars. Syntax colors are the only content-specific palette; UI chrome
++uses semantic tokens. Unsupported or failed highlighting falls back to escaped
++plain text. Previews scroll inside bounded panels, preserve actual line numbers,
++and identify missing/truncated evidence. Narrative fields render as text, not HTML.
++Report HTML, browser print and JSON/Markdown exports use the same saved findings.
++
+ New shadcn components or blocks must be aligned with these tokens and defaults;
+ their upstream styling does not automatically follow this adaptation.
+ 
+--- a/docs/development.md
++++ b/docs/development.md
+@@ -128,7 +128,7 @@
+ order for the exact uploaded source, independently of Doctor readiness, and accepts
+ archived sources whose snapshots remain stored. Recon waits for both sensor outcomes;
+ failed sensors remain optional inputs rather than aborting the pipeline.
+-The status page keeps loading until Doctor and all four artifacts finalize. It shows
++The project overview shows Preparing until Doctor and all four artifacts finalize. It shows
+ ready for a usable Recon result, including partial results with advisory limitations;
+ Doctor/Recon/queue failures show a generic setup error. Individual producer details
+ remain in the database and are not displayed in the UI.
+@@ -167,10 +167,28 @@
+ Creating a project now automatically incurs Doctor and Recon provider calls when a
+ worker consumes the respective jobs. Doctor preparation retries use the same session, files and diagnostic
+ history, up to `sandbox.attempts`; technical failures stop immediately. Exhausted
+-preparation remains failed without a client-triggered restart. The environment page
++preparation remains failed without a client-triggered restart. The project overview
+ polls pending/running state and stops on ready/failed. Opening or refreshing the
+ page never starts a job. Queued output is visible in the worker terminal; conversation
+ and failure diagnostics remain in `agent_sessions`.
++
++## Product scan UI
++
++Project overview links to permanent scan, finding and report pages. Uploading a new
++version retains previous scans and requires Prepare project before scanning; this
++action reuses LabSetup and PrepareProjectAnalysis and creates a missing Lab when needed.
++Read-only pages never dispatch these jobs. Start scan uses the existing audit POST.
++
++Apply additive migrations with `php artisan migrate`. The progress migration adds
++checkpoint metadata and current-lead tracking; no database reset is required.
++Run `npm install` for the Shiki dependency, then `npm run build` as usual.
++
++Live updates use authenticated SSE and persist checkpoints while Docker runs.
++Use concurrent PHP workers and disable proxy buffering for the events route.
++The default single-worker development server can hold another request until the
++25-second SSE connection closes. This does not affect the queued audit lifecycle.
++No manual browser acceptance should start a real scan unless provider usage is
++explicitly intended. See [implementation notes](ui-demo-implementation.md).
+ 
+ ## Prepared Python Recon
+ 
+--- a/docs/run-persistence-and-evidence.md
++++ b/docs/run-persistence-and-evidence.md
+@@ -3,8 +3,9 @@
+ `OutcomeService` coordinates transactional result imports and on-demand report
+ presentation. `audit:run` imports a validated terminal outcome after target cleanup.
+ The already completed historical run is left untouched. `RunAuditAction` is shared
+-by the smoke-test command and the queued `RunAudit` job. No pruning or report UI
+-is implemented.
++by the smoke-test command and the queued `RunAudit` job. Pruning remains future work;
++the product report UI and incremental persistence are described in
++[ui-demo-implementation.md](ui-demo-implementation.md).
+ 
+ The original run/area migrations were updated and a new lead-table migration was
+ added. A verified version 2 development snapshot was rehearsed in an isolated
+@@ -71,8 +72,11 @@
+ a valid native failed outcome, preserving any already published results. Import
+ failure is recorded in `audit_runs.error` and `output/error.log`, causes exit code 1
+ and leaves the previous snapshot intact. It preserves a completed/partial agent
+-status and retains raw files for a later retry. Missing, invalid or nonterminal
+-checkpoints are not automatically imported.
++status and retains raw files for a later retry. During execution, valid nonterminal
++checkpoints are imported separately through `captureCheckpoint`; invalid/missing
++files retain the last saved projection. The terminal import marks leads absent from
++the final projection non-current without deleting their payloads. See
++[ARCHITECTURE.md](../ARCHITECTURE.md) for versioning and the SSE read path.
+ 
+ Presentation never writes to the database or mutates the DTO. Source snippets are
+ bounded to 40 lines; HTTP evidence is resolved by pass and request/response IDs.
+--- a/docs/ui-demo-implementation.md
++++ b/docs/ui-demo-implementation.md
+@@ -0,0 +1,61 @@
++# UI demo implementation — 18 October 2026
++
++Implemented the P0 in the Windows workspace reference
++`plans/ui-demo/implementation-plan.md` in this Laravel/Vue project.
++
++## Delivered
++
++- Project overview: preparation/readiness, first-scan empty state, start via the
++  existing POST, compact live summary, history and source-replacement Dialog.
++- Preparation for a replacement snapshot reuses the existing jobs, creating the
++  missing Lab when necessary. Read-only requests do not start work.
++- Permanent scan page with Activity/Findings, status/search filters, elapsed time,
++  budget consumed and four distinct outcome counts. Unknown values stay unknown.
++- Finding detail from persisted DTO fields, bounded source and HTTP previews,
++  missing/truncated states and lazy Shiki highlighting with plain-text fallback.
++- Saved HTML report, browser print and authorized JSON/Markdown exports.
++- Incremental checkpoint import during Docker execution, idempotent upserts,
++  withdrawal reconciliation and retained results on failure. Existing Python
++  checkpoints and model-facing contracts remain unchanged.
++- Database-backed SSE for overview/detail, persistent cursor, reconnect and a
++  bounded public activity list. Reports stay unavailable during finalization.
++
++## Routes and state
++
++All product routes are under `/projects/{project}/audit-runs/{run}`:
++base page, `/events`, `/findings/{lead}`, `/report` and
++`/report/export?format=json|markdown`. Each checks owner and resource membership.
++The existing `/audit-runs/{auditRun}/progress` JSON route remains available.
++
++`audit_runs.progress` stores absolute usage, coverage and the last 100 public
++events. Hash/time/version identify acquisitions. `audit_run_leads.is_current`
++excludes withdrawn leads without deleting historical payloads. The terminal DTO
++remains the final report source; saved checkpoints can form a labelled partial
++report after failure. Neither usage percentage nor elapsed time claims completion.
++
++## Verification
++
++- Production frontend build passed; targeted PHP syntax checks passed.
++- TypeScript reported no errors in the added/changed UI. The full project check
++  remains blocked by pre-existing demo components (missing Tabler/DnD/Zod imports,
++  missing Vue imports/table typing) and the generated RedirectController query
++  method. These unrelated files were not changed.
++- Offline database replay: intermediate envelope normalization, first lead before
++  finalization, idempotency, verdict/absolute-usage updates, pinned archived source,
++  identity rejection, terminal withdrawal, finalization/report gate, failure
++  retention, export, ownership, duplicate start and replacement preparation.
++- Process facade simulation: asynchronous checkpoints/output and container cleanup
++  after unexpected monitor failure. No Docker audit or provider request was run.
++- Browser: desktop 1440px/mobile 390px, light/dark, empty/results/blocked/missing
++  evidence, Shiki, filters, both exports and upload Dialog keyboard close. No
++  horizontal overflow or JavaScript page errors in these checks. Simulated live
++  producer updated verdict/budget and revealed the report without page reload.
++
++Deploy the additive migration and use concurrent PHP workers with unbuffered SSE.
++The default single-worker PHP dev server may delay other requests during an open
++stream. A real end-to-end audit was deliberately not run.
++
++## Deferred
++
++P1: mascot/sprite, cancellation, GitHub, editable targets/actors, retest and billing.
++P2: generated PDF, global sidebar, collaboration, automations and trends.
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -67,7 +67,7 @@
+ `{projectId}/labs/{labId}`; alla creazione non viene copiato il sorgente.
+ 
+ Project creation dispatches `LabSetup` after the database transaction and snapshot
+-storage have completed, then redirects to `projects/{project}?step=environment`.
++storage have completed, then redirects to the project overview.
+ The queued payload contains only the Lab ID; services are injected by the worker.
+ The job uses that Lab's fixed source, including an archived snapshot if the user
+ uploads another source while preparation is queued. A per-Lab queue lock prevents
+@@ -83,7 +83,7 @@
+ Worker failure/timeout also marks the Lab failed. Hard process termination cannot
+ guarantee Docker cleanup; normal errors execute the shared pipeline's `finally`.
+ 
+-The environment step polls only the active source and its latest Lab state every
++The project overview polls only the active source and preparation state every
+ three seconds while pending/running; terminal states stop polling. Ready shows a
+ confirmation icon, failure blocks further automatic preparation. GET/refresh/poll
+ never dispatch work. New source upload retains prior environments and does not
+@@ -244,22 +244,45 @@
+ Python through `DockerService::runAudit`, records the final status and owns teardown.
+ The authenticated project/source audit endpoint creates a pending run and dispatches
+ the `RunAudit` job after commit; that job calls the same Action without a CLI dependency.
+-Creation serializes on the Lab and rejects another pending/running audit on that Lab.
++Creation serializes on the Lab and rejects another queued, running or finalizing audit on that Lab.
+ Execution claims a pending run once, records start/finish timestamps and does not
+ restart an already claimed or terminal run. Jobs have one attempt and a 7200-second
+-timeout; infrastructure failure marks an unfinished run failed while preserving
+-an already published terminal result. Shared model/budget defaults remain a static
++timeout; infrastructure failure marks a run with no finish timestamp failed while preserving
++saved results. Shared model/budget defaults remain a static
+ array in the Action. Project show exposes compact latest/history summaries, with
+ database lead counts and report/coverage flags, without raw outcome or log payloads. See
+ `docs/python-global-run-integration.md` for launch instructions and offline checks.
+ 
+ `GET /audit-runs/{auditRun}/progress` exposes read-only progress to the owning,
+-verified user. It normalizes the latest filesystem checkpoint while execution is
+-active, with a 30-second polling hint, compact areas/published leads and budget
+-usage. Terminal runs use the stored DTO when available; interrupted runs can retain
+-a provisional file checkpoint. Database run status remains authoritative. The
+-endpoint neither imports progress nor changes the execution loop; final DB
+-persistence remains in `RunAuditAction`/`OutcomeService`. No progress UI is wired.
++verified user. It prefers the saved DTO or checkpoint projection, with a filesystem
++fallback before acquisition and a 30-second polling hint. GET requests never import
++or dispatch work. Database run status remains authoritative.
++
++While the Docker audit process is alive, `RunAuditAction` samples the existing atomic
++`output/outcome.json` through a two-second launcher callback, including silent process
++intervals. `OutcomeService::captureCheckpoint` validates run identity and any supplied
++source identity, then pins intermediate envelopes to server-owned source/run inputs;
++the final envelope keeps its strict validation. No Python loop, prompt or budget policy
++changes are involved. Area/lead upserts, absolute usage, checkpoint hash/time, a progress
++version and at most 100 public activity entries commit together. Repeated snapshots do
++not duplicate records or usage. Acquisition errors retain the previous valid state and
++never restart the model process. The terminal import marks previously acquired leads
++absent from the final projection `is_current=false`, preserving their history while
++excluding them from findings/counts. Deferred proposals stay separate from admitted
++investigations; active lifecycle states are provisional `running`, not final suspects.
++
++The authenticated SSE endpoint under `projects/{project}/audit-runs/{run}/events`
++publishes database snapshots after version/status changes, with heartbeats and a
++version/status/finish cursor. Reconnect reconstructs current state rather than replaying
++token or tool logs. Overview requests summary-only snapshots; scan detail also receives
++finding summaries and bounded activity. Streams close after 25 seconds or termination;
++the browser reconnects while active and closes on navigation. Deploy behind an HTTP
++server with concurrent workers and unbuffered SSE responses. No stream or page starts
++a scan. Findings resolve evidence on demand against the run's fixed source; report and
++JSON/Markdown exports use persisted product data. A terminal status alone does not make
++a report ready while cleanup/import is unfinished. Failed runs can expose saved
++checkpoints as partial reports; unfinished investigations keep their original verdict
++and are labelled Unfinished rather than assigned a fabricated result.
+ 
+ `ReconArea` stores definitions associated with a specific Recon artifact.
+ `AuditRunArea` identifies a pass/area execution within a run and can represent
+--- a/package.json
++++ b/package.json
+@@ -22,6 +22,7 @@
+         "clsx": "^2.1.1",
+         "laravel-vite-plugin": "^3.0.0",
+         "reka-ui": "^2.11.0",
++        "shiki": "^4.5.0",
+         "tailwind-merge": "^3.2.0",
+         "tailwindcss": "^4.1.1",
+         "tw-animate-css": "^1.2.5",
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -16,6 +16,7 @@
+                 "clsx": "^2.1.1",
+                 "laravel-vite-plugin": "^3.0.0",
+                 "reka-ui": "^2.11.0",
++                "shiki": "^4.5.0",
+                 "tailwind-merge": "^3.2.0",
+                 "tailwindcss": "^4.1.1",
+                 "tw-animate-css": "^1.2.5",
+@@ -1410,6 +1411,106 @@
+             "os": [
+                 "win32"
+             ]
++        },
++        "node_modules/@shikijs/core": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/core/-/core-4.5.0.tgz",
++            "integrity": "sha512-6CIgwq+bt2JZ3OSjb/nBkkwEf/CfpHcbam+Mg5Pllco7HAGRQ2/EFhZrrJtbyNTgKwknfVS+llsXGygiDGwJWw==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/primitive": "4.5.0",
++                "@shikijs/types": "4.5.0",
++                "@shikijs/vscode-textmate": "^10.0.2",
++                "@types/hast": "^3.0.5",
++                "hast-util-to-html": "^9.0.5"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/engine-javascript": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/engine-javascript/-/engine-javascript-4.5.0.tgz",
++            "integrity": "sha512-Ed6UdEj84LyYkwnxM5CvSMWAD+id9ExTYri0/+x41U9zrgNifPSS9lZm0JqBP0VfYI8yr8tY5nbNq9+p9R0kFA==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/types": "4.5.0",
++                "@shikijs/vscode-textmate": "^10.0.2",
++                "oniguruma-to-es": "^4.3.6"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/engine-oniguruma": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/engine-oniguruma/-/engine-oniguruma-4.5.0.tgz",
++            "integrity": "sha512-dKVmbJecVdB9recl8a/CU4jdpNXyjJQrIcesIkpS70s5HS02ohpnCSpMUbotPnEUzbAcLQ+S4hwZYbkBBiTcJw==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/types": "4.5.0",
++                "@shikijs/vscode-textmate": "^10.0.2"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/langs": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/langs/-/langs-4.5.0.tgz",
++            "integrity": "sha512-wwBTqwduXSz0X4v9Qa2EWeFaYJEw1clCncWjoRNQRbVDu3SPRTRWucnouYapKj3b8Q+sk/41Vbc4B5c8nuYzLA==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/types": "4.5.0"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/primitive": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/primitive/-/primitive-4.5.0.tgz",
++            "integrity": "sha512-UM7ShlA8oz0OWxLLO8BmO9Ip6fVqdkt8yF0EH7nOCqHfrx1eEAzF0ZUVK7L+I8NEgeu1PEWSRlxaiPPeCb4iDg==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/types": "4.5.0",
++                "@shikijs/vscode-textmate": "^10.0.2",
++                "@types/hast": "^3.0.5"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/themes": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/themes/-/themes-4.5.0.tgz",
++            "integrity": "sha512-zGb87H3UBbpuI4yoh5UguB1XbU+2BDU3kflM7UfZ+Cy2hWo9lBtqjSVK20gmLY6ukYl040hAypGXMgud9vul8Q==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/types": "4.5.0"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/types": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/@shikijs/types/-/types-4.5.0.tgz",
++            "integrity": "sha512-drtPrtD8N0DENyD2cyt6Ajy+IWsiCLgMxODwLTpvH1UsN6a9jf90tNTPjqwHvA+0Lzu9e0txk8DjfqH1p9UJRw==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/vscode-textmate": "^10.0.2",
++                "@types/hast": "^3.0.5"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
++        "node_modules/@shikijs/vscode-textmate": {
++            "version": "10.0.2",
++            "resolved": "https://registry.npmjs.org/@shikijs/vscode-textmate/-/vscode-textmate-10.0.2.tgz",
++            "integrity": "sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==",
++            "license": "MIT"
+         },
+         "node_modules/@standard-schema/spec": {
+             "version": "1.1.0",
+@@ -1775,6 +1876,7 @@
+             "integrity": "sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==",
+             "dev": true,
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@babel/code-frame": "^7.10.4",
+                 "@babel/runtime": "^7.12.5",
+@@ -2130,6 +2232,15 @@
+             "integrity": "sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==",
+             "license": "MIT"
+         },
++        "node_modules/@types/hast": {
++            "version": "3.0.5",
++            "resolved": "https://registry.npmjs.org/@types/hast/-/hast-3.0.5.tgz",
++            "integrity": "sha512-rp/ezSWaD1m44dPKICGhiskI13nVr7qTloFwDa/IYkhhf5nzwP+zIQcIJh3WIFSBOy/H1PzB40jPjMDksN4F+g==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "*"
++            }
++        },
+         "node_modules/@types/leaflet": {
+             "version": "1.7.6",
+             "resolved": "https://registry.npmjs.org/@types/leaflet/-/leaflet-1.7.6.tgz",
+@@ -2137,6 +2248,15 @@
+             "license": "MIT",
+             "dependencies": {
+                 "@types/geojson": "*"
++            }
++        },
++        "node_modules/@types/mdast": {
++            "version": "4.0.4",
++            "resolved": "https://registry.npmjs.org/@types/mdast/-/mdast-4.0.4.tgz",
++            "integrity": "sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "*"
+             }
+         },
+         "node_modules/@types/node": {
+@@ -2145,6 +2265,7 @@
+             "integrity": "sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==",
+             "devOptional": true,
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "undici-types": "~6.21.0"
+             }
+@@ -2228,11 +2349,23 @@
+                 "@types/geojson": "*"
+             }
+         },
++        "node_modules/@types/unist": {
++            "version": "3.0.3",
++            "resolved": "https://registry.npmjs.org/@types/unist/-/unist-3.0.3.tgz",
++            "integrity": "sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==",
++            "license": "MIT"
++        },
+         "node_modules/@types/web-bluetooth": {
+             "version": "0.0.21",
+             "resolved": "https://registry.npmjs.org/@types/web-bluetooth/-/web-bluetooth-0.0.21.tgz",
+             "integrity": "sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==",
+             "license": "MIT"
++        },
++        "node_modules/@ungap/structured-clone": {
++            "version": "1.4.0",
++            "resolved": "https://registry.npmjs.org/@ungap/structured-clone/-/structured-clone-1.4.0.tgz",
++            "integrity": "sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==",
++            "license": "ISC"
+         },
+         "node_modules/@unovis/dagre-layout": {
+             "version": "0.8.8-3",
+@@ -2258,6 +2391,7 @@
+             "resolved": "https://registry.npmjs.org/@unovis/ts/-/ts-1.7.1.tgz",
+             "integrity": "sha512-QjSbkTU+0PlLubGosCrvgxbtiaZgbSwyYDZQcx/pYYDLKmtlgSuuWkNJI5U496KO8no9mzxuKoM9Ogi2MRQI8Q==",
+             "license": "Apache-2.0",
++            "peer": true,
+             "dependencies": {
+                 "@emotion/css": "^11.7.1",
+                 "@juggle/resize-observer": "^3.3.1",
+@@ -2386,6 +2520,7 @@
+             "integrity": "sha512-iPKSE6Ibayey6HFgK1V1/aHgyhx7HSRk1YMi+lnBZGmlIiNV5Uc7xRkD9Su8RDylTxDECK23t7kTHdRKoqSYDQ==",
+             "dev": true,
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@testing-library/dom": "^10.4.1",
+                 "@testing-library/user-event": "^14.6.1",
+@@ -3336,6 +3471,16 @@
+                 "node": ">=6"
+             }
+         },
++        "node_modules/ccount": {
++            "version": "2.0.1",
++            "resolved": "https://registry.npmjs.org/ccount/-/ccount-2.0.1.tgz",
++            "integrity": "sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
++        },
+         "node_modules/chai": {
+             "version": "6.3.0",
+             "resolved": "https://registry.npmjs.org/chai/-/chai-6.3.0.tgz",
+@@ -3359,6 +3504,26 @@
+                 "url": "https://github.com/chalk/chalk?sponsor=1"
+             }
+         },
++        "node_modules/character-entities-html4": {
++            "version": "2.1.0",
++            "resolved": "https://registry.npmjs.org/character-entities-html4/-/character-entities-html4-2.1.0.tgz",
++            "integrity": "sha512-1v7fgQRj6hnSwFpq1Eu0ynr/CDEw0rXo2B61qXrLNdHZmPKgb7fqS1a2JwF0rISo9q77jDI8VMEHoApn8qDoZA==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
++        },
++        "node_modules/character-entities-legacy": {
++            "version": "3.0.0",
++            "resolved": "https://registry.npmjs.org/character-entities-legacy/-/character-entities-legacy-3.0.0.tgz",
++            "integrity": "sha512-RpPp0asT/6ufRm//AJVwpViZbGM/MkjQFxJccQRHmISF/22NBtsHqAWmL+/pmkPWoIUJdWyeVleTl1wydHATVQ==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
++        },
+         "node_modules/class-variance-authority": {
+             "version": "0.7.1",
+             "resolved": "https://registry.npmjs.org/class-variance-authority/-/class-variance-authority-0.7.1.tgz",
+@@ -3501,6 +3666,16 @@
+             },
+             "engines": {
+                 "node": "^12.20.0 || ^14.13.1 || >=16.0.0"
++            }
++        },
++        "node_modules/comma-separated-tokens": {
++            "version": "2.0.3",
++            "resolved": "https://registry.npmjs.org/comma-separated-tokens/-/comma-separated-tokens-2.0.3.tgz",
++            "integrity": "sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
+             }
+         },
+         "node_modules/commander": {
+@@ -3994,6 +4169,7 @@
+             "resolved": "https://registry.npmjs.org/d3-selection/-/d3-selection-3.0.0.tgz",
+             "integrity": "sha512-fmTRWbNMmsmWq6xJV8D19U/gw/bwrHfNXxrIN+HfZgnzqTHp9jOmKMhsTUjXOJnZOdZY9Q28y4yebKzqDKlxlQ==",
+             "license": "ISC",
++            "peer": true,
+             "engines": {
+                 "node": ">=12"
+             }
+@@ -4121,7 +4297,6 @@
+             "version": "2.0.3",
+             "resolved": "https://registry.npmjs.org/dequal/-/dequal-2.0.3.tgz",
+             "integrity": "sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==",
+-            "dev": true,
+             "license": "MIT",
+             "engines": {
+                 "node": ">=6"
+@@ -4134,6 +4309,19 @@
+             "license": "Apache-2.0",
+             "engines": {
+                 "node": ">=8"
++            }
++        },
++        "node_modules/devlop": {
++            "version": "1.1.0",
++            "resolved": "https://registry.npmjs.org/devlop/-/devlop-1.1.0.tgz",
++            "integrity": "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==",
++            "license": "MIT",
++            "dependencies": {
++                "dequal": "^2.0.0"
++            },
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
+             }
+         },
+         "node_modules/dom-accessibility-api": {
+@@ -4381,6 +4569,42 @@
+                 "node": ">= 0.4"
+             }
+         },
++        "node_modules/hast-util-to-html": {
++            "version": "9.0.5",
++            "resolved": "https://registry.npmjs.org/hast-util-to-html/-/hast-util-to-html-9.0.5.tgz",
++            "integrity": "sha512-OguPdidb+fbHQSU4Q4ZiLKnzWo8Wwsf5bZfbvu7//a9oTYoqD/fWpe96NuHkoS9h0ccGOTe0C4NGXdtS0iObOw==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/hast": "^3.0.0",
++                "@types/unist": "^3.0.0",
++                "ccount": "^2.0.0",
++                "comma-separated-tokens": "^2.0.0",
++                "hast-util-whitespace": "^3.0.0",
++                "html-void-elements": "^3.0.0",
++                "mdast-util-to-hast": "^13.0.0",
++                "property-information": "^7.0.0",
++                "space-separated-tokens": "^2.0.0",
++                "stringify-entities": "^4.0.0",
++                "zwitch": "^2.0.4"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/hast-util-whitespace": {
++            "version": "3.0.0",
++            "resolved": "https://registry.npmjs.org/hast-util-whitespace/-/hast-util-whitespace-3.0.0.tgz",
++            "integrity": "sha512-88JUN06ipLwsnv+dVn+OIYOvAuvBMy/Qoi6O7mQHxdPXpjy+Cd6xRkWwux7DKO+4sYILtLBRIKgsdpS2gQc7qw==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/hast": "^3.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
+         "node_modules/he": {
+             "version": "1.2.0",
+             "resolved": "https://registry.npmjs.org/he/-/he-1.2.0.tgz",
+@@ -4389,6 +4613,16 @@
+             "license": "MIT",
+             "bin": {
+                 "he": "bin/he"
++            }
++        },
++        "node_modules/html-void-elements": {
++            "version": "3.0.0",
++            "resolved": "https://registry.npmjs.org/html-void-elements/-/html-void-elements-3.0.0.tgz",
++            "integrity": "sha512-bEqo66MRXsUGxWHV5IP0PUiAWwoEjba4VCzg0LjFJBpchPaTfyfCKTG6bc5F8ucKec3q5y6qOdGyYTSBEvhCrg==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
+             }
+         },
+         "node_modules/iconv-lite": {
+@@ -5036,6 +5270,116 @@
+                 "gl-style-validate": "dist/gl-style-validate.mjs"
+             }
+         },
++        "node_modules/mdast-util-to-hast": {
++            "version": "13.2.1",
++            "resolved": "https://registry.npmjs.org/mdast-util-to-hast/-/mdast-util-to-hast-13.2.1.tgz",
++            "integrity": "sha512-cctsq2wp5vTsLIcaymblUriiTcZd0CwWtCbLvrOzYCDZoWyMNV8sZ7krj09FSnsiJi3WVsHLM4k6Dq/yaPyCXA==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/hast": "^3.0.0",
++                "@types/mdast": "^4.0.0",
++                "@ungap/structured-clone": "^1.0.0",
++                "devlop": "^1.0.0",
++                "micromark-util-sanitize-uri": "^2.0.0",
++                "trim-lines": "^3.0.0",
++                "unist-util-position": "^5.0.0",
++                "unist-util-visit": "^5.0.0",
++                "vfile": "^6.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/micromark-util-character": {
++            "version": "2.1.1",
++            "resolved": "https://registry.npmjs.org/micromark-util-character/-/micromark-util-character-2.1.1.tgz",
++            "integrity": "sha512-wv8tdUTJ3thSFFFJKtpYKOYiGP2+v96Hvk4Tu8KpCAsTMs6yi+nVmGh1syvSCsaxz45J6Jbw+9DD6g97+NV67Q==",
++            "funding": [
++                {
++                    "type": "GitHub Sponsors",
++                    "url": "https://github.com/sponsors/unifiedjs"
++                },
++                {
++                    "type": "OpenCollective",
++                    "url": "https://opencollective.com/unified"
++                }
++            ],
++            "license": "MIT",
++            "dependencies": {
++                "micromark-util-symbol": "^2.0.0",
++                "micromark-util-types": "^2.0.0"
++            }
++        },
++        "node_modules/micromark-util-encode": {
++            "version": "2.0.1",
++            "resolved": "https://registry.npmjs.org/micromark-util-encode/-/micromark-util-encode-2.0.1.tgz",
++            "integrity": "sha512-c3cVx2y4KqUnwopcO9b/SCdo2O67LwJJ/UyqGfbigahfegL9myoEFoDYZgkT7f36T0bLrM9hZTAaAyH+PCAXjw==",
++            "funding": [
++                {
++                    "type": "GitHub Sponsors",
++                    "url": "https://github.com/sponsors/unifiedjs"
++                },
++                {
++                    "type": "OpenCollective",
++                    "url": "https://opencollective.com/unified"
++                }
++            ],
++            "license": "MIT"
++        },
++        "node_modules/micromark-util-sanitize-uri": {
++            "version": "2.0.1",
++            "resolved": "https://registry.npmjs.org/micromark-util-sanitize-uri/-/micromark-util-sanitize-uri-2.0.1.tgz",
++            "integrity": "sha512-9N9IomZ/YuGGZZmQec1MbgxtlgougxTodVwDzzEouPKo3qFWvymFHWcnDi2vzV1ff6kas9ucW+o3yzJK9YB1AQ==",
++            "funding": [
++                {
++                    "type": "GitHub Sponsors",
++                    "url": "https://github.com/sponsors/unifiedjs"
++                },
++                {
++                    "type": "OpenCollective",
++                    "url": "https://opencollective.com/unified"
++                }
++            ],
++            "license": "MIT",
++            "dependencies": {
++                "micromark-util-character": "^2.0.0",
++                "micromark-util-encode": "^2.0.0",
++                "micromark-util-symbol": "^2.0.0"
++            }
++        },
++        "node_modules/micromark-util-symbol": {
++            "version": "2.0.1",
++            "resolved": "https://registry.npmjs.org/micromark-util-symbol/-/micromark-util-symbol-2.0.1.tgz",
++            "integrity": "sha512-vs5t8Apaud9N28kgCrRUdEed4UJ+wWNvicHLPxCa9ENlYuAY31M0ETy5y1vA33YoNPDFTghEbnh6efaE8h4x0Q==",
++            "funding": [
++                {
++                    "type": "GitHub Sponsors",
++                    "url": "https://github.com/sponsors/unifiedjs"
++                },
++                {
++                    "type": "OpenCollective",
++                    "url": "https://opencollective.com/unified"
++                }
++            ],
++            "license": "MIT"
++        },
++        "node_modules/micromark-util-types": {
++            "version": "2.0.3",
++            "resolved": "https://registry.npmjs.org/micromark-util-types/-/micromark-util-types-2.0.3.tgz",
++            "integrity": "sha512-oxB2Ik03hI0gv+VNn9tnh1t1YEe9MDPptViAEgfdf3YQHsn0pzGTgCdlSCJXcwhqm8phaEuM7zeEu3QQzVBrPg==",
++            "funding": [
++                {
++                    "type": "GitHub Sponsors",
++                    "url": "https://github.com/sponsors/unifiedjs"
++                },
++                {
++                    "type": "OpenCollective",
++                    "url": "https://opencollective.com/unified"
++                }
++            ],
++            "license": "MIT"
++        },
+         "node_modules/mimic-fn": {
+             "version": "2.1.0",
+             "resolved": "https://registry.npmjs.org/mimic-fn/-/mimic-fn-2.1.0.tgz",
+@@ -5152,6 +5496,23 @@
+             },
+             "funding": {
+                 "url": "https://github.com/sponsors/sindresorhus"
++            }
++        },
++        "node_modules/oniguruma-parser": {
++            "version": "0.12.2",
++            "resolved": "https://registry.npmjs.org/oniguruma-parser/-/oniguruma-parser-0.12.2.tgz",
++            "integrity": "sha512-6HVa5oIrgMC6aA6WF6XyyqbhRPJrKR02L20+2+zpDtO5QAzGHAUGw5TKQvwi5vctNnRHkJYmjAhRVQF2EKdTQw==",
++            "license": "MIT"
++        },
++        "node_modules/oniguruma-to-es": {
++            "version": "4.3.6",
++            "resolved": "https://registry.npmjs.org/oniguruma-to-es/-/oniguruma-to-es-4.3.6.tgz",
++            "integrity": "sha512-csuQ9x3Yr0cEIs/Zgx/OEt9iBw9vqIunAPQkx19R/fiMq2oGVTgcMqO/V3Ybqefr1TBvosI6jU539ksaBULJyA==",
++            "license": "MIT",
++            "dependencies": {
++                "oniguruma-parser": "^0.12.2",
++                "regex": "^6.1.0",
++                "regex-recursion": "^6.0.2"
+             }
+         },
+         "node_modules/oxfmt": {
+@@ -5261,6 +5622,7 @@
+             "integrity": "sha512-KjK/XLcXr1DSyonKhsuFqJRiuKqcyG9j3LJ8nkOsrLzGvodBPqzHOKauy10asLMDI0sUpvb+1sxlzff3udZvfg==",
+             "dev": true,
+             "license": "MIT",
++            "peer": true,
+             "bin": {
+                 "tsgolint": "bin/tsgolint.js"
+             },
+@@ -5365,6 +5727,7 @@
+             "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz",
+             "integrity": "sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==",
+             "license": "MIT",
++            "peer": true,
+             "engines": {
+                 "node": ">=12"
+             },
+@@ -5454,6 +5817,16 @@
+                 "url": "https://github.com/chalk/ansi-styles?sponsor=1"
+             }
+         },
++        "node_modules/property-information": {
++            "version": "7.2.0",
++            "resolved": "https://registry.npmjs.org/property-information/-/property-information-7.2.0.tgz",
++            "integrity": "sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
++        },
+         "node_modules/protocol-buffers-schema": {
+             "version": "3.6.1",
+             "resolved": "https://registry.npmjs.org/protocol-buffers-schema/-/protocol-buffers-schema-3.6.1.tgz",
+@@ -5466,16 +5839,6 @@
+             "integrity": "sha512-XdjUArbK4Bm5fLLvlm5KpTFOiOThgfWWI4axAZDWg4E/0mKdZyI9tNEfds27qCi1ze/vwTR16kvmmGhRra3c2g==",
+             "license": "ISC"
+         },
+-        "node_modules/react": {
+-            "version": "19.3.0",
+-            "resolved": "https://registry.npmjs.org/react/-/react-19.3.0.tgz",
+-            "integrity": "sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==",
+-            "license": "MIT",
+-            "optional": true,
+-            "engines": {
+-                "node": ">=0.10.0"
+-            }
+-        },
+         "node_modules/react-is": {
+             "version": "17.0.2",
+             "resolved": "https://registry.npmjs.org/react-is/-/react-is-17.0.2.tgz",
+@@ -5498,6 +5861,30 @@
+             "peerDependencies": {
+                 "react": "^19.2.0"
+             }
++        },
++        "node_modules/regex": {
++            "version": "6.1.0",
++            "resolved": "https://registry.npmjs.org/regex/-/regex-6.1.0.tgz",
++            "integrity": "sha512-6VwtthbV4o/7+OaAF9I5L5V3llLEsoPyq9P1JVXkedTP33c7MfCG0/5NOPcSJn0TzXcG9YUrR0gQSWioew3LDg==",
++            "license": "MIT",
++            "dependencies": {
++                "regex-utilities": "^2.3.0"
++            }
++        },
++        "node_modules/regex-recursion": {
++            "version": "6.0.2",
++            "resolved": "https://registry.npmjs.org/regex-recursion/-/regex-recursion-6.0.2.tgz",
++            "integrity": "sha512-0YCaSCq2VRIebiaUviZNs0cBz1kg5kVS2UKUfNIx8YVs1cN3AV7NTctO5FOKBA+UT2BPJIWZauYHPqJODG50cg==",
++            "license": "MIT",
++            "dependencies": {
++                "regex-utilities": "^2.3.0"
++            }
++        },
++        "node_modules/regex-utilities": {
++            "version": "2.3.0",
++            "resolved": "https://registry.npmjs.org/regex-utilities/-/regex-utilities-2.3.0.tgz",
++            "integrity": "sha512-8VhliFJAWRaUiVvREIiW2NXXTmHs4vMNnSzuJVhscgmGav3g9VDxLrQndI3dZZVVdp0ZO/5v0xmX516/7M9cng==",
++            "license": "MIT"
+         },
+         "node_modules/reka-ui": {
+             "version": "2.11.0",
+@@ -5674,6 +6061,25 @@
+                 "url": "https://github.com/sponsors/ljharb"
+             }
+         },
++        "node_modules/shiki": {
++            "version": "4.5.0",
++            "resolved": "https://registry.npmjs.org/shiki/-/shiki-4.5.0.tgz",
++            "integrity": "sha512-OcRW72ngQvc+MSVWBRIovC/BTW589iUE/Vxav7VeM4RcY9MUjqB+IR6ILG1k9nuW6LiG/nct9uma4/MBtnZbmQ==",
++            "license": "MIT",
++            "dependencies": {
++                "@shikijs/core": "4.5.0",
++                "@shikijs/engine-javascript": "4.5.0",
++                "@shikijs/engine-oniguruma": "4.5.0",
++                "@shikijs/langs": "4.5.0",
++                "@shikijs/themes": "4.5.0",
++                "@shikijs/types": "4.5.0",
++                "@shikijs/vscode-textmate": "^10.0.2",
++                "@types/hast": "^3.0.5"
++            },
++            "engines": {
++                "node": ">=20"
++            }
++        },
+         "node_modules/siginfo": {
+             "version": "2.0.0",
+             "resolved": "https://registry.npmjs.org/siginfo/-/siginfo-2.0.0.tgz",
+@@ -5751,6 +6157,16 @@
+                 "node": ">=0.10.0"
+             }
+         },
++        "node_modules/space-separated-tokens": {
++            "version": "2.0.2",
++            "resolved": "https://registry.npmjs.org/space-separated-tokens/-/space-separated-tokens-2.0.2.tgz",
++            "integrity": "sha512-PEGlAwrG8yXGXRjW32fGbg66JAlOAwbObuqVoJpv/mRgoWDQfgH1wDPvtzWyUSNAXBGSk8h755YDbbcEy3SH2Q==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
++        },
+         "node_modules/stack-utils": {
+             "version": "2.0.6",
+             "resolved": "https://registry.npmjs.org/stack-utils/-/stack-utils-2.0.6.tgz",
+@@ -5793,6 +6209,20 @@
+             },
+             "funding": {
+                 "url": "https://github.com/sponsors/sindresorhus"
++            }
++        },
++        "node_modules/stringify-entities": {
++            "version": "4.0.4",
++            "resolved": "https://registry.npmjs.org/stringify-entities/-/stringify-entities-4.0.4.tgz",
++            "integrity": "sha512-IwfBptatlO+QCJUo19AqvrPNqlVMpW9YEL2LIVY+Rpv2qsjCGxaDLNRgeGsQWJhfItebuJhsGSLjaBbNSQ+ieg==",
++            "license": "MIT",
++            "dependencies": {
++                "character-entities-html4": "^2.0.0",
++                "character-entities-legacy": "^3.0.0"
++            },
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
+             }
+         },
+         "node_modules/strip-ansi": {
+@@ -6031,6 +6461,16 @@
+             "license": "MIT",
+             "bin": {
+                 "tree-kill": "cli.js"
++            }
++        },
++        "node_modules/trim-lines": {
++            "version": "3.0.1",
++            "resolved": "https://registry.npmjs.org/trim-lines/-/trim-lines-3.0.1.tgz",
++            "integrity": "sha512-kRj8B+YHZCc9kQYdWfJB2/oUl9rA99qbowYYBtr4ui4mZyAQ2JpvVBd/6U2YloATfqBhBTSMhTpgBHtU0Mf3Rg==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
+             }
+         },
+         "node_modules/tslib": {
+@@ -6070,6 +6510,7 @@
+             "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+             "devOptional": true,
+             "license": "Apache-2.0",
++            "peer": true,
+             "bin": {
+                 "tsc": "bin/tsc",
+                 "tsserver": "bin/tsserver"
+@@ -6085,12 +6526,109 @@
+             "devOptional": true,
+             "license": "MIT"
+         },
++        "node_modules/unist-util-is": {
++            "version": "6.0.1",
++            "resolved": "https://registry.npmjs.org/unist-util-is/-/unist-util-is-6.0.1.tgz",
++            "integrity": "sha512-LsiILbtBETkDz8I9p1dQ0uyRUWuaQzd/cuEeS1hoRSyW5E5XGmTzlwY1OrNzzakGowI9Dr/I8HVaw4hTtnxy8g==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/unist-util-position": {
++            "version": "5.0.0",
++            "resolved": "https://registry.npmjs.org/unist-util-position/-/unist-util-position-5.0.0.tgz",
++            "integrity": "sha512-fucsC7HjXvkB5R3kTCO7kUjRdrS0BJt3M/FPxmHMBOm8JQi2BsHAHFsy27E0EolP8rp0NzXsJ+jNPyDWvOJZPA==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/unist-util-stringify-position": {
++            "version": "4.0.0",
++            "resolved": "https://registry.npmjs.org/unist-util-stringify-position/-/unist-util-stringify-position-4.0.0.tgz",
++            "integrity": "sha512-0ASV06AAoKCDkS2+xw5RXJywruurpbC4JZSm7nr7MOt1ojAzvyyaO+UxZf18j8FCF6kmzCZKcAgN/yu2gm2XgQ==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/unist-util-visit": {
++            "version": "5.1.0",
++            "resolved": "https://registry.npmjs.org/unist-util-visit/-/unist-util-visit-5.1.0.tgz",
++            "integrity": "sha512-m+vIdyeCOpdr/QeQCu2EzxX/ohgS8KbnPDgFni4dQsfSCtpz8UqDyY5GjRru8PDKuYn7Fq19j1CQ+nJSsGKOzg==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0",
++                "unist-util-is": "^6.0.0",
++                "unist-util-visit-parents": "^6.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/unist-util-visit-parents": {
++            "version": "6.0.2",
++            "resolved": "https://registry.npmjs.org/unist-util-visit-parents/-/unist-util-visit-parents-6.0.2.tgz",
++            "integrity": "sha512-goh1s1TBrqSqukSc8wrjwWhL0hiJxgA8m4kFxGlQ+8FYQ3C/m11FcTs4YYem7V664AhHVvgoQLk890Ssdsr2IQ==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0",
++                "unist-util-is": "^6.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/vfile": {
++            "version": "6.0.3",
++            "resolved": "https://registry.npmjs.org/vfile/-/vfile-6.0.3.tgz",
++            "integrity": "sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0",
++                "vfile-message": "^4.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
++        "node_modules/vfile-message": {
++            "version": "4.0.3",
++            "resolved": "https://registry.npmjs.org/vfile-message/-/vfile-message-4.0.3.tgz",
++            "integrity": "sha512-QTHzsGd1EhbZs4AsQ20JX1rC3cOlt/IWJruk893DfLRr57lcnOeMaWG4K0JrRta4mIJZKth2Au3mM3u03/JWKw==",
++            "license": "MIT",
++            "dependencies": {
++                "@types/unist": "^3.0.0",
++                "unist-util-stringify-position": "^4.0.0"
++            },
++            "funding": {
++                "type": "opencollective",
++                "url": "https://opencollective.com/unified"
++            }
++        },
+         "node_modules/vite": {
+             "name": "@voidzero-dev/vite-plus-core",
+             "version": "0.3.3",
+             "resolved": "https://registry.npmjs.org/@voidzero-dev/vite-plus-core/-/vite-plus-core-0.3.3.tgz",
+             "integrity": "sha512-Ui92VENIZG+p0nMJuVGMsHBHrQqgUNxXObdo5PlSDEBOdRmD8AHKr8tOClZTVU1U5blLQKtHKplxtTun0yZEmw==",
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@oxc-project/runtime": "=0.150.0",
+                 "@oxc-project/types": "=0.150.0",
+@@ -6214,6 +6752,7 @@
+             "integrity": "sha512-gr3t8ZIsytJnpPE0YPxtkouf+asMsc+TWlKXYzEdY6rRXUdCGYxgaPmzRePx1Gyip2gmARRLogAwoMMW9BvSUA==",
+             "dev": true,
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@oxc-project/types": "=0.150.0",
+                 "@oxlint/plugins": "=1.79.0",
+@@ -6479,6 +7018,7 @@
+             "integrity": "sha512-fhACrNXUidIbGSBr5FlbuBkO7VWC1ZyLl0DO4CU2DrQoAPxX84Ysxs+HeGQpii5lZWV1Q4gBZTTu49mF+A6Edw==",
+             "dev": true,
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@vitest/expect": "4.1.11",
+                 "@vitest/mocker": "4.1.11",
+@@ -6575,6 +7115,7 @@
+             "resolved": "https://registry.npmjs.org/vue/-/vue-3.5.43.tgz",
+             "integrity": "sha512-o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng==",
+             "license": "MIT",
++            "peer": true,
+             "dependencies": {
+                 "@vue/compiler-dom": "3.5.43",
+                 "@vue/compiler-sfc": "3.5.43",
+@@ -6846,6 +7387,16 @@
+                 "@yuku-parser/binding-win32-arm64": "0.9.5",
+                 "@yuku-parser/binding-win32-x64": "0.9.5"
+             }
++        },
++        "node_modules/zwitch": {
++            "version": "2.0.4",
++            "resolved": "https://registry.npmjs.org/zwitch/-/zwitch-2.0.4.tgz",
++            "integrity": "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==",
++            "license": "MIT",
++            "funding": {
++                "type": "github",
++                "url": "https://github.com/sponsors/wooorm"
++            }
+         }
+     }
+ }

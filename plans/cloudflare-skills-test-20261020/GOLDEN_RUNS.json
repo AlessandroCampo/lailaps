@@ -1,0 +1,213 @@
+{
+  "schema": "lailaps.cloudflare-reader-pilot-baselines",
+  "version": 1,
+  "selected_at": "2026-10-20",
+  "baseline_code_commit": "46160f362053c612d9e6a1b8d456b6e98fd4ca2c",
+  "branch": "codex/cloudflare-skills-test",
+  "scope": "P0 fresh Recon + Reader only; two future runs; Investigator P1",
+  "new_reader_ep_budget_per_target": 500000,
+  "golden_meaning": "Historical comparison references, not confirmed vulnerability truth or frozen Recon input for the new planner",
+  "metrics_semantics": "Accepted ReaderLead outputs, not unique validated root causes; no cross-target pooling; proportional equivalents are densities, not predictions",
+  "selected": [
+    {
+      "target": "cacti",
+      "run_id": "cacti-global-20261016-230800",
+      "path": "storage/app/runs/cacti/global/cacti-global-20261016-230800/cacti-global-20261016-230800-outcome.json",
+      "sha256": "3fd7fd38e71fbbb7226b845e87727281648ee8d6fae9fbf53c49b74855e5bb86",
+      "source_snapshot": "6482af547c204199e829b7a0df0b7a13db3e0a58",
+      "golden_recon_artifact_id": "01M3NYRPZBBXE8AQM1J9XZR3TZ",
+      "accepted_reader_leads": 14,
+      "raw_reader_emissions": 15,
+      "reader_ep": 509640.41760000004,
+      "reader_ep_budget": 500000,
+      "reader_model": "xiaomi/mimo-v2.6-pro",
+      "reader_reasoning_effort": "medium",
+      "reader_concurrency": 4,
+      "weights": {
+        "uncached": 1.16,
+        "cached": 0.0096,
+        "output": 0.464
+      },
+      "raw_leads_per_100k_reader_ep": 2.7470348733188854,
+      "raw_leads_per_500k_reader_ep_equivalent": 13.735174366594427,
+      "planned_initial_areas": 15,
+      "started_reader_areas": 5,
+      "automatic_suspected_catalog_matches": 2,
+      "validated_unique_root_causes": null,
+      "limitations": [
+        "Full run incomplete due to an Investigator failure; isolate Reader products and EP",
+        "2 of 5 started Reader areas closed; ten initial areas not started due to budget",
+        "CVE-2026-39955 automatic match points to access-control hypotheses rather than the SQL injection in the manifest; do not count as validated TP",
+        "Historical Recon reused with zero incremental cost; new Recon must be reported separately"
+      ]
+    },
+    {
+      "target": "yeswiki",
+      "run_id": "yeswiki-reader-global-20260929-083528",
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260929-083528/yeswiki-reader-global-20260929-083528-outcome.json",
+      "sha256": "d6e2e914515fea4e5a597e0673eddb6603ebcef8363645d1dd12e3b0c4322129",
+      "source_snapshot": "7325759547611def210a731b103878bd696c419c",
+      "golden_recon_artifact_id": "01M309MYBKSARVPA2HWVTYT450",
+      "accepted_reader_leads": 57,
+      "reader_ep": 1514943.432,
+      "reader_ep_budget_per_area": 500000,
+      "reader_model": "xiaomi/mimo-v2.6-pro",
+      "reader_reasoning_effort": "not established by inspected aggregate",
+      "reader_concurrency": 3,
+      "weights": {
+        "uncached": 1.16,
+        "cached": 0.0096,
+        "output": 0.464
+      },
+      "raw_leads_per_100k_reader_ep": 3.762516724782896,
+      "raw_leads_per_500k_reader_ep_equivalent": 18.81258362391448,
+      "selected_initial_area_ids": [
+        "area-assignment-4",
+        "area-assignment-5",
+        "area-assignment-6"
+      ],
+      "scope_labels": [
+        "Controller e API REST",
+        "Bazar: moduli, voci e campi",
+        "Rendering e template (XSS surface)"
+      ],
+      "automatic_matched_lead_case_ids": [
+        "CVE-2026-52762",
+        "CVE-2026-52770",
+        "CVE-2026-52771",
+        "CVE-2026-52775"
+      ],
+      "validated_unique_root_causes": null,
+      "children": [
+        {
+          "path": "storage/app/runs/yeswiki/reader-area/yeswiki-reader-area-20260929-083534-2/yeswiki-reader-area-20260929-083534-2-outcome.json",
+          "sha256": "b4cbdc94aea3ccddbbed2ea20260b73a8217cec279c9825458025565783332f6",
+          "run_id": "yeswiki-reader-area-20260929-083534-2",
+          "area_id": "area-assignment-5",
+          "accepted_reader_leads": 17,
+          "reader_ep": 502450.792,
+          "weights": {
+            "uncached": 1.16,
+            "cached": 0.0096,
+            "output": 0.464
+          }
+        },
+        {
+          "path": "storage/app/runs/yeswiki/reader-area/yeswiki-reader-area-20260929-083534/yeswiki-reader-area-20260929-083534-outcome.json",
+          "sha256": "ab3c78baa2cb154d805260668b285e06cf4bb8f23539f0e56c755f09d5c28066",
+          "run_id": "yeswiki-reader-area-20260929-083534",
+          "area_id": "area-assignment-4",
+          "accepted_reader_leads": 21,
+          "reader_ep": 504024.91520000016,
+          "weights": {
+            "uncached": 1.16,
+            "cached": 0.0096,
+            "output": 0.464
+          }
+        },
+        {
+          "path": "storage/app/runs/yeswiki/reader-area/yeswiki-reader-area-20260929-083534-3/yeswiki-reader-area-20260929-083534-3-outcome.json",
+          "sha256": "63a52ba179f3d1709912cd95b4a04b516cc13704b8f91e2f98d2b5a08268519b",
+          "run_id": "yeswiki-reader-area-20260929-083534-3",
+          "area_id": "area-assignment-6",
+          "accepted_reader_leads": 19,
+          "reader_ep": 508467.72479999997,
+          "weights": {
+            "uncached": 1.16,
+            "cached": 0.0096,
+            "output": 0.464
+          }
+        }
+      ],
+      "limitations": [
+        "Only three selected areas, each with 500k budget, about 1.5M EP total",
+        "All three children incomplete due to budget; no technical child failure in the parent scorecard",
+        "57 accepted outputs can contain semantic duplicates or unsupported hypotheses",
+        "Four automatic catalog matches are diagnostic, not independent validation",
+        "Fresh whole-project Recon differs in scope and scheduling; normalized yield alone does not establish superiority"
+      ]
+    }
+  ],
+  "yeswiki_candidates": [
+    {
+      "path": "storage/app/runs/yeswiki/global/yeswiki-global-20261016-201708/yeswiki-global-20261016-201708-outcome.json",
+      "sha256": "d611dcb0e7b1672c42014c6e69098db7488824c4ccc5af1fdae439941d4a26b9",
+      "run_id": "yeswiki-global-20261016-201708",
+      "status": null,
+      "accepted_reader_leads": 0,
+      "reader_ep": null,
+      "raw_leads_per_100k_reader_ep": null,
+      "selection_reason": "No report or Reader output"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/global/yeswiki-global-20261016-193041/yeswiki-global-20261016-193041-outcome.json",
+      "sha256": "d721cd4fad5dfae7a436f1c029cb8b70f59f5de1e6ff276c8045d0780929a7fe",
+      "run_id": "yeswiki-global-20261016-193041",
+      "status": "incomplete",
+      "accepted_reader_leads": 0,
+      "reader_ep": null,
+      "raw_leads_per_100k_reader_ep": null,
+      "selection_reason": "Only Recon usage; no Reader agents or products"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260929-083528/yeswiki-reader-global-20260929-083528-outcome.json",
+      "sha256": "d6e2e914515fea4e5a597e0673eddb6603ebcef8363645d1dd12e3b0c4322129",
+      "run_id": "yeswiki-reader-global-20260929-083528",
+      "status": "incomplete",
+      "accepted_reader_leads": 57,
+      "reader_ep": 1514943.432,
+      "raw_leads_per_100k_reader_ep": 3.762516724782896,
+      "selection_reason": "Selected: latest substantive Reader aggregate, no failed child, strongest recent substantial raw yield"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260927-222851-2/yeswiki-reader-global-20260927-222851-2-outcome.json",
+      "sha256": "c32197313c1915114e3da3c2c099d4041bf9dfe3c06a1e39b59760bdb1b58794",
+      "run_id": "yeswiki-reader-global-20260927-222851-2",
+      "status": "running",
+      "accepted_reader_leads": 1,
+      "reader_ep": 17100.314285714285,
+      "raw_leads_per_100k_reader_ep": 5.84784573717108,
+      "selection_reason": "One lead in partial running artifact; too small to choose by ratio"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260925-214245/yeswiki-reader-global-20260925-214245-outcome.json",
+      "sha256": "c85e80d5de392bc0a751a3afb5a9c51dd4400c0312d4e6b8f01c4867261114c1",
+      "run_id": "yeswiki-reader-global-20260925-214245",
+      "status": "technical_failure",
+      "accepted_reader_leads": 13,
+      "reader_ep": 1193249.2600000002,
+      "raw_leads_per_100k_reader_ep": 1.089462230213325,
+      "selection_reason": "Same three areas but lower raw yield and technical failure"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260923-193458/yeswiki-reader-global-20260923-193458-outcome.json",
+      "sha256": "9d4a6123c9afd451801a4b23930b0485ee8b8768163ef63b8f41b8f4b2648d97",
+      "run_id": "yeswiki-reader-global-20260923-193458",
+      "status": "running",
+      "accepted_reader_leads": 75,
+      "reader_ep": 6240081.04,
+      "raw_leads_per_100k_reader_ep": 1.2019074675350692,
+      "selection_reason": "Older running snapshot; lower raw yield"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260921-075801/yeswiki-reader-global-20260921-075801-outcome.json",
+      "sha256": "e4baa23188bc3001b892ffbc980340184413b46a753a58b99ce32f9d518e9b24",
+      "run_id": "yeswiki-reader-global-20260921-075801",
+      "status": "incomplete",
+      "accepted_reader_leads": 45,
+      "reader_ep": 2320524.4400000004,
+      "raw_leads_per_100k_reader_ep": 1.9392168091106161,
+      "selection_reason": "Older broader coverage; lower raw yield"
+    },
+    {
+      "path": "storage/app/runs/yeswiki/reader-global/yeswiki-reader-global-20260920-225733/yeswiki-reader-global-20260920-225733-outcome.json",
+      "sha256": "a2de748870da8d68ab357c2ba836b754fc2a6448c6e313b10baa6f1173ec6c45",
+      "run_id": "yeswiki-reader-global-20260920-225733",
+      "status": "incomplete",
+      "accepted_reader_leads": 80,
+      "reader_ep": 4751193.789333333,
+      "raw_leads_per_100k_reader_ep": 1.683787350025671,
+      "selection_reason": "Older broader coverage; lower raw yield"
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "schema": "lailaps.investigator-p0-selection",
+  "version": 1,
+  "status": "frozen-replay-materialized",
+  "project_key": "cacti",
+  "source_commit": "6482af547c204199e829b7a0df0b7a13db3e0a58",
+  "baseline_run_id": "cacti-recon-reader-global-20261020-173047",
+  "baseline_outcome": "storage/app/runs/cacti/recon-reader-global/cacti-recon-reader-global-20261020-173047/cacti-recon-reader-global-20261020-173047-outcome.json",
+  "baseline_sha256": "a08d9731195b3ce69027b0663f1301f4b3c33a837a1f180fb45e2aead642cc08",
+  "recon_briefing_sha256": "47cd021c8b6ccd0e147282b26fa4bfce8b08252d9fb59abcf54c058f6ac864a0",
+  "expected_accepted_leads": 11,
+  "leads": [
+    {
+      "reader_output_id": "reader-area-assignment-2:reader-1",
+      "origin_lead_id": "reader-area-assignment-2:lead-1",
+      "origin_area_id": "area-assignment-2",
+      "title": "remote_agent.php action=graph_json: `effective_user` scelto dal chiamante e controllo permessi saltato per user <= 0",
+      "source_ref_ids": [
+        "reader-area-assignment-2:src-6c8703a97966",
+        "reader-area-assignment-2:src-7cacbb1d6322",
+        "reader-area-assignment-2:src-c89b1efb3e62",
+        "reader-area-assignment-2:src-c0f061a41e44"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-2:reader-2",
+      "origin_lead_id": "reader-area-assignment-2:lead-2",
+      "origin_area_id": "area-assignment-2",
+      "title": "remote_agent.php: remote_client_authorized autorizza tramite solo il PRIMO LABEL del PTR reverse-DNS del chiamante, confrontato con tutti i poller (incluso il main 'localhost')",
+      "source_ref_ids": [
+        "reader-area-assignment-2:src-6c8703a97966",
+        "reader-area-assignment-2:src-7cacbb1d6322",
+        "reader-area-assignment-2:src-c0f061a41e44",
+        "reader-area-assignment-2:src-380a6bf99a6a"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-2:reader-3",
+      "origin_lead_id": "reader-area-assignment-2:lead-3",
+      "origin_area_id": "area-assignment-2",
+      "title": "remote_agent.php: nessuna azione vincola host/poller_item al poller chiamante — snmpget/walk su qualsiasi host con credenziali salvate, esecuzione di poller_item script (exec_poll) e reindex cross-poller",
+      "source_ref_ids": [
+        "reader-area-assignment-2:src-7cacbb1d6322",
+        "reader-area-assignment-2:src-c0f061a41e44",
+        "reader-area-assignment-2:src-380a6bf99a6a"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-1:reader-1",
+      "origin_lead_id": "reader-area-assignment-1:lead-1",
+      "origin_area_id": "area-assignment-1",
+      "title": "Cache di sessione `sess_simple_perms` non vincolata all'utente: il login non la invalida, bypass della policy per-grafico sulle superfici guest",
+      "source_ref_ids": [
+        "reader-area-assignment-1:src-6c194630b9db",
+        "reader-area-assignment-1:src-89d37fcf084e",
+        "reader-area-assignment-1:src-07db7ec0ffed",
+        "reader-area-assignment-1:src-246b4473f403",
+        "reader-area-assignment-1:src-1f0921298385"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-1:reader-2",
+      "origin_lead_id": "reader-area-assignment-1:lead-2",
+      "origin_area_id": "area-assignment-1",
+      "title": "graph_realtime.php action=view legge e serve la cache immagine del grafico senza is_graph_allowed, contravvenendo all'invariante delle superfici sorelle",
+      "source_ref_ids": [
+        "reader-area-assignment-1:src-89d37fcf084e",
+        "reader-area-assignment-1:src-c42eb57655b2"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-3:reader-1",
+      "origin_lead_id": "reader-area-assignment-3:lead-1",
+      "origin_area_id": "area-assignment-3",
+      "title": "Remember-me: check_auth_cookie autentica senza verificare enabled/locked dell'account; revoca lato server agganciata a un ramo condizionato",
+      "source_ref_ids": [
+        "reader-area-assignment-3:src-589d15664034",
+        "reader-area-assignment-3:src-9f164087ec0d",
+        "reader-area-assignment-3:src-68d00e8d5a15",
+        "reader-area-assignment-3:src-a9967d4469b5",
+        "reader-area-assignment-3:src-37c6e01c7741"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-3:reader-2",
+      "origin_lead_id": "reader-area-assignment-3:lead-2",
+      "origin_area_id": "area-assignment-3",
+      "title": "Session fixation: autenticazione senza session_regenerate_id (promozione della sessione pre-auth)",
+      "source_ref_ids": [
+        "reader-area-assignment-3:src-f52098c241a3",
+        "reader-area-assignment-3:src-cec05717a41a",
+        "reader-area-assignment-3:src-77ca4be27fca",
+        "reader-area-assignment-3:src-e4054c513fd6",
+        "reader-area-assignment-3:src-eba380760684",
+        "reader-area-assignment-3:src-54dc3cd973ab"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-3:reader-3",
+      "origin_lead_id": "reader-area-assignment-3:lead-3",
+      "origin_area_id": "area-assignment-3",
+      "title": "Forced password change non applicato ai percorsi remember-me/basic auth: evasione del gate must_change_password",
+      "source_ref_ids": [
+        "reader-area-assignment-3:src-37c6e01c7741",
+        "reader-area-assignment-3:src-44b142caa61f",
+        "reader-area-assignment-3:src-77ca4be27fca",
+        "reader-area-assignment-3:src-e4054c513fd6",
+        "reader-area-assignment-3:src-68d00e8d5a15",
+        "reader-area-assignment-3:src-54dc3cd973ab"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-4:reader-1",
+      "origin_lead_id": "reader-area-assignment-4:lead-1",
+      "origin_area_id": "area-assignment-4",
+      "title": "Lockout per credenziali errate mai attivato nei login LDAP a dominio: confronto `error_text == 1` invece di `error_num == 1`",
+      "source_ref_ids": [
+        "reader-area-assignment-4:src-55b49433b56e",
+        "reader-area-assignment-4:src-b7a760066ed3",
+        "reader-area-assignment-4:src-e04c65c32486"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-4:reader-2",
+      "origin_lead_id": "reader-area-assignment-4:lead-2",
+      "origin_area_id": "area-assignment-4",
+      "title": "Dominio di login disabilitato (`user_domains.enabled`) resta autenticabile: il flag è applicato solo al dropdown UI, non al backend del login",
+      "source_ref_ids": [
+        "reader-area-assignment-4:src-55b49433b56e",
+        "reader-area-assignment-4:src-b7a760066ed3",
+        "reader-area-assignment-4:src-e04c65c32486"
+      ]
+    },
+    {
+      "reader_output_id": "reader-area-assignment-4:reader-3",
+      "origin_lead_id": "reader-area-assignment-4:lead-3",
+      "origin_area_id": "area-assignment-4",
+      "title": "Username di login senza escaping DN: il backslash sopravvive alle sanificazioni e dissolve il confine RDN del template DN LDAP (bind e group check su identità forgiata)",
+      "source_ref_ids": [
+        "reader-area-assignment-4:src-226102eac68c",
+        "reader-area-assignment-4:src-b7a760066ed3",
+        "reader-area-assignment-4:src-55b49433b56e"
+      ]
+    }
+  ],
+  "replay_manifest": "storage/framework/lailaps-investigator-p0/cacti-20261020-173047/manifest.json",
+  "replay_manifest_sha256": "7d7472ae7c425bffce0944ba3c02c9475c37675260b543cb4d354677a02440b1",
+  "source_ref_digest": "Original Reader Deps.register_source_ref digest; preserved, not recomputed from raw range"
+}

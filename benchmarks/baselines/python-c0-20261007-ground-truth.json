@@ -1,0 +1,46 @@
+{
+  "schema": "lailaps.c0.ground-truth-annotations",
+  "version": 1,
+  "recorded_on": "2026-10-07",
+  "baseline_directory": "python-c0-20261007",
+  "baseline_manifest_sha256": "c344d926c3adf05aaf485c27e43b0eadeb86d635ccf896287a56750526afd926",
+  "application_policy": "For operational parity evaluation, explicit manual annotations take precedence over persisted reference dispositions at the specified scope. Original artifacts, telemetry and benchmark scores remain unchanged.",
+  "annotations": [
+    {
+      "target": "bookstack",
+      "run_id": "bookstack-global-glm-limited-20261007-002549",
+      "scope": "run_aggregate",
+      "authority": "explicit_user_instruction",
+      "user_statement": "Il modello ha confermato 4/5; le lead sono persistite come suspected per un errore tecnico. Usare questo risultato come ground truth.",
+      "reference_result": {
+        "confirmed": 4,
+        "lead_denominator": 5,
+        "confirmed_fraction": 0.8,
+        "remaining_lead_disposition": null
+      },
+      "persisted_result": {
+        "confirmed": 0,
+        "suspected": 4,
+        "lead_count": 4,
+        "raw_leads": 5
+      },
+      "verification": {
+        "log_checked": "storage/app/runs/bookstack/global/bookstack-global-glm-limited-20261007-002549/bookstack-global-glm-limited-20261007-002549-logs.php",
+        "log_sha256_at_check": "aa3c67e478c61173ff006910cccc18f989499a56075fb0bc522c2034d9e40ef3",
+        "last_lines_checked": 30,
+        "tail_summary": "incomplete, confermati=0, sospetti=4, partial_failure; output retry/request limit fatal errors",
+        "supports_aggregate_four_of_five": false,
+        "status": "manual_reference_authorized_by_user; not independently reconstructed from inspected log",
+        "per_lead_mapping": null,
+        "limitation": "No individual lead IDs are promoted automatically. The fifth lead disposition is unspecified. A semantic per-lead comparison requires the intended log or explicit lead mapping."
+      },
+      "comparison_policy": {
+        "use_as_quality_reference": true,
+        "aggregate_reference": "4 confirmed out of 5 leads, as instructed by the user",
+        "individual_dispositions": "unresolved; do not infer which lead corresponds to each manual verdict",
+        "do_not_replace": ["historical benchmark score", "reported telemetry", "admitted lead denominator", "original outcome", "original transcript"],
+        "note": "The fraction 4/5 is a manual aggregate reference, not catalog recall or a new measured success rate."
+      }
+    }
+  ]
+}

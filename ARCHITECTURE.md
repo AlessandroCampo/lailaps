@@ -1,5 +1,91 @@
 # Architettura del loop agentico di Lailaps
 
+## Pilot Cloudflare Recon + Reader (20 ottobre 2026)
+
+`benchmark:recon-reader --cloudflare-hunting` abilita una knowledge locale e
+versionata per il percorso esistente `pentest recon --global --with-reader`.
+La Recon usa una metodologia di trust boundary e domande investigative; il Reader
+mantiene la soglia soft delle lead e usa knowledge `progressive_v1`.
+Gli asset sotto `pentest_agent/knowledge/cloudflare` sono inclusi nel package e
+verificati prima del bootstrap. Nel prompt Reader entrano metodo e catalogo;
+`read_skill(topic_id)` restituisce un topic con disciplina e prospettive comuni del
+dominio. I 58 topic coprono classi generali, HTTP/auth, browser e isolamento/lifecycle
+dei dati. La scelta spetta al Reader; il runtime risolve soltanto ID ammessi, senza
+path del target o download. Le vecchie sintesi restano asset legacy non caricati.
+Le risposte entrano nella history ordinaria senza modificare il system prompt e
+sono rileggibili dopo compaction o da altri Reader. La cache dei file non garantisce
+presenza del testo nel contesto né cache hit del provider. Il tool segue gli stessi
+guard e boundary tool-free degli altri strumenti; gli altri ruoli del pilot
+Recon/Reader non lo ricevono.
+La knowledge orienta la discovery senza imporre trace completa, gadget, verifica
+delle mitigazioni, controprove o letture di skill prima dell'emissione. I passaggi
+non osservati restano unknowns; la verifica statica appartiene all'Investigator.
+Briefing, incarichi e copertura usano ancora `ReconPlan`, Area Ledger e
+self-checkpoint; Confirmer e Worker non vengono eseguiti in questo percorso.
+
+L'opzione indipendente `--reader-points` imposta un cap aggregato del solo Reader,
+checkpoint inclusi, riusando `BudgetBroker.reader_only_discovery`. Recon mantiene
+la propria riserva e consuma il cap totale, senza erodere l'allowance Reader.
+Il cap totale deve finanziare allowance Reader e riserva Recon. Gli overshoot
+terminali restano contabilizzati secondo il broker esistente.
+
+`recon_reader_experiment` è provenienza interna del report, anche parziale:
+flag, modalità knowledge, hash degli asset disponibili, cap e consumi separati,
+modelli/reasoning e `reader_skill_reads` con topic, hash del testo restituito,
+scope e tool call ID. Il pool raccoglie le letture dagli snapshot correnti dei
+child, senza duplicarle a ogni pubblicazione; i risultati restano advice e non
+source reference o prove sul target. Gli hash della libreria non indicano letture;
+il wrapper benchmark aggiunge commit del motore, stato dirty e snapshot target.
+Questi dati non entrano nel contesto del modello. Senza le nuove opzioni il
+percorso precedente resta invariato. Il replay Investigator opt-in è descritto sotto.
+
+Lo stesso comando accetta `--reader-concurrency=1..4` e `--recon-run=<run-id>`.
+Con il riuso, Laravel estrae soltanto una Recon ready e il briefing dal report di
+una run `recon-reader-global` dello stesso target/snapshot, anche se il Reader
+precedente è stato interrotto. Non importa finding, costi, note o stato di copertura.
+Il briefing autorevole è `coverage.category_recon.checkpoint_summary`, senza
+richiedere un file `architecture.md` separato. Python verifica schema, briefing,
+snapshot e locator prima del bootstrap. Un artifact invalido viene rifiutato;
+non parte automaticamente una Recon sostitutiva.
+
+Quando la Recon è riusata o la concorrenza supera uno, si riutilizza `GlobalPipeline`
+in modalità Reader-only: un solo pool Reader, nessuna ammissione downstream,
+budget aggregato condiviso, enrichment acquisiti dal coordinatore. Ogni Reader
+riceve la propria area e il briefing comune; gli output già prodotti da turni
+ammessi restano acquisibili anche al cutoff economico. I sensori advisory
+persistiti sono riusati con stato e limiti originali, senza nuovo scan Semgrep.
+`global_pipeline.recon_reuse` registra origine/checksum e zero richieste/EP Recon
+incrementali. Il default senza opzioni rimane seriale con Recon nuova.
+
+Piano e golden storiche: [`plans/cloudflare-skills-test-20261020/PLAN.md`](plans/cloudflare-skills-test-20261020/PLAN.md).
+
+## Pilot Investigator: briefing e topic (20 ottobre 2026)
+
+`benchmark:confirmer --unified-lead --replay-manifest=... --cloudflare-hunting`
+abilita `briefing_topics_v1` soltanto nel replay globale frozen. Il system prompt
+stabile conserva `UNIFIED_LEAD_PROMPT` e aggiunge una breve guida di accesso e il
+catalogo dei 58 topic. `read_skill(topic_id)` è disponibile nelle fasi statica e
+dinamica della stessa sessione Investigator; checkpoint e terminalizzazione
+restano senza tool. Non cambiano decisioni, soglie di prova, promozione, budget o
+permessi HTTP/browser e non vengono aggiunte checklist di validazione.
+
+Un solo corpus tecnico serve Reader e Investigator. Marcatori editoriali espliciti
+omettono dalla vista Investigator le istruzioni specifiche della discovery;
+metodo/catalogo e risposte Reader restano invariati. I topic si caricano nella
+history ordinaria quando il modello li sceglie e restano rileggibili dopo
+compaction. Nel bootstrap entra il briefing generale della Recon frozen, insieme
+alla lead e all'area di origine; briefing integro anche nei tier compatti e nei
+checkpoint deterministici, senza ripeterlo in ogni delta. Il replay riusa i sensori
+advisory frozen con i loro limiti, senza nuovo scan Semgrep o nuova Recon/Reader.
+
+Il flag passa ai figli Investigator; `lead_investigation.knowledge` conserva per
+lead topic, hash del testo, fase e tool call ID tramite il ledger corrente, anche
+nei parziali. `global_lead_replay.knowledge` registra modalità e hash degli asset.
+Questa provenienza interna non costituisce evidenza sul target né un nuovo output
+richiesto al modello. Nessuna abilitazione implicita nello scan ordinario o nei
+ruoli Confirmer/Worker separati. Input e lancio manuale delle 11 lead Cacti:
+[`INVESTIGATOR_RUN.md`](plans/cloudflare-skills-test-20261020/INVESTIGATOR_RUN.md).
+
 ## Archivio opt-in delle run interne (17 ottobre 2026)
 
 La raccolta training P0 è separata dall'autorità investigativa: nessun nuovo

@@ -1,0 +1,266 @@
+{
+  "schema": "lailaps.c0.freeze",
+  "version": 1,
+  "frozen_at": "2026-10-07T16:08:22.804Z",
+  "ground_truth_policy": "Python LLM outputs are the operational reference for TS parity, regardless of external correctness.",
+  "current_checkout_at_extraction": {
+    "head": "36f468c691b1d631e299fb15e3f63a4704f0d7dd",
+    "dirty": true,
+    "note": "Extraction context only; not the historical runtime revision."
+  },
+  "database_lookup": {
+    "available": true,
+    "selected_ids": [],
+    "candidate_count": 2,
+    "queried_audit_ids": [
+      "yeswiki-global-20260917-090105",
+      "bookstack-global-glm-limited-20261007-002549"
+    ],
+    "record_policy": "Only selected runs are retained; no DB writes or historical recalculation."
+  },
+  "selection": {
+    "yeswiki": {
+      "selected_run_id": "yeswiki-global-20260917-090105",
+      "rule": "latest started_at in target/global with report.mode=global and agent telemetry; include failed runs, exclude preflight/stage replays",
+      "candidates": [
+        {
+          "run_id": "yeswiki-global-20260917-090105",
+          "started_at": "2026-09-17T09:01:05+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "0e39cb469ea570468eca3e6f4c91d1fe8ce1278e7a94776a25891e45eebf6f3b"
+        },
+        {
+          "run_id": "yeswiki-global-20260917-075108",
+          "started_at": "2026-09-17T07:51:08+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "d0a6c0b8825c8c22d0d49920fdbb7cad0ccf9168403eda5bd252746e66518a67"
+        },
+        {
+          "run_id": "yeswiki-global-20260915-091639",
+          "started_at": "2026-09-15T09:16:39+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "2c5a00e454f139607c82e9e0b28c1902bd5c637775ab10421b333ed683612b56"
+        },
+        {
+          "run_id": "yeswiki-global-20260914-214544",
+          "started_at": "2026-09-14T21:45:44+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "08304356c016973cef19fee6b99361df664b30c2827a774c93e62c934efa5385"
+        },
+        {
+          "run_id": "yeswiki-global-20260914-202901",
+          "started_at": "2026-09-14T20:29:01+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "f9303a8a956bbe64c8d54ef2ddf1eb1673b1563e4425959941f32308d2b0e8fa"
+        },
+        {
+          "run_id": "yeswiki-global-20260914-171524",
+          "started_at": "2026-09-14T17:15:24+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "568f4ee681400fd70260e306201c9029bacaf78f266465c0397cebcc2c3b4ccc"
+        },
+        {
+          "run_id": "yeswiki-global-20260914-085349",
+          "started_at": "2026-09-14T08:53:49+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "1880481fdb50019228fc6fd6f420ddabf2d26491af7f1d415b48ee01ed6aa9a8"
+        },
+        {
+          "run_id": "yeswiki-global-20260913-130326",
+          "started_at": "2026-09-13T13:03:26+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "99c94a87528e8b7134a5fdd8ad0e758d1342374f93278482c753fdf9e33a06e6"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-215927",
+          "started_at": "2026-09-12T21:59:27+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "2def7cc78570f485579d5d1853e327aec4de497c00e68d5bea47da610d7d3753"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-190606",
+          "started_at": "2026-09-12T19:06:06+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "f2ee42d858c57d0d9360099a3d5bb7b5b0bd059d3b912f0d48bb5b6cf34ad348"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-190529",
+          "started_at": "2026-09-12T19:05:29+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "76198af9b74625c0ee14bb74b6a3e766655d6960bbbdda2ad34c6ccaaccece75"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-130923",
+          "started_at": "2026-09-12T13:09:23+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "9ce031a506dd5befe03679fe8b358316aac82838b0c4603a18f8410e47ee5022"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-130914",
+          "started_at": "2026-09-12T13:09:14+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "d0111fcd9d447e0b2343e9bd4d4baa087d5daec44f3e35d9efa9d433e040705a"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-125322",
+          "started_at": "2026-09-12T12:53:22+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "5d33ef0a2fef89502e9b3b559eeb6378fd088b1b76fb6b0c5e3662886534e89b"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-125246",
+          "started_at": "2026-09-12T12:52:46+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "968dcf211a9c8c6eeef0c2b9ec3520ccf4928d5e9dea1937e342dbd9da82b37b"
+        },
+        {
+          "run_id": "yeswiki-global-20260912-124800",
+          "started_at": "2026-09-12T12:48:00+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "f01e9a9ca5926274d59cc62d9ed598a306cfcfe129d3061994f5bc59fa0b3efa"
+        }
+      ]
+    },
+    "bookstack": {
+      "selected_run_id": "bookstack-global-glm-limited-20261007-002549",
+      "rule": "latest started_at in target/global with report.mode=global and agent telemetry; include failed runs, exclude preflight/stage replays",
+      "candidates": [
+        {
+          "run_id": "bookstack-global-glm-limited-20261007-002549",
+          "started_at": "2026-10-07T00:25:50+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "087ec226f929f8156b7883389de6e273351309ca5259127624692f32ce1e9c42"
+        },
+        {
+          "run_id": "bookstack-global-20261004-215149",
+          "started_at": "2026-10-04T21:51:49+02:00",
+          "mode": "global",
+          "eligible": true,
+          "outcome_sha256": "41afa197b142e6caa722691cdc43fbb8604bd48ec4dd5a3d504382dec7589baf"
+        },
+        {
+          "run_id": "bookstack-launcher-preflight-20261004-200455",
+          "started_at": "2026-10-04T20:04:55+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "69c83406442a7135c78fc9b236b1c27407d6af515565f168c6e6a7f5d2952f20"
+        },
+        {
+          "run_id": "bookstack-launcher-preflight-20261004-200018",
+          "started_at": "2026-10-04T20:00:18+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "ec2d90389d947a09a3b22bf342072d674c00be06f270309a110e50777c3cca5b"
+        },
+        {
+          "run_id": "bookstack-global-20261004-194853",
+          "started_at": "2026-10-04T19:48:53+02:00",
+          "mode": null,
+          "eligible": false,
+          "outcome_sha256": "910e2569651d306070e11863f65e9b29d0bb52cceaf9fa6873c8e73ad6c35f5d"
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "target": "yeswiki",
+      "run_id": "yeswiki-global-20260917-090105",
+      "source_path": "storage/app/runs/yeswiki/global/yeswiki-global-20260917-090105/yeswiki-global-20260917-090105-outcome.json",
+      "archive_path": "yeswiki/source-outcome.json.gz",
+      "bytes": 2215596,
+      "sha256": "0e39cb469ea570468eca3e6f4c91d1fe8ce1278e7a94776a25891e45eebf6f3b",
+      "observed_mtime": "2026-09-17T11:13:06.246Z"
+    },
+    {
+      "target": "yeswiki",
+      "run_id": "yeswiki-global-20260917-090105",
+      "source_path": "storage/app/runs/yeswiki/global/yeswiki-global-20260917-090105/yeswiki-global-20260917-090105-logs.php",
+      "archive_path": "yeswiki/source-transcript.log.gz",
+      "bytes": 883030,
+      "sha256": "3c3e132358a94adf6f77b5e19ff87afde670f8f964817106d7be51686eeaa9f0",
+      "observed_mtime": "2026-09-17T09:09:07.417Z"
+    },
+    {
+      "target": "bookstack",
+      "run_id": "bookstack-global-glm-limited-20261007-002549",
+      "source_path": "storage/app/runs/bookstack/global/bookstack-global-glm-limited-20261007-002549/bookstack-global-glm-limited-20261007-002549-outcome.json",
+      "archive_path": "bookstack/source-outcome.json.gz",
+      "bytes": 4257152,
+      "sha256": "087ec226f929f8156b7883389de6e273351309ca5259127624692f32ce1e9c42",
+      "observed_mtime": "2026-10-06T22:50:47.047Z"
+    },
+    {
+      "target": "bookstack",
+      "run_id": "bookstack-global-glm-limited-20261007-002549",
+      "source_path": "storage/app/runs/bookstack/global/bookstack-global-glm-limited-20261007-002549/bookstack-global-glm-limited-20261007-002549-logs.php",
+      "archive_path": "bookstack/source-transcript.log.gz",
+      "bytes": 959644,
+      "sha256": "aa3c67e478c61173ff006910cccc18f989499a56075fb0bc522c2034d9e40ef3",
+      "observed_mtime": "2026-10-06T22:50:52.678Z"
+    }
+  ],
+  "files": {
+    "yeswiki/source-outcome.json.gz": {
+      "bytes": 263748,
+      "sha256": "a08b3205d268b354535d66ba37780e4c45814a1d5944331929a451b1333b6164"
+    },
+    "yeswiki/source-transcript.log.gz": {
+      "bytes": 242553,
+      "sha256": "971851d46341988ed8148189c09f0dfa27ead1506f28c645593e8ecc9785fa71"
+    },
+    "yeswiki/metrics.json": {
+      "bytes": 252983,
+      "sha256": "6fca032dce698c8fd22bb13df2b38c38110b025ac7a8a7a9412fdf49512255e9"
+    },
+    "yeswiki/trace-index.json": {
+      "bytes": 271110,
+      "sha256": "e7745407db289c9998be2431189ac68e7e19e4be3c5449e429431e9ca5254cba"
+    },
+    "yeswiki/outputs.json": {
+      "bytes": 377609,
+      "sha256": "4189f0b76be8c093b6ede9c39480fb1d01fb6a1a76e61e5dffcffca32e53ae54"
+    },
+    "bookstack/source-outcome.json.gz": {
+      "bytes": 782287,
+      "sha256": "ecf0411ecb320d19bd7040dba8a67f80eeced8067bc1051e1a248f92a3758b54"
+    },
+    "bookstack/source-transcript.log.gz": {
+      "bytes": 282488,
+      "sha256": "16fee5dd89616ae7f35edc016f90e350daa5a176b33eed899a77979aca31ec4c"
+    },
+    "bookstack/metrics.json": {
+      "bytes": 747969,
+      "sha256": "ef71165cdbf7b981cb923c2303164ed374941132117c0b153269c405570b2333"
+    },
+    "bookstack/trace-index.json": {
+      "bytes": 205051,
+      "sha256": "5782fae338600c3d9c02bbce739f30d20ad65d90eb336e3697f367e195fe0113"
+    },
+    "bookstack/outputs.json": {
+      "bytes": 1775061,
+      "sha256": "fd1a908af2ace6010d44c87e70fb42ee855b128ee3e7cd1331385f2838cc80ff"
+    },
+    "README.md": {
+      "bytes": 8181,
+      "sha256": "0c4ed5bbde3ac45278d6ff79c566298d7cd2f42cd76382cc08897032caa1f2b9"
+    }
+  }
+}

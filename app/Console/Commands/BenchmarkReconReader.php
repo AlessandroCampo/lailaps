@@ -6,6 +6,7 @@ use App\Services\Audit\RunStorage;
 use App\Services\Pentest\BenchmarkAuditSource;
 use App\Services\Pentest\BenchmarkCatalog;
 use App\Services\Pentest\BenchmarkEvaluator;
+use App\Services\Pentest\BenchmarkReconInput;
 use App\Services\Pentest\BenchmarkStageProcessRunner;
 use App\Services\Pentest\BenchmarkTechnicalFailure;
 use App\Services\Sandbox\Audit\AuditProfile;
@@ -16,6 +17,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\File;
 use InvalidArgumentException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
 
 final class BenchmarkReconReader extends Command
 {
@@ -24,6 +26,10 @@ final class BenchmarkReconReader extends Command
         {--path= : Sorgente; default targets/<target-id>}
         {--recon-model= : Modello Recon}
         {--reader-model= : Modello Reader}
+        {--cloudflare-hunting : Knowledge Cloudflare adattata a Recon e Reader}
+        {--reader-points= : Cap EP aggregato del solo Reader, checkpoint inclusi}
+        {--reader-concurrency=1 : Reader concorrenti sul cap aggregato, da 1 a 4}
+        {--recon-run= : Riusa Recon e briefing di una run recon-reader-global; salta Recon}
         {--reader-checkpoint-strategy=reader_checkpoint : Self-checkpoint Reader}
         {--budget-category= : Preset condiviso della discovery}
         {--reuse-sandbox= : Audit ID di una sandbox Lailaps pronta da collegare}
@@ -31,7 +37,7 @@ final class BenchmarkReconReader extends Command
         {--timeout=3600 : Timeout processo agente, bootstrap CBM incluso}
         {--tool-output : Mostra output tool compatti}';
 
-    protected $description = 'Testa Recon funzionale e Reader seriale insieme, senza avviare il downstream';
+    protected $description = 'Testa Reader con cap condiviso e Recon nuova o riusata, senza downstream';
 
     public function handle(
         BenchmarkCatalog $catalog,
@@ -43,6 +49,33 @@ final class BenchmarkReconReader extends Command
         SandboxService $sandboxes,
         SandboxPreparationService $preparation,
     ): int {
+        $readerPoints = $this->option('reader-points');
+        $concurrency = filter_var($this->option('reader-concurrency'), FILTER_VALIDATE_INT);
+        if ($concurrency === false || $concurrency < 1 || $concurrency > 4) {
+            throw new InvalidArgumentException('reader-concurrency deve essere fra 1 e 4.');
+        }
+        if ($this->input->hasParameterOption('--recon-run') && ! $this->option('recon-run')) {
+            throw new InvalidArgumentException('recon-run richiede un ID esplicito.');
+        }
+        if ($readerPoints !== null && (! is_numeric($readerPoints)
+            || ! is_finite((float) $readerPoints) || (float) $readerPoints <= 0)) {
+            throw new InvalidArgumentException('reader-points richiede EP positivi e finiti.');
+        }
+        $experiment = [];
+        if ($this->option('cloudflare-hunting') || $readerPoints !== null
+            || $this->option('recon-run') || $concurrency > 1) {
+            $git = new Process(['git', 'rev-parse', 'HEAD'], base_path());
+            $git->run();
+            $status = new Process(['git', 'status', '--porcelain', '--untracked-files=no'], base_path());
+            $status->run();
+            $experiment = [
+                'cloudflare_hunting' => (bool) $this->option('cloudflare-hunting'),
+                'reader_points_limit' => $readerPoints === null ? null : (float) $readerPoints,
+                'reader_concurrency' => $concurrency,
+                'engine_commit' => $git->isSuccessful() ? trim($git->getOutput()) : null,
+                'engine_worktree_dirty' => $status->isSuccessful() ? trim($status->getOutput()) !== '' : null,
+            ];
+        }
         $target = (string) $this->argument('target-id');
         $manifests = $catalog->forTarget($target);
         if ($manifests === []) {
@@ -56,6 +89,9 @@ final class BenchmarkReconReader extends Command
                 throw new InvalidArgumentException('I manifest devono riferirsi allo stesso target e snapshot.');
             }
         }
+        $reconInput = $this->option('recon-run')
+            ? app(BenchmarkReconInput::class)->resolveReaderRun($target, $snapshot, (string) $this->option('recon-run'))
+            : null;
         $source = (string) ($this->option('path') ?: base_path('targets/'.$target));
         if (! preg_match('#^(?:[A-Za-z]:/|/)#', str_replace('\\', '/', $source))) {
             $source = base_path($source);
@@ -85,6 +121,12 @@ final class BenchmarkReconReader extends Command
             $started = microtime(true);
             $sandbox = null;
             try {
+                if ($experiment !== []) {
+                    $storage->writeOutcome($directory, $runId, [
+                        'publication_state' => 'partial',
+                        'recon_reader_experiment' => [...$experiment, 'source_snapshot' => $snapshot],
+                    ], null);
+                }
                 $agentSource = $auditSource->materialize(
                     $source, $workDirectory.'/source', $target, $catalog->descriptor($target),
                 );
@@ -95,7 +137,15 @@ final class BenchmarkReconReader extends Command
                     '--audit-id', $runId,
                     '--workspace-host-root', $agentSource,
                     '--reader-checkpoint-strategy', $readerCheckpointStrategy,
+                    '--reader-concurrency', (string) $concurrency,
                 ];
+                $mounts = [];
+                if ($reconInput !== null) {
+                    $fixture = $workDirectory.'/recon-fixture.json';
+                    File::put($fixture, json_encode($reconInput, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                    $mounts[$fixture] = '/recon-fixture.json';
+                    array_push($args, '--recon-fixture', $runner->containerized() ? '/recon-fixture.json' : $fixture);
+                }
                 if ($this->option('reuse-sandbox')) {
                     $profile = AuditProfile::fromProject($agentSource);
                     $sandbox = $sandboxes->reuse(
@@ -117,18 +167,22 @@ final class BenchmarkReconReader extends Command
                         '--target-container-id', $sandbox->containerId,
                     );
                 }
-                foreach (['recon-model', 'reader-model', 'budget-category'] as $option) {
+                foreach (['recon-model', 'reader-model', 'budget-category', 'reader-points'] as $option) {
                     if ($this->option($option)) {
                         array_push($args, '--'.$option, (string) $this->option($option));
                     }
                 }
+                if ($this->option('cloudflare-hunting')) {
+                    $args[] = '--cloudflare-hunting';
+                }
                 if ($this->option('tool-output')) {
                     $args[] = '--tool-output';
                 }
-                $this->line("[{$repetition}/{$repetitions}] {$runId}: Recon -> Reader, concorrenza 1");
+                $step = $reconInput === null ? 'Recon -> Reader' : 'Reader-only, Recon riusata';
+                $this->line("[{$repetition}/{$repetitions}] {$runId}: {$step}, concorrenza {$concurrency}");
                 try {
                     $exit = $runner->run(
-                        $agentSource, $directory, $runId, $args, [], $storage,
+                        $agentSource, $directory, $runId, $args, $mounts, $storage,
                         function (string $type, string $buffer) use ($storage, $directory, $runId): void {
                             $this->output->write($buffer);
                             $storage->appendLog($directory, $runId, $buffer);
@@ -161,8 +215,12 @@ final class BenchmarkReconReader extends Command
                     'schema' => 'lailaps.recon-reader-benchmark', 'version' => 1,
                     'strategy' => 'functional_assignments_v1',
                     'reader_checkpoint_strategy' => $readerCheckpointStrategy,
+                    ...($experiment === [] ? [] : [
+                        'recon_reader_experiment' => $report['recon_reader_experiment'] ?? $experiment,
+                    ]),
                     'target_id' => $target, 'source_snapshot' => $snapshot,
-                    'repetition' => $repetition, 'reader_concurrency' => 1,
+                    'repetition' => $repetition, 'reader_concurrency' => $concurrency,
+                    ...($reconInput === null ? [] : ['recon_reuse' => $reconInput['origin']]),
                     'status' => $technical ? 'technical_failure' : 'pending_semantic_review',
                     'target_runtime' => $sandbox === null ? 'workspace_only' : 'reused_sandbox',
                     'target_audit_id' => $sandbox?->auditId,

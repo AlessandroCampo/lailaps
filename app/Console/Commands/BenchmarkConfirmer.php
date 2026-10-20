@@ -31,6 +31,7 @@ final class BenchmarkConfirmer extends Command
         {--category= : Limita alla benchmark category}
         {--confirmer-model= : Modello Confirmer}
         {--unified-lead : Verifica statica e dinamica nella stessa sessione}
+        {--cloudflare-hunting : Briefing e topic incrementali nel replay unificato}
         {--isolated-leads : Controllo unificato con sandbox separata per lead}
         {--lead-concurrency=2 : Investigatori concorrenti nel replay globale}
         {--lead-model= : Modello unico; default Worker configurato}
@@ -79,6 +80,9 @@ final class BenchmarkConfirmer extends Command
             throw new InvalidArgumentException("Descriptor benchmark assente: {$projectKey}");
         }
         $globalReplay = $this->option('unified-lead') && $this->option('replay-manifest') && ! $this->option('isolated-leads');
+        if ($this->option('cloudflare-hunting') && ! $globalReplay) {
+            throw new InvalidArgumentException('--cloudflare-hunting richiede --unified-lead e --replay-manifest senza --isolated-leads.');
+        }
         if ($this->option('isolated-leads') && ! $this->option('unified-lead')) {
             throw new InvalidArgumentException('--isolated-leads richiede --unified-lead.');
         }
@@ -203,6 +207,7 @@ final class BenchmarkConfirmer extends Command
                     'schema' => 'lailaps.global-lead-replay-input', 'version' => 1,
                     'project_key' => $projectKey, 'source_commit' => $descriptor->commit(),
                     'recon' => $context['recon'],
+                    ...($this->option('cloudflare-hunting') ? ['surface_context' => $context['surface_context'] ?? []] : []),
                     'subjects' => $leadGroup->map(fn ($artifact) => [
                         ...$dataset->modelSubject($artifact), 'replay_scope' => data_get($artifact->metrics, 'replay_scope'),
                     ])->values()->all(),
@@ -235,6 +240,7 @@ final class BenchmarkConfirmer extends Command
                         '--envelope-points' => $envelope,
                         '--confirmer-model' => $this->option('confirmer-model'),
                         '--unified-lead' => (bool) $this->option('unified-lead'),
+                        ...($this->option('cloudflare-hunting') ? ['--cloudflare-hunting' => true] : []),
                         '--lead-model' => $this->option('lead-model'),
                         '--lead-concurrency' => $this->option('lead-concurrency'),
                         '--preflight-only' => (bool) $this->option('runtime-preflight'),
@@ -311,6 +317,9 @@ final class BenchmarkConfirmer extends Command
         if (empty($context['recon']['areas']) || ($context['recon']['status'] ?? null) !== 'ready') {
             throw new InvalidArgumentException('Replay richiede un Recon frozen ready.');
         }
+        if ($this->option('cloudflare-hunting') && trim((string) ($context['recon']['checkpoint_summary'] ?? '')) === '') {
+            throw new InvalidArgumentException('Replay Cloudflare richiede il briefing della Recon frozen.');
+        }
 
         return $context;
     }
@@ -377,6 +386,11 @@ final class BenchmarkConfirmer extends Command
                     throw new InvalidArgumentException('Replay source range non valido.');
                 }
                 $snippet = implode("\n", array_slice($lines, $ref['start_line'] - 1, $ref['end_line'] - $ref['start_line'] + 1));
+                // Match Deps.register_source_ref -> hash_source: each splitlines/join
+                // removes one terminal newline. Preserve the original Reader digest.
+                for ($pass = 0; $pass < 2 && str_ends_with($snippet, "\n"); $pass++) {
+                    $snippet = substr($snippet, 0, -1);
+                }
                 if (hash('sha256', $snippet) !== ($ref['sha256'] ?? null)) {
                     throw new InvalidArgumentException('Replay source hash mismatch.');
                 }
