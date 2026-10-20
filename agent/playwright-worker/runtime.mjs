@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 export const capabilities =
     'browser_code esegue JavaScript async con page, context, target_url e actor; return libero. ' +
     'Browser/cookie persistenti per actor; 60s per script, nessun replay automatico. ' +
+    'Navigazione: await page.goto(url, { referer: source_url }); l\'opzione e\' referer. ' +
+    'Per un click che naviga: await Promise.all([page.waitForURL(expected_url), page.click(selector)]); poi evaluate. ' +
     'Solo origin target; rete Node isolata, niente popup o service worker. ' +
     'evaluate/addScriptTag, cookie e DOM modificati dal tester sono setup, non prova XSS.';
 const sensitive =

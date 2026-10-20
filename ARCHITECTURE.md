@@ -1,5 +1,37 @@
 # Architettura del loop agentico di Lailaps
 
+## Archivio opt-in delle run interne (17 ottobre 2026)
+
+La raccolta training P0 è separata dall'autorità investigativa: nessun nuovo
+agente, prompt, contratto model-facing, budget o chiamata LLM. Il lifecycle CLI
+crea un collection UUID e un manifest prima dell'inferenza; `make_model` avvolge
+il modello solo durante una raccolta autorizzata. `ArchiveModel` osserva il
+confine Pydantic dopo i processor e gli hook HTTP conservano payload/risposte
+osservabili anche con streaming e client personalizzati. Gli errori e le parti
+incomplete sono dichiarati; usage provider assente non diventa zero.
+
+`training_archive` conserva JSONL incrementale, allegati con checksum e snapshot
+recuperabili di sorgente target/motore, lockfile e configurazioni sintetiche.
+Riutilizza journal, acquisizione ToolOutputManager, output/normalizzazioni,
+checkpoint, revisioni del ledger e transizioni di compaction. Storia conservata
+e contesto mostrato rimangono distinti. Le identità sono assegnate dal runtime,
+senza nuovi campi richiesti al modello. Il verdetto non è una label gold.
+
+Lo storage host `training/` è esterno al cleanup di target e artifact; Laravel
+monta `/training` solo con dichiarazione esplicita di test interno sintetico.
+Le run UI ordinarie restano escluse. Le append fanno flush/fsync; i manifest
+sono atomici. Il finalizer idempotente verifica e pubblica `sealed` o `partial`;
+un crash lascia `open`. Una ripresa crea una raccolta collegata, senza append a
+contenuti chiusi. I guasti opzionali del recorder non cambiano l'esito tecnico
+e non intercettano gli errori obbligatori del journal operativo.
+
+Il comando offline legge anche tracce interrotte, verifica riferimenti/checksum
+e mostra richieste con tool e revisioni. Lo storico viene copiato come
+`legacy_partial`, senza inventare contesti mancanti. Nessun catalogo SQL,
+labeling o exporter nel P0. Sanificazione, limiti di cattura, opt-in e procedura
+di backup/ripristino sono descritti in
+[`TRAINING_ARCHIVE.md`](agent/pentest-agent/TRAINING_ARCHIVE.md).
+
 ## Runtime del branch minimal (P0-S, A, B, C, D)
 
 Questo è l'unico catalogo operativo del branch; le descrizioni storiche di tool e
@@ -97,7 +129,9 @@ Il database conserva lifecycle e proiezioni benchmark senza duplicare il journal
 32 MiB per categoria. Ogni entry porta tool, ruolo, categoria, lead e area assegnati dal
 runtime; un ID non concede accesso fuori scope. `inspect_tool_output` permette ai ruoli
 investigativi di listare, leggere a finestre e cercare letteralmente gli output autorizzati,
-distinguendo disponibilita', espulsione e acquisizione incompleta. Per gli output Investigator
+distinguendo disponibilita', espulsione e acquisizione incompleta. Una read/search senza
+`output_id` restituisce fino a cinque scelte nello scope e un'istruzione per recuperarle;
+non presume che il primo elemento della LRU sia l'ultimo output prodotto. Per gli output Investigator
 archiviati, il recupero scoped legge anche il journal dopo espulsione o riavvio. Il Worker recupera dallo
 stesso archivio, tramite `inspect_persisted_evidence`, anche evidenze HTTP, browser e source
 indicizzate. I tool di recupero non reinseriscono copie nella LRU. Le finestre redatte
@@ -323,16 +357,27 @@ Recon, Reader, Confirmer e Worker. La risoluzione è deterministica:
 override di ruolo (incluso `--operative-model` Laravel per Confirmer/Worker), poi `--model`,
 poi `Models.json`. Il report continua a registrare il modello effettivo per ruolo, così run
 con un unico modello e run eterogenee restano confrontabili senza cambiare il loop.
-Il percorso comune delle richieste OpenRouter lascia il routing automatico attivo per default:
-un modello logico può quindi essere servito da una route sana scelta da OpenRouter. I pin di
-provider sono un override esplicito per confronti controllati e impostano
-`provider.only` con `allow_fallbacks=false`. Telemetria e outcome distinguono policy richiesta
-e provider osservato quando OpenRouter lo restituisce.
+Il percorso comune delle richieste OpenRouter usa per GLM 5.3 Flash la shortlist ordinata
+`together`, `digitalocean`, `inference-net`, `modal`: `provider.order` e `provider.only`
+contengono la stessa lista, con fallback abilitati esclusivamente al suo interno.
+DeepSeek V4.1 Flash e lo snapshot `-1017` usano il solo provider ufficiale `deepseek`.
+`openrouter_model_provider_pins` accetta una stringa (pin stretto, senza fallback) o una
+lista ordinata; una mappa parziale sovrascrive i singoli modelli mantenendo gli altri default,
+mentre `{}` disabilita tutti i pin. Gli altri modelli conservano il routing automatico.
+La factory applica la policy anche alle richieste ausiliarie; il Deduper conserva la propria
+route indipendente, usata anche per scegliere il profilo compatibile. Telemetria e outcome distinguono
+la policy richiesta dal provider osservato; una shortlist non viene usata come identita'
+del provider per stimare il costo. Il contesto usa il minimo dei limiti di endpoint noti
+nel catalogo per la lista consentita.
 
 Il contratto Chat Completions usato dal runtime e' verificato offline contro la versione
 Pydantic AI installata: la continuazione assistant tool-call → tool-result conserva un solo
 tool call ID, il campo reasoning supportato dal profilo provider e l'ordine stabile del
-prefisso. I pin provider sono applicati soltanto quando configurati e disabilitano i fallback.
+prefisso, anche quando il reasoning arriva in streaming. Soltanto un modello `deepseek/*`
+la cui policy include l'endpoint ufficiale riceve l'override di profilo che converte il
+tool forcing implicito da `required` ad `auto`, mantenendo thinking, schema e validazione
+degli output esistenti. Gli altri provider mantengono il profilo precedente; i campi
+`reasoning`/`reasoning_content` vengono conservati dal mapping nativo Pydantic AI.
 L'accounting distingue input totale, cache read e output; usage assente vale zero e il tee
 transport contabilizza una risposta una sola volta anche dopo lettura e chiusura dello stream.
 
@@ -812,6 +857,8 @@ solo cap non implica necessariamente invalidarla; nessun recupero presume costo 
 ritentato. Confirmer/Worker hanno zero retry SDK di output: un payload completo viene prima
 normalizzato localmente; se resta invalido, una sola richiesta tool-free riceve payload,
 schema, errore e decisioni ammesse senza ripetere la history investigativa. Un output
+testuale non vuoto senza JSON usa la stessa riparazione, con tutti i frammenti narrativi
+dell'ultima risposta; una risposta vuota non avvia il repair. Un output
 troncato puo' avere un solo recupero sulla history originale con cap raddoppiato fino a
 64.000 token, soltanto se entra nella capacita' con la nuova riserva. Non si riduce il
 reasoning e non si forza compaction per recuperare output. Il cap ordinario resta invariato;
@@ -907,7 +954,10 @@ Ogni transazione HTTP conserva in memoria il body completo durante la run e asso
 status, durata end-to-end in millisecondi, content type, dimensione, response id e preview;
 durata e content length restano anche nella transazione e nello snapshot della response,
 così il Worker può costruire oracle differenziali time-based. Il body completo resta fuori
-dalla context. Il Worker dispone di `inspect_response`, `search_response`,
+dalla context. L'output HTTP recuperabile e la transazione includono URL e header della
+richiesta iniziale effettivamente costruita da HTTPX, con credenziali redatte; l'URL della
+response finale e' distinto in caso di redirect. Il grep dichiara che cerca sul body completo,
+prima della preview. Il Worker dispone di `inspect_response`, `search_response`,
 `read_response`, `find_json_records` (ricerca guidata case-insensitive per campi e valori)
 e `query_html_response` (lxml/CSS selector sul DOM statico). `inspect_response` include
 anche un riepilogo bounded delle collezioni JSON, dei campi, dei tipi e dei valori scalari
